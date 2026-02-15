@@ -30,13 +30,13 @@ class UmapRegression:
     def _get_umap_params(self):
         """Returns the parameters for the Umap. Abstracted to allow for easy changes for advanced users. See BrainUmap for more details."""
         return {
-            'n_components': 2,
-            'n_neighbors': 10,
+            'n_components': 3,
+            'n_neighbors': 50,
             'min_dist': 0.05,
             'mask': None,
-            'min_cluster_size': 5,
-            'metric': 'correlation',
-            'projection': 'torus',
+            'min_cluster_size': 10,
+            'metric': 'euclidean',
+            'projection': None,
             'cluster_voxels': False
         }
 
@@ -69,17 +69,19 @@ class UmapRegression:
 
     def _generate_umap_figs(self):
         """Generates the Umap figures and saves them to the output directory."""
-        significant_clusters = np.array([
-            label if self.cluster_persistence_pvals[label] < 0.05 else -1
-            for label in self.cluster_labels
-        ])
-
-        # Force opacity: significant clusters opaque, others semi-transparent
-        override_probabilities = np.where(significant_clusters >= 0, 1.0, 0.1)          # Force significant cluster to full opacity
         fig_full = self.umapper.plot_embedding(verbose=False)
         fig_full.write_html(os.path.join(self.out_dir, 'umap_embedding_full.html'))
-        fig_filtered = self.umapper.plot_embedding(verbose=False, override_probabilities=override_probabilities)
-        fig_filtered.write_html(os.path.join(self.out_dir, 'umap_embedding_filtered.html'))
+        
+        try:
+            significant_clusters = np.array([
+            label if self.cluster_persistence_pvals[label] < 0.05 else -1
+            for label in self.cluster_labels
+            ])
+            override_probabilities = np.where(significant_clusters >= 0, 1.0, 0.1)          # Force significant cluster to full opacity
+            fig_filtered = self.umapper.plot_embedding(verbose=False, override_probabilities=override_probabilities)
+            fig_filtered.write_html(os.path.join(self.out_dir, 'umap_embedding_filtered.html'))
+        except:
+            print("Failed to generate filtered umap plot")
 
     ### Public Methods ###
     def run_umap(self, arr, permutation):
@@ -98,7 +100,7 @@ class UmapRegression:
             return 
         for i in range(n_permutations):
             _, T, _ = self.regression.run_single_multiout_regression(permutation=True)
-            persistence, _ = self.run_umap(T)
+            persistence, _ = self.run_umap(T, permutation=True)
             self.cluster_persistence_perm[i, :] = self._get_max_stat(persistence)       
 
     def calc_p_values(self):

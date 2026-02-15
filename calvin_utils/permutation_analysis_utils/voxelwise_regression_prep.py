@@ -3,6 +3,8 @@ import json
 import numpy as np
 import nibabel as nib
 from tqdm import tqdm
+from nilearn import image
+from calvin_utils.nifti_utils.generate_mask import GenerateMask
 
 class RegressionPrep:
     def __init__(self, design_matrix, contrast_matrix, outcome_df, out_dir,
@@ -34,15 +36,37 @@ class RegressionPrep:
         self.exchangeability_block = exchangeability_block
         self.data_transform_method = data_transform_method
         self.weights_vector = self.get_weights(weights)
+        os.makedirs(self.out_dir, exist_ok=True)
+        if self.mask_path is None:
+            self._generate_and_save_mask()
         self.mask = self.get_mask()
         self.voxelwise_regressors = self._get_voxelwise_regressors()
         self.design_tensor = self._get_design_tensor()
         self.outcome_data = self._get_outcome_data()
-        os.makedirs(self.out_dir, exist_ok=True)
         
     ### setters and getters ###
     def get_mask(self):
-        return nib.load(self.mask_path).get_fdata().flatten() > 0 if self.mask_path else None
+        if not self.mask_path:
+            return None
+        mask_img = self._load_mask_img()
+        return mask_img.get_fdata().flatten() > 0
+
+    def _load_mask_img(self):
+        if getattr(self, "_mask_img", None) is None:
+            self._mask_img = nib.load(self.mask_path)
+        return self._mask_img
+
+    def _generate_and_save_mask(self):
+        paths = self._collect_all_nifti_paths()
+        if not paths:
+            return None
+        gen = GenerateMask(paths, threshold=None, verbose=False)
+        mask_img, _ = gen.run()
+        out_path = os.path.join(self.out_dir, "mask.nii.gz")
+        nib.save(mask_img, out_path)
+        self.mask_path = out_path
+        self._mask_img = mask_img
+        return out_path
     
     def get_weights(self, values):
         n_obs = self.design_matrix.shape[0] if hasattr(self, 'design_matrix') else None
@@ -75,12 +99,26 @@ class RegressionPrep:
     def _prep_paths(self, df, term):
         """Ensure the result is a flat list of strings (paths)"""
         paths = df[term].values
+        print("paths are: ", len(paths))
         if isinstance(paths, np.ndarray):
             paths = paths.flatten().tolist()
         elif hasattr(paths, 'tolist'):
             paths = paths.tolist()
         paths = [str(p) for p in paths]
         return paths
+
+    def _collect_all_nifti_paths(self):
+        """Collect all voxelwise NIfTI paths from design and outcome."""
+        all_paths = []
+        for term in self.voxelwise_variables:
+            if term in self.outcome_df.columns:
+                continue
+            all_paths.extend(self._prep_paths(self.design_matrix, term))
+
+        outcome_colname = self.outcome_df.columns[0]
+        if outcome_colname in self.voxelwise_variables:
+            all_paths.extend(self._prep_paths(self.outcome_df, outcome_colname))
+        return [p for p in all_paths if isinstance(p, str) and p]
     
     def _load_nifti_stack(self, paths, dtype=np.float32):
         """Return (n_subj, n_vox) float32 array, masked and z-scored."""
@@ -91,9 +129,15 @@ class RegressionPrep:
 
         # ----- fill -----
         for k, p in enumerate(tqdm(paths, desc="Loading & masking")):
-            arr = nib.load(p).get_fdata(dtype=dtype).ravel()
+            img = nib.load(p)
             if self.mask is not None:
+                mask_img = self._load_mask_img()
+                if img.shape != mask_img.shape:
+                    img = image.resample_to_img(img, mask_img, interpolation="continuous")
+                arr = img.get_fdata(dtype=dtype).ravel()
                 arr = arr[self.mask]            # 1-D masked
+            else:
+                arr = img.get_fdata(dtype=dtype).ravel()
             stack[k, :] = arr                   # single write
         return stack 
     
@@ -232,6 +276,8 @@ class RegressionPrep:
         if self.weights_vector is not None:
             dataset_dict['voxelwise_regression']["weights_vector"] = f"{self.out_dir}/weights_vector.npy"
             np.save(f"{self.out_dir}/weights_vector.npy", self.weights_vector)
+        if self.mask_path is not None:
+            dataset_dict['voxelwise_regression']["mask_path"] = self.mask_path
         
         with open(f"{self.out_dir}/dataset_dict.json", "w") as f:
             json.dump(dataset_dict, f, indent=4)

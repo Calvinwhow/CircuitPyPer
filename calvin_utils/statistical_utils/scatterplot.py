@@ -71,6 +71,31 @@ def simple_scatter(df, x_col, y_col, dataset_name, out_dir, y_label='y Axis', x_
     plt.show()
 
 
+class SimpleScatterPlotWrapper:
+    """
+    Wide-format wrapper for simple_scatter.
+
+    Usage
+    -----
+    plotter.plot(x_col="x", y_col="y", dataset_name="Scatter")
+    """
+
+    def __init__(self, df):
+        self.df = df
+
+    def plot(self, x_col, y_col, dataset_name="Scatter Plot", out_dir=None, x_label=None, y_label=None, flip_axes=False):
+        return simple_scatter(
+            df=self.df,
+            x_col=x_col,
+            y_col=y_col,
+            dataset_name=dataset_name,
+            out_dir=out_dir,
+            x_label=x_label or x_col,
+            y_label=y_label or y_col,
+            flip_axes=flip_axes,
+        )
+
+
 class ScatterplotGenerator:
     def __init__(self, dataframe, data_dict, x_label='xlabel', y_label='ylabel', correlation='pearson', palette='tab10', out_dir=None, rows_per_fig=None, cols_per_fig=None, ylim=None, category_col=None, kde=False, swap_x_and_y=False):
         """

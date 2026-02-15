@@ -245,7 +245,7 @@ class GiiNiiFileImport:
                 try:
                     data = self.handle_special_values(data)
                 except Exception as e:
-                    raise RuntimeError(e)
+                    data = 0
             new_name = self.generate_name(file_path)
             self.matrix_df[new_name] = data
 

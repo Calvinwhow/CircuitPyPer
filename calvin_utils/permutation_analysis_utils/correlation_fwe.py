@@ -311,8 +311,6 @@ class CalvinFWEMap():
         Note:
             Spearman correlation will generate a NaN value when there is no variation in either X or Y. 
         """
-        print(f"Evalauting {X.shape[0]} patients")
-        print(f"Spearman vectorization state: {self.vectorize}")
         if not self.vectorize:
             from scipy.stats import spearmanr
             #Initialize

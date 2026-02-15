@@ -10,6 +10,7 @@ matplotlib-inline
 matplotlib-venn
 forestplot
 tqdm
+tableone
 
 # Data Handling and Analysis
 numpy

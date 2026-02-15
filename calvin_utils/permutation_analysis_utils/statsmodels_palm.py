@@ -79,10 +79,20 @@ class CalvinStatsmodelsPalm(CalvinPalm):
         - X: DataFrame
             Independent variable matrix.
         """
+        left = formula.split('~')[0].strip()
+        right = formula.split('~')[1].strip()
         try:
-            left = formula.split('~')[0].strip()
+            if voxelwise_interaction_terms is None: 
+                lhs = left.split(' + ')
+                rhs = right.split(' + ')
+                y = data_df[lhs]
+                x = data_df[rhs]
+                return y, x
+        except:
+            print("Could not get a simple outcome and design matrix. Continuing with old code.")
+        
+        try:
             vars = patsy.ModelDesc.from_formula(formula)
-            
             if voxelwise_variable_list is not None:
                 new_rhs = []
                 for term in vars.rhs_termlist:
@@ -100,7 +110,7 @@ class CalvinStatsmodelsPalm(CalvinPalm):
                 y = y.iloc[:, [0]]
             if y.shape[1] > 2: # handle multi-output situation
                 cols = left.split(' + ')
-                y = data_df[cols]
+                y = data_df[cols]                                                   # Overwrite Y
                 
             if add_intercept==False:                                                    # check the intercept
                 X.pop('Intercept')
@@ -111,7 +121,7 @@ class CalvinStatsmodelsPalm(CalvinPalm):
                         y = pd.DataFrame(data_df[term])  # reinsert the voxelwise variables, uninteracted, as a DataFrame
                         continue
                     X[term] = data_df[term]                                             # reinsert the voxelwise variables, uninteracted
-                    X = self._remove_voxelwise_interaction_terms(data_df, X, voxelwise_variable_list)  # check for interactions with the voxelwise variables
+                    X = self._remove_voxelwise_interaction_terms(data_df, X, voxelwise_variable_list,voxelwise_interaction_terms)  # check for interactions with the voxelwise variables
                     X = self._reintroduce_voxelwise_interaction_terms(X, voxelwise_interaction_terms)      
         except Exception as e:
             print(f"Error because patsy is garbage: {e}. using fallback.")
@@ -126,7 +136,7 @@ class CalvinStatsmodelsPalm(CalvinPalm):
             dmatrix[term.replace(' ', '')] = 'voxelwise_interaction'
         return dmatrix
     
-    def _remove_voxelwise_interaction_terms(self, df, dmatrix, voxelwise_vars):
+    def _remove_voxelwise_interaction_terms(self, df, dmatrix, voxelwise_vars, voxelwise_interaction_terms):
         '''Removes patsy terms'''
         for voxelwise_column in voxelwise_vars:
             for dmatrix_col in dmatrix.columns: 

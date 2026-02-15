@@ -1,6 +1,10 @@
-import os 
+import os
+import ast
+from typing import Iterable, List, Sequence, Tuple, Union, Optional
+
 import numpy as np
 import nibabel as nib
+import pandas as pd
 
 class ModelVTA:
     def __init__(self, center_coord, voxel_size=[0.2, 0.2, 0.2], grid_shape=[71, 71, 71], output_path="."):
@@ -114,3 +118,133 @@ class ModelVTA:
         mask = self.generate_sphere_mask(radius_mm)
         full_path = os.path.join(self.output_path, filename)
         self.save_nifti(mask, full_path)
+
+
+class ModelVTAWrapper:
+    """
+    Convenience wrapper around ModelVTA for single coords, xyz column sets,
+    and list-of-coordinates columns.
+    """
+
+    def __init__(
+        self,
+        output_path: str,
+        voxel_size: Sequence[float] = (0.2, 0.2, 0.2),
+        grid_shape: Sequence[int] = (71, 71, 71),
+    ):
+        self.output_path = output_path
+        self.voxel_size = voxel_size
+        self.grid_shape = grid_shape
+
+    # ------------------------------------------------------------------ #
+    # Public API
+    # ------------------------------------------------------------------ #
+    def run_single(
+        self,
+        center_coord: Sequence[float],
+        radius_mm: float,
+        filename: str = "vta.nii.gz",
+    ) -> str:
+        """
+        Create a VTA from a single [x, y, z] coordinate list.
+        """
+        coord = self._normalize_coord_entry(center_coord)[0]
+        return self._build_and_save(coord, radius_mm, filename)
+
+    def run_from_xyz_columns(
+        self,
+        df: pd.DataFrame,
+        xyz_cols: Iterable[Tuple[str, str, str]],
+        radius_mm: float,
+        output_col: str = "vta_paths",
+        row_id_col: Optional[str] = None,
+        filename_template: str = "{row_id}_vta_{idx:02d}.nii.gz",
+    ) -> pd.DataFrame:
+        """
+        Build VTAs from one or more (x, y, z) column triplets.
+        Each row can yield multiple VTAs (multi-electrode).
+        """
+        xyz_cols = list(xyz_cols)
+        if not xyz_cols:
+            raise ValueError("xyz_cols must contain at least one (x, y, z) triplet.")
+
+        out = df.copy()
+        for i, row in out.iterrows():
+            row_id = row[row_id_col] if row_id_col else i
+            paths: List[str] = []
+            for idx, (x_col, y_col, z_col) in enumerate(xyz_cols, 1):
+                if self._any_missing(row, (x_col, y_col, z_col)):
+                    continue
+                coord = [row[x_col], row[y_col], row[z_col]]
+                coord = self._normalize_coord_entry(coord)[0]
+                fname = filename_template.format(row_id=row_id, idx=idx)
+                paths.append(self._build_and_save(coord, radius_mm, fname))
+            out.at[i, output_col] = paths
+        return out
+
+    def run_from_coordlist_column(
+        self,
+        df: pd.DataFrame,
+        coord_col: str,
+        radius_mm: float,
+        output_col: str = "vta_paths",
+        row_id_col: Optional[str] = None,
+        filename_template: str = "{row_id}_vta_{idx:02d}.nii.gz",
+    ) -> pd.DataFrame:
+        """
+        Build VTAs from a column containing a single [x, y, z] or
+        a list of [x, y, z] entries (as Python objects or strings).
+        """
+        out = df.copy()
+        for i, row in out.iterrows():
+            row_id = row[row_id_col] if row_id_col else i
+            coords = self._normalize_coord_entry(row[coord_col])
+            paths: List[str] = []
+            for idx, coord in enumerate(coords, 1):
+                fname = filename_template.format(row_id=row_id, idx=idx)
+                paths.append(self._build_and_save(coord, radius_mm, fname))
+            out.at[i, output_col] = paths
+        return out
+
+    # ------------------------------------------------------------------ #
+    # Internals
+    # ------------------------------------------------------------------ #
+    def _build_and_save(self, coord: np.ndarray, radius_mm: float, filename: str) -> str:
+        model = ModelVTA(
+            center_coord=coord,
+            voxel_size=self.voxel_size,
+            grid_shape=self.grid_shape,
+            output_path=self.output_path,
+        )
+        model.run(radius_mm=radius_mm, filename=filename)
+        return os.path.join(model.output_path, filename)
+
+    @staticmethod
+    def _any_missing(row, cols: Tuple[str, str, str]) -> bool:
+        for c in cols:
+            if c not in row or pd.isna(row[c]):
+                return True
+        return False
+
+    @staticmethod
+    def _normalize_coord_entry(entry) -> np.ndarray:
+        if isinstance(entry, str):
+            entry = ast.literal_eval(entry.strip())
+
+        if isinstance(entry, (int, float)):
+            raise ValueError("Coordinate must have 3 values, got a scalar.")
+
+        if isinstance(entry, (list, tuple, np.ndarray)) and not any(
+            isinstance(x, (list, tuple, np.ndarray)) for x in entry
+        ):
+            entry = [entry]
+
+        cleaned: List[List[float]] = []
+        for triplet in entry:
+            if len(triplet) != 3:
+                raise ValueError(
+                    f"Every coordinate requires 3 elements; got {triplet} (len={len(triplet)})"
+                )
+            cleaned.append([float(v) for v in triplet])
+
+        return np.asarray(cleaned, dtype=float)

@@ -6,6 +6,7 @@ import numpy as np
 import seaborn as sns
 import pandas as pd
 import matplotlib.pyplot as plt
+from calvin_utils.plotting_utils.simple_heatmap import simple_heatmap
 from sklearn.metrics import accuracy_score, auc, roc_curve, accuracy_score, confusion_matrix, precision_recall_fscore_support, precision_recall_curve, average_precision_score, matthews_corrcoef, confusion_matrix
 from sklearn.metrics import roc_auc_score
 
@@ -65,9 +66,15 @@ class BinaryDataMetricsPlotter:
             axes = [axes]
             
         for ax, ((ground_truth, predicted), cm) in zip(axes, confusion_matrices.items()):
-            sns.heatmap(cm, annot=True, fmt='.2f', cmap='Blues', ax=ax,
-                        xticklabels=['Negative', 'Positive'], yticklabels=['Negative', 'Positive'],
-                        annot_kws={"size": 16})  # Set annotation font size
+            simple_heatmap(
+                cm,
+                dataset_name="",
+                ax=ax,
+                palette="Blues",
+                annot=True,
+                fmt=".2f",
+                labels=['Negative', 'Positive'],
+            )
             ax.set_ylabel(f'Predicted: {predicted}', fontsize=16)
             ax.set_xlabel(f'Actual: {ground_truth}', fontsize=16)
             ax.set_title(f'Confusion Matrix for {ground_truth} vs {predicted}', fontsize=16)
@@ -596,7 +603,14 @@ class MulticlassOneVsAllROC(MulticlassClassificationEvaluation):
             digit_fmt = '1g'
         else:
             digit_fmt = '.2f'
-        sns.heatmap(conf_matrix, annot=True, fmt=digit_fmt, xticklabels=labels, yticklabels=labels, cmap="viridis")
+        simple_heatmap(
+            conf_matrix,
+            dataset_name="",
+            palette="viridis",
+            annot=True,
+            fmt=digit_fmt,
+            labels=labels,
+        )
         plt.xlabel('Predicted label')
         plt.ylabel('True label')
         plt.title('Confusion Matrix')
@@ -1614,7 +1628,14 @@ def plot_cm(cm, class_name, cmap='viridis', annot=True, normalization=None, out_
     if normalization is None: digit_fmt = '1g'
     else: digit_fmt = '.2f'
     plt.figure(figsize=(8, 6))
-    sns.heatmap(cm, annot=annot, fmt=digit_fmt, xticklabels=labels, yticklabels=labels, cmap=cmap)
+    simple_heatmap(
+        cm,
+        dataset_name="",
+        palette=cmap,
+        annot=annot,
+        fmt=digit_fmt,
+        labels=labels,
+    )
     plt.xlabel('Predicted label')
     plt.ylabel('True label')
     plt.title(f'Confusion Matrix {class_name}')

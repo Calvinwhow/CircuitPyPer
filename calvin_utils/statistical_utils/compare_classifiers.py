@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from itertools import combinations
 from scipy.stats import norm
-from calvin_utils.ccm_utils.resampling_plot import ResampleVisualizer
+from calvin_utils.plotting_utils.pair_superiority_plot import PairSuperiorityPlot
 
 from sklearn.metrics import roc_auc_score, roc_curve
 
@@ -258,7 +258,7 @@ class CompareClassifiers:
         for model_a, model_b in combinations(self.auc_dist.keys(), 2):
             auc_a = self.auc_dist[model_a]
             auc_b = self.auc_dist[model_b]
-            resample_viz = ResampleVisualizer(stat_array_1=auc_a,stat_array_2=auc_b, model1_name=model_a, model2_name=model_b, stat='AUC', out_dir=out_dir)
+            resample_viz = PairSuperiorityPlot(stat_array_1=auc_a,stat_array_2=auc_b, model1_name=model_a, model2_name=model_b, stat='AUC', out_dir=out_dir)
             resample_viz.draw()
             
     def run(self, out_dir=None):

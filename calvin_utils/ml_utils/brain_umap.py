@@ -117,7 +117,7 @@ class BrainUmap:
         self.embedding = self._project_embedding()
         self.distances = self._compute_distance(metric, cluster_voxels)
         self.cluster_labels, self.cluster_probabilities, self.cluster_persistence = self._run_hdbscan(min_cluster_size, cluster_voxels)
-    
+        
     ### Setters and Getters ###
     def _get_arr(self, data):
         if isinstance(data, pd.DataFrame):
@@ -308,7 +308,7 @@ class BrainUmap:
         else:
             col = self.cluster_labels
         if not self.visualize_failed_clusters:
-            mask         = self.cluster_labels != -1
+            mask               = self.cluster_labels != -1
             self.embedding     = self.embedding[mask]
             rgba_colors        = [c for c, keep in zip(rgba_colors, mask) if keep]
             customdata         = customdata[mask]

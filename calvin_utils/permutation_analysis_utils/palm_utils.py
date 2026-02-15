@@ -278,7 +278,7 @@ class CalvinPalm:
         contrast_matrix_list = contrast_df.values.tolist()
         print('Here is a basic contrast matrix set up to evaluate the significance of each variable.')
         print('Here is an example of what your contrast matrix looks like as a dataframe: ')
-        display(contrast_df)
+        print(contrast_df)
         
         print("Below is the same contrast matrix, but as an array.")
         print("Copy it into a cell below and edit it for more control over your analysis.")
