@@ -11,7 +11,7 @@ ENV JUPYTER_PASSWORD=whowlab
 
 CMD bash -c "jupyter lab \
   --ip=0.0.0.0 \
-  --port=8888 \
+  --port=80 \
   --no-browser \
   --allow-root \
   --ServerApp.password=\"\$(python -c 'from jupyter_server.auth import passwd; print(passwd(\"whowlab\"))')\" \

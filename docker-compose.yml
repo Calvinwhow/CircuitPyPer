@@ -6,7 +6,7 @@ services:
       context: .
       dockerfile: containers/Dockerfile
     ports:
-      - "8888:8888"
+      - "80:80"
     volumes:
       - .:/workspace
-      - /Volumes/LaCie:/data      # <--- make sure this has the appropriate drive on the left of the colon
+      - /Volumes/LaCie/Users:/workspace/UserFolders      # <--- make sure this has the appropriate drive on the left of the colon
