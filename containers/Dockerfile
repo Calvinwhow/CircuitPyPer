@@ -1,12 +1,18 @@
-FROM python:3.11-slim
+FROM --platform=linux/amd64 python:3.10
 
 WORKDIR /workspace
 
-COPY calvin_utils_requirements.txt .
+COPY requirements.txt .
 
-RUN pip install --no-cache-dir -r calvin_utils_requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 RUN pip install jupyterlab
 
-EXPOSE 8888
+ENV JUPYTER_PASSWORD=whowlab
 
-CMD ["jupyter", "lab", "--ip=0.0.0.0", "--port=8888", "--no-browser", "--allow-root"]
+CMD bash -c "jupyter lab \
+  --ip=0.0.0.0 \
+  --port=8888 \
+  --no-browser \
+  --allow-root \
+  --ServerApp.password=\"\$(python -c 'from jupyter_server.auth import passwd; print(passwd(\"whowlab\"))')\" \
+  --ServerApp.token=''"

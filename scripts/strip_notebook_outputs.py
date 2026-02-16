@@ -33,19 +33,6 @@ def strip_outputs(path: str) -> bool:
         if metadata.pop("execution", None) is not None:
             changed = True
         
-        # Remove local param string definitions from cells
-        if cell.get("cell_type") == "code":
-            new_lines = []
-            for line in cell["source"].splitlines():
-                match = EMPTY_ASSIGNMENT_PATTERN.match(line)
-                if match:
-                    # Replace with param = ""
-                    new_lines.append(f"{match.group(1)}\"\"")
-                    changed = True
-                else:
-                    new_lines.append(line)
-            cell["source"] = "\n".join(new_lines)
-
     if nb.metadata.pop("signature", None) is not None:
         changed = True
 
