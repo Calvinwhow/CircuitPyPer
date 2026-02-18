@@ -6,8 +6,8 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 from math import log, exp, sqrt
 from scipy.stats import spearmanr, pearsonr, rankdata
-from calvin_utils.ccm_utils.stat_utils import CorrelationCalculator
-from calvin_utils.ccm_utils.convergent_map import ConvergentMapGenerator
+from calvin_utils.neuroimaging_utils.ccm_utils.stat_utils import CorrelationCalculator
+from calvin_utils.neuroimaging_utils.ccm_utils.convergent_map import ConvergentMapGenerator
 
 class LOOCVAnalyzer(ConvergentMapGenerator):
     def __init__(self, corr_map_dict, data_loader, mask_path=None, out_dir=None, weighting='unweighted', method='spearman', similarity='spatial_correl', n_bootstrap=1000, roi_path=None, group_dict={}, datasets_to_flip = [], align_all_maps=False, flip_axes=False, ylabel=None):

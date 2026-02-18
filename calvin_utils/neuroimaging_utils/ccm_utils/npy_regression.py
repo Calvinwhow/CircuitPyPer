@@ -1,7 +1,7 @@
 import os
 import numpy as np
 from tqdm import tqdm
-from calvin_utils.ccm_utils.npy_utils import DataLoader
+from calvin_utils.neuroimaging_utils.ccm_utils.npy_utils import DataLoader
 import nibabel as nib
 from nilearn import plotting
 

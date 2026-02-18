@@ -150,6 +150,7 @@ class SimpleBoxPlot:
 
     def _plot(self, ax=None):
         sns.set_style("white")
+        created_fig = ax is None
         if ax is None:
             plt.figure(figsize=self.figsize)
             ax = plt.gca()
@@ -195,8 +196,7 @@ class SimpleBoxPlot:
                     os.path.join(self.out_dir, f"box_plots/{self.dataset_name}_boxplot.svg"),
                     bbox_inches="tight",
                 )
-            plt.show()
-        elif ax is None:
+        if created_fig:
             plt.tight_layout()
             plt.show()
 
@@ -300,6 +300,7 @@ class SimpleBoxPlotPair(SimpleBoxPlot):
 
     def _plot_pair(self, ax=None):
         sns.set_style("white")
+        created_fig = ax is None
         if ax is None:
             plt.figure(figsize=self.figsize)
             ax = plt.gca()
@@ -384,6 +385,8 @@ class SimpleBoxPlotPair(SimpleBoxPlot):
                     os.path.join(self.out_dir, f"box_plots/{self.dataset_name}_boxplot.svg"),
                     bbox_inches="tight",
                 )
+        if created_fig:
+            plt.tight_layout()
             plt.show()
 
     def _annotate_two_way_anova(self, ax):

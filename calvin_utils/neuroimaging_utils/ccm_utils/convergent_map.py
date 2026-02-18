@@ -10,9 +10,9 @@ from scipy.stats import spearmanr, pearsonr, rankdata
 from matplotlib.colors import TwoSlopeNorm, LinearSegmentedColormap
 import matplotlib.cm as cm
 
-from calvin_utils.ccm_utils.npy_utils import DataLoader
-from calvin_utils.ccm_utils.stat_utils import CorrelationCalculator
-from calvin_utils.ccm_utils.optimization.convergent_map_optimizer import NiftiOptimizer
+from calvin_utils.neuroimaging_utils.ccm_utils.npy_utils import DataLoader
+from calvin_utils.neuroimaging_utils.ccm_utils.stat_utils import CorrelationCalculator
+from calvin_utils.neuroimaging_utils.ccm_utils.optimization.convergent_map_optimizer import NiftiOptimizer
 
 class ConvergentMapGenerator:
     """

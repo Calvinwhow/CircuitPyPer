@@ -264,6 +264,12 @@ class EvalStimParams:
         sum_plotter = self._plot_sums(sum_df)
         sum_plotter.run(ax=axes[1])
 
+        max_sum = sum_df["sum_amplitude"].max()
+        if pd.notna(max_sum):
+            ylim_top = max_sum * 1.05
+            axes[0].set_ylim(top=ylim_top)
+            axes[1].set_ylim(top=ylim_top)
+
         fig.tight_layout()
         out_dir = self._resolve_out_dir()
         if self.plot_type == "box":
@@ -514,6 +520,12 @@ class EvalStimParamsPair(EvalStimParams):
         self._plot_contacts_pair(contact_df).run(ax=axes[0])
         self._plot_sums_pair(sum_df).run(ax=axes[1])
 
+        max_sum = sum_df["sum_amplitude"].max()
+        if pd.notna(max_sum):
+            ylim_top = max_sum * 1.05
+            axes[0].set_ylim(top=ylim_top)
+            axes[1].set_ylim(top=ylim_top)
+
         fig.tight_layout()
         out_dir = self._resolve_out_dir()
         if self.plot_type == "box":
@@ -592,37 +604,87 @@ class EvalStimParamsPair(EvalStimParams):
     def _plot_pair_superiority(self, arrays_a, arrays_b):
         import matplotlib.pyplot as plt
         import seaborn as sns
+        from matplotlib.lines import Line2D
 
         n_contacts = self._n_contacts or len(arrays_a[0])
-        n_rows = n_contacts + 1
         sns.set_style("white")
-        fig, axes = plt.subplots(n_rows, 2, figsize=(10, 3 * n_rows), gridspec_kw={'width_ratios': [0.7, 1.3]})
-        if n_rows == 1:
-            axes = np.array([axes])
+        fig, axes = plt.subplots(1, 2, figsize=(10, 5), gridspec_kw={"width_ratios": [3, 1]})
 
-        # Per-contact
+        # Left: per-contact paired dots with connecting lines on a shared axis
+        ax_contacts = axes[0]
+        offset = 0.15
+        color_a = "#8E8E8E"  # model1 (json_col_a)
+        color_b = "#211D1E"  # model2 (json_col_b)
+
+        contact_labels = self._contact_order()
+        x_centers = np.arange(n_contacts)
+
         for c_idx in range(n_contacts):
-            vals_a = [a[c_idx] for a in arrays_a]
-            vals_b = [b[c_idx] for b in arrays_b]
-            if any(pd.isna(vals_a)) or any(pd.isna(vals_b)):
+            vals_a = np.array([a[c_idx] for a in arrays_a], dtype=float)
+            vals_b = np.array([b[c_idx] for b in arrays_b], dtype=float)
+            if np.any(pd.isna(vals_a)) or np.any(pd.isna(vals_b)):
                 raise ValueError("Paired input required: contact-wise data is sparse or contains NaNs.")
-            label = self._contact_label(c_idx)
-            plotter = PairSuperiorityPlot(
-                stat_array_1=vals_a,
-                stat_array_2=vals_b,
-                model1_name=self.group_labels[0],
-                model2_name=self.group_labels[1],
-                stat=f"{label}",
-                out_dir=None,
-                method="bootstrap",
+
+            x_a = np.full_like(vals_a, x_centers[c_idx] + offset, dtype=float)
+            x_b = np.full_like(vals_b, x_centers[c_idx] - offset, dtype=float)
+
+            # Lines connecting paired points
+            for i in range(len(vals_a)):
+                line_color = color_b if (vals_b[i] - vals_a[i]) >= 0 else color_a
+                ax_contacts.plot(
+                    [x_b[i], x_a[i]],
+                    [vals_b[i], vals_a[i]],
+                    color=line_color,
+                    linewidth=1.5,
+                    alpha=0.8,
+                    zorder=2,
+                )
+
+            ax_contacts.scatter(
+                x_b,
+                vals_b,
+                color=color_b,
+                edgecolors="white",
+                linewidths=1.0,
+                s=50,
+                alpha=0.9,
+                zorder=3,
             )
-            plotter.draw(verbose=False, ax_pair=axes[c_idx], save=False)
+            ax_contacts.scatter(
+                x_a,
+                vals_a,
+                color=color_a,
+                edgecolors="white",
+                linewidths=1.0,
+                s=50,
+                alpha=0.9,
+                zorder=3,
+            )
+
+        ax_contacts.set_title(self.contact_plot_title or "Contact amplitudes", fontsize=20)
+        ax_contacts.set_xlabel(self.contact_x_label or "Contact", fontsize=18)
+        ax_contacts.set_ylabel(self.contact_y_label or "Amplitude (mA)", fontsize=18)
+        ax_contacts.set_xticks(x_centers)
+        ax_contacts.set_xticklabels(contact_labels)
+        ax_contacts.tick_params(axis="both", labelsize=14)
+        for spine in ax_contacts.spines.values():
+            spine.set_linewidth(2)
+        sns.despine(ax=ax_contacts)
+
+        legend_elems = [
+            Line2D([0], [0], marker='o', color='none', label=self.group_labels[1],
+                   markerfacecolor=color_b, markeredgecolor='white', markersize=8),
+            Line2D([0], [0], marker='o', color='none', label=self.group_labels[0],
+                   markerfacecolor=color_a, markeredgecolor='white', markersize=8),
+        ]
+        ax_contacts.legend(handles=legend_elems, frameon=False, fontsize=12)
 
         # Overall sum
         sums_a = [float(np.sum(a)) for a in arrays_a]
         sums_b = [float(np.sum(b)) for b in arrays_b]
         if any(pd.isna(sums_a)) or any(pd.isna(sums_b)):
             raise ValueError("Paired input required: overall amplitude data is sparse or contains NaNs.")
+        max_sum = max(max(sums_a), max(sums_b))
         plotter = PairSuperiorityPlot(
             stat_array_1=sums_a,
             stat_array_2=sums_b,
@@ -632,7 +694,14 @@ class EvalStimParamsPair(EvalStimParams):
             out_dir=None,
             method="bootstrap",
         )
-        plotter.draw(verbose=False, ax_pair=axes[-1], save=False)
+        ax = axes[1]
+        plotter.plot_paired_slopes(ax)
+        plotter.annotate_paired_slopes(ax)
+        for spine in ax.spines.values():
+            spine.set_linewidth(2)
+        ylim_top = max_sum * 1.05
+        axes[0].set_ylim(top=ylim_top)
+        axes[1].set_ylim(top=ylim_top)
 
         fig.tight_layout()
         out_dir = self._resolve_out_dir()

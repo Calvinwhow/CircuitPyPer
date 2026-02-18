@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 import nibabel as nib
+from nilearn import image
 from tqdm import tqdm
 import os
 from scipy.stats import dirichlet
@@ -79,6 +80,10 @@ class DamageScorer:
             self.damage_df.loc[subject, f'{roi}_cosine'] = self._calculate_cosine_similarity(subject_array, roi_array)
         if 'sum' in metrics:
             self.damage_df.loc[subject, f'{roi}_sum'] = self._calculate_dot_product(subject_array, roi_array)
+        if 'max_in_roi' in metrics:
+            self.damage_df.loc[subject, f'{roi}_sum'] = self._calculate_max_in_roi(subject_array, roi_array)
+        if 'max_in_roi' in metrics:
+            self.damage_df.loc[subject, f'{roi}_sum'] = self._calculate_min_in_roi(subject_array, roi_array)
         if 'avg_in_target' in metrics:
             self.damage_df.loc[subject, f'{roi}_average_subject_in_target'] = self._calculate_normalized_dot_product(subject_array, roi_array, denominator='avg_in_target')
         if 'avg_in_subject' in metrics:
@@ -88,6 +93,14 @@ class DamageScorer:
         if 'dice' in metrics:
             self.damage_df.loc[subject, f'{roi}_dice_coeff'] = self._calculate_dice(subject_array, roi_array)
         return self.damage_df
+    
+    def _calculate_max_in_roi(self, array1, roi_arr):
+        '''Expects a binary'''
+        return np.nanmax(array1[roi_arr>0])
+        
+    def _calculate_min_in_roi(self, array1, roi_arr):
+        '''Expects a binary'''
+        return np.nanmin(array1[roi_arr>0])
 
     def _calculate_spatial_correlation(self, array1, array2):
         '''Calculates pearson correlation of 2 arrays'''
@@ -138,6 +151,133 @@ class DamageScorer:
             array = array[mask_indices]
         return np.sum(array > threshold)
 
+    def score_csv_against_target(
+        self,
+        csv_path: str,
+        *,
+        path_col: str,
+        target_path: str,
+        selected_damage: str | list[str] = 'avg_in_target',
+        target_suffix: str = 'target',
+        threshold: float | None = None,
+        out_path: str | None = None,
+        resample_interpolation: str = "nearest",
+        target_threshold: float = 0.0,
+        verbose: bool = False,
+        log_resample: bool = True,
+    ) -> pd.DataFrame:
+        """
+        Load a CSV, score each NIfTI in `path_col` against a target image,
+        and save the results back to CSV.
+
+        Images are resampled into the target's space via nilearn.
+        """
+        df = pd.read_csv(csv_path)
+        if path_col not in df.columns:
+            raise ValueError(f"Missing path column: {path_col}")
+
+        target_img = image.load_img(target_path)
+
+        space_img = target_img
+        if self.mask_path is not None:
+            space_img = image.load_img(self.mask_path)
+
+        if verbose or log_resample:
+            print(
+                f"Target image: shape={target_img.shape}, "
+                f"zooms={target_img.header.get_zooms()[:3]}"
+            )
+            if space_img is target_img:
+                print("Resample space: target")
+            else:
+                print(
+                    f"Resample space (mask): shape={space_img.shape}, "
+                    f"zooms={space_img.header.get_zooms()[:3]}"
+                )
+
+        if space_img is target_img:
+            target_data = target_img.get_fdata()
+            if log_resample or verbose:
+                print("[no resample] target_path -> resample space")
+        else:
+            if log_resample or verbose:
+                print(
+                    f"[resample] target_path shape={target_img.shape}, "
+                    f"zooms={target_img.header.get_zooms()[:3]} "
+                    f"-> space shape={space_img.shape}, "
+                    f"zooms={space_img.header.get_zooms()[:3]}"
+                )
+            target_resampled = image.resample_to_img(
+                target_img,
+                space_img,
+                interpolation="nearest",
+                force_resample=True,
+                copy_header=True,
+            )
+            target_data = target_resampled.get_fdata()
+
+        target_data = np.nan_to_num(target_data, nan=0.0, posinf=0.0, neginf=0.0)
+
+        if space_img is target_img:
+            target_mask = target_data > target_threshold
+        else:
+            mask_data = space_img.get_fdata()
+            mask_data = np.nan_to_num(mask_data, nan=0.0, posinf=0.0, neginf=0.0)
+            target_mask = mask_data > 0
+
+        target_vec = target_data.flatten()[target_mask.flatten()]
+
+        subject_paths = df[path_col].tolist()
+        subject_data = {}
+        for path in tqdm(subject_paths, desc="Scoring damage", disable=log_resample):
+            if pd.isna(path) or not isinstance(path, str) or not path:
+                subject_data[path] = np.full(target_vec.shape, np.nan, dtype=float)
+                continue
+            subj_img = image.load_img(path)
+            same_shape = subj_img.shape == space_img.shape
+            same_affine = np.allclose(subj_img.affine, space_img.affine)
+            if same_shape and same_affine:
+                if log_resample or verbose:
+                    print(f"[no resample] {path} -> resample space")
+                subj_data = subj_img.get_fdata()
+            else:
+                if log_resample or verbose:
+                    print(
+                        f"[resample] {path} shape={subj_img.shape}, "
+                        f"zooms={subj_img.header.get_zooms()[:3]} "
+                        f"-> space shape={space_img.shape}, "
+                        f"zooms={space_img.header.get_zooms()[:3]}"
+                    )
+                subj_resampled = image.resample_to_img(
+                    subj_img,
+                    space_img,
+                    interpolation=resample_interpolation,
+                    force_resample=True,
+                    copy_header=True,
+                )
+                subj_data = subj_resampled.get_fdata()
+            subj_data = np.nan_to_num(subj_data, nan=0.0, posinf=0.0, neginf=0.0)
+            subj_vec = subj_data.flatten()[target_mask.flatten()]
+            subject_data[path] = subj_vec
+
+        self.dv_df = pd.DataFrame(subject_data)
+        self.roi_df = pd.DataFrame({target_suffix: target_vec})
+        self.damage_df = self._initialize_damage_df()
+        metrics = [selected_damage] if isinstance(selected_damage, str) else list(selected_damage)
+        for subject in self.dv_df.columns:
+            self._calculate_metrics(self.dv_df, self.roi_df, target_suffix, subject, metrics)
+
+        for metric in metrics:
+            metric_col = f"{target_suffix}_{metric}"
+            if metric_col not in self.damage_df.columns:
+                raise ValueError(f"Expected damage column not found: {metric_col}")
+            scores = self.damage_df[metric_col].reindex(subject_paths).to_numpy()
+            col_name = f"{metric}_{target_suffix}"
+            df[col_name] = scores
+        out_path = out_path or csv_path
+        df.to_csv(out_path, index=False)
+        return df
+
     def sort_dataframes_by_index(self, df):
         try:
             df.index = df.index.astype(int)
@@ -161,6 +301,8 @@ class DamageScorer:
                     - 'avg_in_subject': Computes average of target within the subject, treating the subject as an ROI. i.e. calculate how connected some constant map (target) is to a subject's VTA 
                     - 'num_in_roi': Counts the number of suprathreshold voxels inside the mmask.
                     - 'dice': Takes the dice coefficient 
+                    - 'max_in_roi': takes a binary roi
+                    - 'min_in_roi': takes a binary roi 
             trace (bool): determines if a trace matrix should be created or not
         Returns:
             pd.DataFrame: A DataFrame containing the calculated damage scores for each subject

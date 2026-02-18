@@ -168,7 +168,7 @@ class PermutationTester:
 
 from sklearn.preprocessing import StandardScaler
 from calvin_utils.file_utils.import_matrices import import_matrices_from_folder, import_matrices_from_csv
-from calvin_utils.nifti_utils.generate_nifti import nifti_from_matrix
+from calvin_utils.neuroimaging_utils.nifti_utils.generate_nifti import nifti_from_matrix
 from nimlab import datasets as nimds
 import numpy as np
 from calvin_utils.statistical_utils.z_score_matrix import z_score_matrix

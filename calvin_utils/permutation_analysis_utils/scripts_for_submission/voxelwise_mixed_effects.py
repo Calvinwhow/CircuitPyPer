@@ -8,8 +8,8 @@ import pandas as pd
 import numpy as np
 import warnings
 import os
-from calvin_utils.nifti_utils.generate_nifti import view_and_save_nifti
-from calvin_utils.nifti_utils.matrix_utilities import unmask_matrix
+from calvin_utils.neuroimaging_utils.nifti_utils.generate_nifti import view_and_save_nifti
+from calvin_utils.neuroimaging_utils.nifti_utils.matrix_utilities import unmask_matrix
 from patsy import dmatrices
 
 ########################################################################DEFINE INPUTS################################

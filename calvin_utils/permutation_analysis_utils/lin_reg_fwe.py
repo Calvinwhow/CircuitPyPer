@@ -5,7 +5,7 @@ import nibabel as nib
 from typing import Tuple
 import statsmodels.api as sm
 from sklearn.linear_model import LinearRegression
-from calvin_utils.nifti_utils.generate_nifti import view_and_save_nifti
+from calvin_utils.neuroimaging_utils.nifti_utils.generate_nifti import view_and_save_nifti
 
 class CalvinFWEMap():
     """

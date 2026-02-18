@@ -47,7 +47,7 @@ for indep_var in indep_var_list:
         print("Files exist. Skipping {out_dir_indep_var}")
         continue
     
-    from calvin_utils.ccm_utils.npy_utils import RegressionNPYPreparer
+    from calvin_utils.neuroimaging_utils.ccm_utils.npy_utils import RegressionNPYPreparer
     preparer = RegressionNPYPreparer(
         design_matrix=design_matrix,
         contrast_matrix=contrast_matrix_df,
@@ -59,7 +59,7 @@ for indep_var in indep_var_list:
     )
     dataset_dict, json_path = preparer.run()
 
-    from calvin_utils.ccm_utils.npy_regression import RegressionNPYAnalysis
+    from calvin_utils.neuroimaging_utils.ccm_utils.npy_regression import RegressionNPYAnalysis
     reg = RegressionNPYAnalysis(data_dict_path=json_path,
                         n_permutations=1000, 
                         out_dir=out_dir_indep_var,

@@ -4,7 +4,7 @@ import statsmodels.formula.api as smf
 import concurrent
 from tqdm import tqdm
 import numpy as np
-from calvin_utils.permutation_analysis_utils.perform_permutation import vector_column_permutation
+from calvin_utils.permutation_analysis_utils.permutation_utils.palm import permute_column
 from nimlab import datasets as nimds
 import pandas as pd
 
@@ -41,7 +41,7 @@ def permute_brain(data, n_permutations):
         for i in tqdm(range(n_permutations), desc="Jobs Launched"):
             #Assign the permuted data to a worker. return the result
             # result = executor.submit(permute_col, indices_to_permute)
-            result = executor.submit(vector_column_permutation, indices_to_permute)
+            result = executor.submit(permute_column, indices_to_permute)
             results.append(result)
             
             # Limit number of workers at given time to prevent memory pressure issues

@@ -35,7 +35,7 @@ umap-learn
 pydot
 
 # Neuroimaging and Medical Imaging
-nilearn
+nilearn==0.12.1
 nibabel
 nipype
 vtk

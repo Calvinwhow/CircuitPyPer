@@ -4,7 +4,7 @@ import numpy as np
 import nibabel as nib
 from tqdm import tqdm
 from nilearn import image
-from calvin_utils.nifti_utils.generate_mask import GenerateMask
+from calvin_utils.neuroimaging_utils.nifti_utils.generate_mask import GenerateMask
 
 class RegressionPrep:
     def __init__(self, design_matrix, contrast_matrix, outcome_df, out_dir,

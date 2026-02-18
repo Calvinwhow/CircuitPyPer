@@ -7,7 +7,12 @@ import pandas as pd
 from nilearn import image
 from calvin_utils.file_utils.import_functions import GiiNiiFileImport
 from calvin_utils.statistical_utils.scatterplot import simple_scatter
-from calvin_utils.nifti_utils.generate_mask import GenerateMask
+from calvin_utils.neuroimaging_utils.nifti_utils.generate_mask import GenerateMask
+from calvin_utils.plotting_utils.simple_dynamite_plot import SimpleDynamitePlotPair
+from calvin_utils.plotting_utils.simple_box_plot import SimpleBoxPlotPair
+from calvin_utils.plotting_utils.pair_superiority_plot import PairSuperiorityPlot
+from scipy.stats import spearmanr, pearsonr
+import seaborn as sns
 
 
 class DiceVTA:
@@ -288,6 +293,7 @@ class DiceVTA:
 
     def _generate_mask_from_paths(self, vta_paths: List[str]):
         gen = GenerateMask(vta_paths, threshold=None, verbose=False)
+        gen.force_reorient = True
         mask_img, mask_idx = gen.run()
         self._mask_img = mask_img
         self._mask_indices = mask_idx
@@ -403,3 +409,277 @@ class DiceVTA:
             x_label=x_label,
             y_label=y_label,
         )
+
+
+class DiceVTATargetOverlap:
+    """
+    Compute Dice overlap between two VTA columns and a target mask, compare overlaps
+    between VTA groups, and correlate overlaps with a dependent variable.
+
+    Produces a 3-panel plot:
+    A) paired comparison (box/dynamite/paired superiority)
+    B) overlap vs outcome for VTA col1
+    C) overlap vs outcome for VTA col2
+    """
+
+    def __init__(
+        self,
+        csv_path: str,
+        *,
+        vta_col1: str,
+        vta_col2: str,
+        target_path: str,
+        dep_var_col: str,
+        subject_col: str = "subject",
+        output_dir: str | None = None,
+        mask_path: str | None = None,
+        threshold: float = 0.0,
+        empty_value: float = 1.0,
+        plot_type: str = "box",
+        group_labels: List[str] | None = None,
+        comparison_title: str | None = None,
+        scatter_title_a: str | None = None,
+        scatter_title_b: str | None = None,
+        scatter_x_label: str | None = None,
+        scatter_y_label: str | None = None,
+    ):
+        self.csv_path = csv_path
+        self.vta_col1 = vta_col1
+        self.vta_col2 = vta_col2
+        self.target_path = target_path
+        self.dep_var_col = dep_var_col
+        self.subject_col = subject_col
+        self.output_dir = output_dir
+        self.mask_path = mask_path
+        self.threshold = threshold
+        self.empty_value = empty_value
+        self.plot_type = plot_type
+        self.group_labels = group_labels or [vta_col1, vta_col2]
+        self.comparison_title = comparison_title
+        self.scatter_title_a = scatter_title_a
+        self.scatter_title_b = scatter_title_b
+        self.scatter_x_label = scatter_x_label
+        self.scatter_y_label = scatter_y_label
+
+        self._df = None
+        self._vta_df = None
+        self._overlap_df = None
+        self._vta_a_cols = None
+        self._vta_b_cols = None
+        self._mask_img = None
+        self._mask_indices = None
+        self._target_vec = None
+
+    # ---- main API ----
+    def run(self):
+        self._load_inputs()
+        self._import_vtas_and_target()
+        self._compute_overlap()
+        self._save_outputs()
+        self._plot_all()
+        return self._overlap_df
+
+    # ---- load + validate ----
+    def _load_inputs(self):
+        self._df = pd.read_csv(self.csv_path)
+        required = {self.subject_col, self.dep_var_col, self.vta_col1, self.vta_col2}
+        missing = required - set(self._df.columns)
+        if missing:
+            raise ValueError(f"Missing required columns: {sorted(missing)}")
+        self._df = self._df.dropna(subset=[self.vta_col1, self.vta_col2])
+
+    # ---- import ----
+    def _import_vtas_and_target(self):
+        vta_paths = self._df[self.vta_col1].tolist() + self._df[self.vta_col2].tolist()
+        self._col1_paths = self._df[self.vta_col1].tolist()
+        self._col2_paths = self._df[self.vta_col2].tolist()
+
+        if self.mask_path is None:
+            self._generate_mask_from_paths([self.target_path] + vta_paths)
+        self._vta_df, mapped_cols = self._import_vta_dataframe_with_mask(vta_paths)
+        split_idx = len(self._col1_paths)
+        self._vta_a_cols, self._vta_b_cols = mapped_cols[:split_idx], mapped_cols[split_idx:]
+
+        target_img, mask_idx = self._load_mask()
+        target_img = image.load_img(self.target_path)
+        target_resampled = image.resample_to_img(target_img, self._mask_img, interpolation="nearest")
+        target_data = target_resampled.get_fdata().flatten()
+        target_data = np.nan_to_num(target_data, nan=0.0, posinf=0.0, neginf=0.0)
+        self._target_vec = target_data[mask_idx]
+
+    def _import_vta_dataframe_with_mask(self, vta_paths: List[str]) -> tuple[pd.DataFrame, List[str]]:
+        mask_img, mask_idx = self._load_mask()
+        data_dict = {}
+        mapped_cols = []
+        used = {}
+        for path in vta_paths:
+            col_name = self._unique_column_name(path, used)
+            vta_img = image.load_img(path)
+            resampled = image.resample_to_img(vta_img, mask_img, interpolation="nearest")
+            data = resampled.get_fdata().flatten()
+            data = np.nan_to_num(data, nan=0.0, posinf=0.0, neginf=0.0)
+            data_dict[col_name] = data[mask_idx]
+            mapped_cols.append(col_name)
+        return pd.DataFrame(data_dict), mapped_cols
+
+    def _generate_mask_from_paths(self, vta_paths: List[str]):
+        gen = GenerateMask(vta_paths, threshold=None, verbose=False)
+        mask_img, mask_idx = gen.run()
+        self._mask_img = mask_img
+        self._mask_indices = mask_idx
+
+    def _load_mask(self):
+        if self._mask_img is None or self._mask_indices is None:
+            if self.mask_path is None:
+                raise ValueError("mask_path is None and no mask has been generated.")
+            mask_img = image.load_img(self.mask_path)
+            mask_data = mask_img.get_fdata().flatten()
+            mask_idx = mask_data > 0
+            self._mask_img = mask_img
+            self._mask_indices = mask_idx
+        return self._mask_img, self._mask_indices
+
+    def _unique_column_name(self, path: str, used: dict) -> str:
+        base = os.path.basename(path)
+        count = used.get(base, 0)
+        used[base] = count + 1
+        if count == 0:
+            return base
+        return f"{base}__dup{count}"
+
+    # ---- compute ----
+    def _compute_overlap(self):
+        overlap_a = []
+        overlap_b = []
+        for idx in range(len(self._col1_paths)):
+            col_a = self._vta_a_cols[idx]
+            col_b = self._vta_b_cols[idx]
+            arr_a = self._vta_df[col_a].to_numpy()
+            arr_b = self._vta_df[col_b].to_numpy()
+            overlap_a.append(self._dice_from_arrays(arr_a, self._target_vec))
+            overlap_b.append(self._dice_from_arrays(arr_b, self._target_vec))
+        self._overlap_df = self._build_overlap_df(np.asarray(overlap_a), np.asarray(overlap_b))
+
+    def _dice_from_arrays(self, arr_a: np.ndarray, arr_b: np.ndarray) -> float:
+        a = arr_a > self.threshold
+        b = arr_b > self.threshold
+        a_sum = int(a.sum())
+        b_sum = int(b.sum())
+        if a_sum == 0 and b_sum == 0:
+            return self.empty_value
+        inter = int(np.logical_and(a, b).sum())
+        return (2.0 * inter) / (a_sum + b_sum)
+
+    def _build_overlap_df(self, overlap_a: np.ndarray, overlap_b: np.ndarray) -> pd.DataFrame:
+        out_df = self._df[[self.subject_col, self.dep_var_col, self.vta_col1, self.vta_col2]].copy()
+        out_df[f"overlap_{self.vta_col1}_vs_target"] = overlap_a
+        out_df[f"overlap_{self.vta_col2}_vs_target"] = overlap_b
+        out_df["overlap_delta"] = overlap_a - overlap_b
+        return out_df
+
+    # ---- output ----
+    def _resolve_output_dir(self) -> str:
+        if self.output_dir is not None:
+            os.makedirs(self.output_dir, exist_ok=True)
+            return self.output_dir
+        return os.path.dirname(os.path.abspath(self.csv_path))
+
+    def _save_outputs(self):
+        out_path = os.path.join(self._resolve_output_dir(), "overlap_vta_vs_target.csv")
+        self._overlap_df.to_csv(out_path, index=False)
+        return out_path
+
+    # ---- plotting ----
+    def _plot_all(self):
+        import matplotlib.pyplot as plt
+
+        fig, axes = plt.subplots(1, 3, figsize=(15, 5), gridspec_kw={"width_ratios": [1.3, 1, 1]})
+
+        self._plot_comparison(axes[0])
+        self._plot_scatter(
+            axes[1],
+            x_col=f"overlap_{self.vta_col1}_vs_target",
+            title=self.scatter_title_a or f"{self.vta_col1} overlap vs {self.dep_var_col}",
+        )
+        self._plot_scatter(
+            axes[2],
+            x_col=f"overlap_{self.vta_col2}_vs_target",
+            title=self.scatter_title_b or f"{self.vta_col2} overlap vs {self.dep_var_col}",
+        )
+
+        fig.tight_layout()
+        out_dir = self._resolve_output_dir()
+        os.makedirs(os.path.join(out_dir, "overlap_plots"), exist_ok=True)
+        fig.savefig(os.path.join(out_dir, "overlap_plots/vta_target_overlap_summary.svg"), bbox_inches="tight")
+        plt.show()
+
+    def _plot_comparison(self, ax):
+        overlap_a = self._overlap_df[f"overlap_{self.vta_col1}_vs_target"].to_numpy()
+        overlap_b = self._overlap_df[f"overlap_{self.vta_col2}_vs_target"].to_numpy()
+        title = self.comparison_title or "VTA overlap with target"
+        if self.plot_type == "pair_superiority":
+            plotter = PairSuperiorityPlot(
+                stat_array_1=overlap_a,
+                stat_array_2=overlap_b,
+                model1_name=self.group_labels[0],
+                model2_name=self.group_labels[1],
+                stat="Overlap",
+                out_dir=None,
+                method="bootstrap",
+            )
+            plotter.plot_paired_slopes(ax)
+            plotter.annotate_paired_slopes(ax)
+        else:
+            df_long = pd.DataFrame({
+                "group": [self.group_labels[0]] * len(overlap_a) + [self.group_labels[1]] * len(overlap_b),
+                "overlap": np.concatenate([overlap_a, overlap_b]),
+            })
+            plotter_cls = SimpleDynamitePlotPair if self.plot_type == "dynamite" else SimpleBoxPlotPair
+            plotter = plotter_cls(
+                df_long,
+                group_col="group",
+                category_col=None,
+                value_col="overlap",
+                dataset_name=title,
+                out_dir=None,
+                xlabel="",
+                ylabel="Dice overlap",
+                hue_order=self.group_labels,
+            )
+            plotter.run(ax=ax)
+
+        ax.set_title(title, fontsize=20)
+        for spine in ax.spines.values():
+            spine.set_linewidth(2)
+
+    def _plot_scatter(self, ax, x_col: str, title: str):
+        y_col = self.dep_var_col
+        data = self._overlap_df[[x_col, y_col]].dropna()
+        x_vals = data[x_col]
+        y_vals = data[y_col]
+
+        rho, p = spearmanr(x_vals, y_vals, nan_policy="omit")
+        r, pr = pearsonr(x_vals, y_vals)
+
+        sns.regplot(
+            x=x_vals,
+            y=y_vals,
+            ax=ax,
+            scatter_kws={"alpha": 0.98, "color": "#8E8E8E", "s": 80, "edgecolors": "white", "linewidth": 1.5},
+            line_kws={"color": "#8E8E8E"},
+        )
+        ax.set_title(title, fontsize=18)
+        ax.set_xlabel(self.scatter_x_label or "Dice overlap", fontsize=16)
+        ax.set_ylabel(self.scatter_y_label or y_col, fontsize=16)
+        ax.tick_params(axis="both", labelsize=14)
+        ax.text(
+            0.05,
+            0.95,
+            f"Rho = {rho:.2f}, p = {p:.2e}\nR = {r:.2f}, p = {pr:.2e}",
+            fontsize=12,
+            transform=ax.transAxes,
+            verticalalignment="top",
+            bbox=dict(facecolor="white", alpha=0, edgecolor="none"),
+        )
+        for spine in ax.spines.values():
+            spine.set_linewidth(2)

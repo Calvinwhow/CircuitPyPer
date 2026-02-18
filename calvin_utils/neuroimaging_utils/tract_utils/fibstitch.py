@@ -42,9 +42,9 @@ from typing import Iterable
 from vedo import Line, Plotter
 from vedo import Point as VPoint, Line as VLine         # avoid name clash
 from vedo.colors import build_lut, color_map
-from calvin_utils.tract_utils.fibsel import FiberSelector
-from calvin_utils.tract_utils.fibmerge import FiberMerger
-from calvin_utils.tract_utils.fibsave import FibSave
+from calvin_utils.neuroimaging_utils.tract_utils.fibsel import FiberSelector
+from calvin_utils.neuroimaging_utils.tract_utils.fibmerge import FiberMerger
+from calvin_utils.neuroimaging_utils.tract_utils.fibsave import FibSave
 
 class FiberStich:
     """

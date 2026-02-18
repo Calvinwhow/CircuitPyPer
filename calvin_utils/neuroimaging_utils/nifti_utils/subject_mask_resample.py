@@ -7,8 +7,8 @@ import numpy as np
 import pandas as pd
 import nibabel as nib
 
-from calvin_utils.ccm_utils.bounding_box import NiftiBoundingBox
-from calvin_utils.nifti_utils.image_resample import ImageDownSampler
+from calvin_utils.neuroimaging_utils.ccm_utils.bounding_box import NiftiBoundingBox
+from calvin_utils.neuroimaging_utils.nifti_utils.image_resample import ImageDownSampler
 
 
 class SubjectMaskResampler:

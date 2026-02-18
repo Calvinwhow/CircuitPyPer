@@ -19,6 +19,7 @@ class NiftiBoundingBox:
         self._stacked_data = None
         self._voxel_size = None
         self.force_reslice = False
+        self.force_reorient = False
         self.sign = None
 
     @property
@@ -46,6 +47,9 @@ class NiftiBoundingBox:
     # Internal helper methods
     def _load_nii(self, path):
         nii = nib.load(path)
+        if self.force_reorient:
+            # Force a consistent orientation before any downstream math.
+            nii = nib.as_closest_canonical(nii)
         if self.force_reslice:
             nii = resample_to_output(nii, voxel_sizes=self.voxel_size, mode='nearest', order=0)
         return nii
@@ -86,7 +90,17 @@ class NiftiBoundingBox:
             nii = nib.load(path)
             sign_list.append( np.sign(np.diag(nii.affine[:3,:3])) )
         if not np.all(np.all(np.array(sign_list) == np.array(sign_list)[0], axis=1)):
-            raise ValueError("Not all NIfTI files have the same orientation (sign of axes differs). Please reorient your images.")
+            # Auto-fix mixed orientations by reorienting to canonical.
+            self.force_reorient = True
+            sign_list = []
+            for path in self.nifti_paths:
+                nii = nib.as_closest_canonical(nib.load(path))
+                sign_list.append(np.sign(np.diag(nii.affine[:3, :3])))
+            if not np.all(np.all(np.array(sign_list) == np.array(sign_list)[0], axis=1)):
+                raise ValueError(
+                    "Not all NIfTI files have the same orientation after reorientation. "
+                    "Please reorient your images manually."
+                )
         self.sign = np.sign(np.array(sign_list)[0][0])
     
     def _check_zooms(self, verbose=False):

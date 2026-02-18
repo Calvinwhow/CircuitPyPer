@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
-from calvin_utils.nifti_utils.generate_nifti import view_and_save_nifti
-from calvin_utils.nifti_utils.matrix_utilities import view_nifti_html, import_nifti_to_numpy_array, unmask_matrix
+from calvin_utils.neuroimaging_utils.nifti_utils.generate_nifti import view_and_save_nifti
+from calvin_utils.neuroimaging_utils.nifti_utils.matrix_utilities import view_nifti_html, import_nifti_to_numpy_array, unmask_matrix
 
 class SensitivityTestMap:
     """

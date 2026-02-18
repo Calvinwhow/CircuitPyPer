@@ -1,6 +1,6 @@
 import numpy as np
 from scipy.stats import spearmanr
-from calvin_utils.ccm_utils.stat_utils import CorrelationCalculator
+from calvin_utils.neuroimaging_utils.ccm_utils.stat_utils import CorrelationCalculator
 from skopt import gp_minimize
 
 class NiftiBayesianOptimizer:

@@ -6,7 +6,7 @@ import nibabel as nib
 import numpy as np
 import pandas as pd
 from scipy.stats import ttest_1samp, ttest_ind
-from calvin_utils.ccm_utils.bounding_box import NiftiBoundingBox
+from calvin_utils.neuroimaging_utils.ccm_utils.bounding_box import NiftiBoundingBox
 
 
 class NiftiDiceStats:

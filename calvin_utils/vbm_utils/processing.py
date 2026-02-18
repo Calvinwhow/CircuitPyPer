@@ -4,7 +4,7 @@ import pandas as pd
 from tqdm import tqdm
 from typing import Tuple
 from itertools import combinations
-from calvin_utils.nifti_utils.generate_nifti import view_and_save_nifti
+from calvin_utils.neuroimaging_utils.nifti_utils.generate_nifti import view_and_save_nifti
 
 def get_tiv(tissue_dict: dict[str, pd.DataFrame], voxel_res: float = 2.0) -> np.ndarray:
     """

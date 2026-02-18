@@ -1,8 +1,8 @@
 import numpy as np
 from scipy.stats import spearmanr
-from calvin_utils.ccm_utils.stat_utils import CorrelationCalculator
-from calvin_utils.ccm_utils.optimization.adam import AdamOptimizer
-from calvin_utils.ccm_utils.optimization.convergence_monitor import ConvergenceMonitor
+from calvin_utils.neuroimaging_utils.ccm_utils.stat_utils import CorrelationCalculator
+from calvin_utils.neuroimaging_utils.ccm_utils.optimization.adam import AdamOptimizer
+from calvin_utils.neuroimaging_utils.ccm_utils.optimization.convergence_monitor import ConvergenceMonitor
 from tqdm import trange
 
 class WeightOptimizer:

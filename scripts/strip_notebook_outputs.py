@@ -16,10 +16,11 @@ EMPTY_ASSIGNMENT_PATTERN = re.compile(
 def strip_outputs(path: str) -> bool:
     """Remove outputs and execution counts; return True if file changed."""
     nb = nbformat.read(path, as_version=nbformat.NO_CONVERT)
-    try:
-        validate(nb)
-    except Exception:
-        nbformat.validator.normalize(nb)
+    nbformat.validator.normalize(nb)
+    # try:
+    #     validate(nb)
+    # except Exception:
+        
     changed = False
 
     for cell in nb.cells:

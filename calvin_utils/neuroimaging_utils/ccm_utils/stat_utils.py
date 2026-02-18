@@ -6,8 +6,8 @@ from jax import jit
 import jax.numpy as jnp
 from tqdm import tqdm
 from scipy.stats import rankdata, spearmanr
-from calvin_utils.ccm_utils.npy_utils import DataLoader
-from calvin_utils.ccm_utils.stat_utils_jax import _rankdata_jax, calculate_spearman_r_map_jax, _calculate_pearson_r_map_jax
+from calvin_utils.neuroimaging_utils.ccm_utils.npy_utils import DataLoader
+from calvin_utils.neuroimaging_utils.ccm_utils.stat_utils_jax import _rankdata_jax, calculate_spearman_r_map_jax, _calculate_pearson_r_map_jax
 
 class CorrelationCalculator:
     def __init__(self, method='pearson', verbose=False, use_jax=False, datasets_to_flip = []):

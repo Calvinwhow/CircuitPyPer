@@ -2,13 +2,13 @@ import os
 import numpy as np
 import pandas as pd
 import nibabel as nib
-from calvin_utils.ccm_utils.overlap_map import OverlapMap
+from calvin_utils.neuroimaging_utils.ccm_utils.overlap_map import OverlapMap
 
 class OverlapMapDF(OverlapMap):
     def __init__(self, df_dict, mask_path: str | None = None, out_dir: str | None = None, **kwargs):
         '''
         Basic overwrite of OverlapMap that allows a dataframe [shape: (observations, voxels)] to be passed. 
-        Read in from calvin_utils.ccm_utils.overlap_map import OverlapMap for more info. 
+        Read in from calvin_utils.neuroimaging_utils.ccm_utils.overlap_map import OverlapMap for more info. 
         '''
         super().__init__(data_loader=None, mask_path=mask_path, out_dir=out_dir, **kwargs)
         self.df_dict = self._get_dict_data(df_dict)

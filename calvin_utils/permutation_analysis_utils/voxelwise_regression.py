@@ -1,7 +1,7 @@
 import json
 import numpy as np
 from scipy.stats import t
-from calvin_utils.ccm_utils.npy_utils import DataLoader
+from calvin_utils.neuroimaging_utils.ccm_utils.npy_utils import DataLoader
 import os
 from tqdm import tqdm
 import nibabel as nib
@@ -141,6 +141,75 @@ class VoxelwiseRegression:
         if self.outcome_tensor.shape[2] > 1:
             return False
         return True
+
+    def _design_voxel_invariant(self, sample_voxels=8, atol=0.0):
+        """Return True if design is identical across voxels (scalar-only IVs)."""
+        X = self.design_tensor
+        if X.ndim != 3:
+            return False
+        v = X.shape[2]
+        if v == 1:
+            return True
+        idx = np.linspace(0, v - 1, min(sample_voxels, v), dtype=int)
+        base = X[:, :, 0]
+        for j in idx:
+            if atol == 0.0:
+                if not np.array_equal(X[:, :, j], base):
+                    return False
+            else:
+                if not np.allclose(X[:, :, j], base, atol=atol, rtol=0.0):
+                    return False
+        return True
+
+    def _weights_uniform(self, atol=0.0):
+        """Return True if weights are all equal (or effectively equal)."""
+        W = self.weight_vector
+        if W is None:
+            return True
+        if W.size == 0:
+            return True
+        if atol == 0.0:
+            return np.all(W == W[0])
+        return np.allclose(W, W[0], atol=atol, rtol=0.0)
+
+    def _can_use_ccm_fast(self):
+        """Fast path if DV is voxelwise and IVs are voxel-invariant (scalar-only)."""
+        if self.regression_type != 'linear':
+            return False
+        if self.outcome_tensor.shape[2] <= 1:
+            return False
+        if not self._design_voxel_invariant():
+            return False
+        if not self._weights_uniform():
+            return False
+        return True
+
+    def _run_ccm_fast_linear(self, regressor, regressand, weights, regression_idx):
+        """
+        Use the fast vectorized regression from RegressionNPYAnalysis
+        for the scalar-IV / voxelwise-DV case.
+        """
+        from calvin_utils.neuroimaging_utils.ccm_utils.npy_regression import RegressionNPYAnalysis
+
+        # Shared X (n_obs, n_preds)
+        X = regressor[:, :, 0]
+        # Voxelwise Y (n_obs, n_vox)
+        Y = regressand[:, regression_idx, :]
+
+        # Build a lightweight RegressionNPYAnalysis instance without __init__
+        reg = RegressionNPYAnalysis.__new__(RegressionNPYAnalysis)
+        reg.verbose = False
+        reg.n_subjects = X.shape[0]
+        reg.contrast_matrix = self.contrast_matrix
+
+        # RegressionNPYAnalysis expects Y as (n_vox, n_subj)
+        beta, _, mse, XtX_inv = reg.run_regression(X, Y.T)
+        _, contrast_tmaps = reg.apply_contrast(beta, XtX_inv, mse)
+
+        # Compute R2 with current weight vector (uniform weights only)
+        Y_hat = X @ beta  # (n_obs, n_vox)
+        R2 = self.get_r2(Y, Y_hat, weights)
+        return beta, contrast_tmaps, R2
     
     def _get_targets(self, permutation):
         """
@@ -183,15 +252,24 @@ class VoxelwiseRegression:
             Y = regressand[:, regression_idx, 0]
         return X, Y, weights
     
-    def _prep_naive_bayes(self, X):
+    def _prep_naive_bayes(self, X, store=False):
         """Precompute per-voxel pseudoinverse and (X^T X)^{-1}."""
-        self.X_inv   = np.empty((self.n_preds, self.n_obs, self.n_voxels), float)      # pinv per voxel (p,n,v)
-        self.XTX_inv = np.empty((self.n_preds, self.n_preds, self.n_voxels), float)      # (X^T X)^{-1} per voxel
-        for vox in range(self.n_voxels):
-            self.X_inv[:, :, vox] = np.linalg.pinv(X[:, :, vox])                    # (p,n)
-            XtX = X[:, :, vox].T @ X[:, :, vox]                                     # (p,p)
-            self.XTX_inv[:, :, vox] = np.linalg.pinv(XtX)
-        return self.X_inv, self.XTX_inv
+        if X.ndim == 2:
+            X_inv = np.linalg.pinv(X)                    # (p,n)
+            XtX = X.T @ X                                # (p,p)
+            XTX_inv = np.linalg.pinv(XtX)
+            return X_inv, XTX_inv
+
+        p, n, v = self.n_preds, self.n_obs, X.shape[2]
+        X_inv = np.empty((p, n, v), float)               # pinv per voxel (p,n,v)
+        XTX_inv = np.empty((p, p, v), float)             # (X^T X)^{-1} per voxel
+        for vox in range(v):
+            X_inv[:, :, vox] = np.linalg.pinv(X[:, :, vox])          # (p,n)
+            XtX = X[:, :, vox].T @ X[:, :, vox]                      # (p,p)
+            XTX_inv[:, :, vox] = np.linalg.pinv(XtX)
+        if store:
+            self.X_inv, self.XTX_inv = X_inv, XTX_inv
+        return X_inv, XTX_inv
     
     ### Statistical Helpers ###
     def _gaussian_kernel(self, X, Y, k, h=2.0, block=250000, eps=1e-300):
@@ -204,16 +282,19 @@ class VoxelwiseRegression:
         h : (1,)
         returns F : (n_obs, n_vox)
         """
+        if X.ndim == 2:
+            X = X[:, :, None]
+        n_obs, _, n_vox = X.shape
         idx = np.flatnonzero(Y)
         if idx.size == 0:
-            return np.full((self.n_obs, self.n_voxels), eps, float)
+            return np.full((n_obs, n_vox), eps, float)
         term1 = 1 / (np.sum(Y) * h * np.sqrt(2*np.pi))
         inv2h2 = 1.0 / (2.0 * h * h)
         Xc = X[idx, k, :]                                    # (N_obs_, v) <- drops axis 1 corresponding to k. 
         
-        F = np.empty((self.n_obs, self.n_voxels), float)
-        for obs_start in range(0, self.n_obs, block):
-            obs_stop = min(obs_start + block, self.n_obs)              # prevent over-slicing
+        F = np.empty((n_obs, n_vox), float)
+        for obs_start in range(0, n_obs, block):
+            obs_stop = min(obs_start + block, n_obs)              # prevent over-slicing
             D2 = (X[obs_start:obs_stop, k, :][:, None, :] - Xc[None, :, :])**2
             term2 = np.exp(-inv2h2 * D2).sum(axis=1)                                # (b-a, v) <- sum over axis 1, the feature axis, collapsing these into observation values at each voxel
             F[obs_start:obs_stop, :] = term1 * np.maximum(term2, eps)
@@ -348,7 +429,7 @@ class VoxelwiseRegression:
             DEN = np.sqrt((DEN * MSE)+e)                                  # (n_contrasts, voxels) <-
         return NUM / (DEN+e)
 
-    def _run_naive_bayes(self, X, Y, W, X_inv, XTX_inv, eps=1e-12):
+    def _run_naive_bayes(self, X, Y, W, X_inv=None, XTX_inv=None, eps=1e-12):
         """
         Binomial case via closed form. 
         log-likelihood(yᵢ|X) = log(pᵢfᵢ(X)/p_jf_j(X)) = b + wTX]
@@ -360,6 +441,10 @@ class VoxelwiseRegression:
         XTX_inv : (n_preds, n_preds, n_voxels)
         returns: WE (p,vox), T (n_contrasts,vox), R2 (McFadden) as (1,vox)
         """
+        if X.ndim == 2:
+            X = X[:, :, None]
+        if X_inv is None or XTX_inv is None:
+            X_inv, XTX_inv = self._prep_naive_bayes(X)
         j, J = (Y == 1), (Y == 0)
         p1 = j.sum() / self.n_obs; p0 = 1.0 - p1
         LL = 0
@@ -369,7 +454,7 @@ class VoxelwiseRegression:
             LL += np.log(p1*num/(p0*den+eps))                       # (n_obs, n_vox) <- (n_obs, n_vox) / (n_obs / n_vox)
         B = np.einsum("pov,ov->pv", X_inv, LL)                      # (n_obs, n_vox) <- (n_obs, n_preds, n_voxels) @ (n_obs, n_voxels)
         # P  = 1.0 / (1.0 + np.exp(-LL))                            # (n_obs, n_vox) # Skipping for speed
-        PR2 = np.zeros((1, self.n_voxels)) # self._get_pseudo_r2(Y, W, P)   # Skipping pseudo-R2 for speed
+        PR2 = np.zeros((1, X.shape[2])) # self._get_pseudo_r2(Y, W, P)   # Skipping pseudo-R2 for speed
         T = self.apply_contrasts(XTX_inv, B, MSE=1)                 # (n_contrast, n_voxels) <- setting MSE = 1 converts this to a Wald t-stat
         return B, T, PR2                    
     
@@ -450,17 +535,56 @@ class VoxelwiseRegression:
         elif self.regression_type=='logistic':
             B, T, R2 = self._run_logistic(X, Y, W)
         elif self.regression_type=='naive_bayes':
-            if self.X_inv is None:          # If this is the first time calling this, must precomputed X inverse and XTX inverse. 
-                self._prep_naive_bayes(X)
-            B, T, R2 = self._run_naive_bayes(X,Y,W, self.X_inv, self.XTX_inv)
+            B, T, R2 = self._run_naive_bayes(X,Y,W)
         else:
             raise ValueError(f"Regression type {self.regression_type} not implemented. Please set regression_type='linear' or 'logistic'.")
         return B, T, R2
-    
+
+    def _run_naive_bayes_batched(self, regressor, regressand, weights, regression_idx, batch_size=5000):
+        """
+        Batch naive_bayes across voxels to avoid huge X_inv/XTX_inv allocations.
+        Supports scalar outcome (Y is 1D). If outcome is voxelwise, falls back to loop.
+        """
+        # If outcome is voxelwise, fall back to looped path (Y differs by voxel).
+        if regressand.shape[2] == self.n_voxels:
+            BETA = np.zeros((self.n_preds, self.n_voxels))
+            T = np.zeros((self.n_contrasts, self.n_voxels))
+            R2 = np.zeros((1, self.n_voxels))
+            for idx in tqdm(range(self.n_voxels), desc='Running voxelwise regressions'):
+                X, Y, W = self._prep_targets(regressor, regressand, weights, idx, regression_idx)
+                BETA[:, idx], T[:, idx], R2[:, idx] = self._run_regression(X, Y, W, idx)
+            return BETA, T, R2
+
+        # Scalar outcome: batch across voxels
+        Y = regressand[:, regression_idx, 0]
+        BETA = np.zeros((self.n_preds, self.n_voxels))
+        T = np.zeros((self.n_contrasts, self.n_voxels))
+        R2 = np.zeros((1, self.n_voxels))
+
+        for s, e in voxel_batches(self.n_voxels, batch_size):
+            # build per-voxel design for batch
+            if regressor.shape[2] == self.n_voxels:
+                Xb = regressor[:, :, s:e]
+            else:
+                Xb = np.broadcast_to(regressor[:, :, 0][:, :, None], (self.n_obs, self.n_preds, e - s)).copy()
+
+            X_inv_b, XTX_inv_b = self._prep_naive_bayes(Xb)
+            B, Tb, R2b = self._run_naive_bayes(Xb, Y, weights, X_inv_b, XTX_inv_b)
+            BETA[:, s:e] = B
+            T[:, s:e] = Tb
+            R2[:, s:e] = R2b
+        return BETA, T, R2
+
     def _looped_vs_broadcast_regression(self, regressor, regressand, weights, regression_idx, permutation):
         """Attemps to do a whole-brain broadcasting if possible. Otherwise defaults to standard looped regression."""
         broadcastable = self._check_broadcastable(permutation)
-        
+
+        if self.regression_type == 'naive_bayes':
+            return self._run_naive_bayes_batched(regressor, regressand, weights, regression_idx)
+
+        if self._can_use_ccm_fast():
+            return self._run_ccm_fast_linear(regressor, regressand, weights, regression_idx)
+
         if not broadcastable:
             BETA = np.zeros((self.n_preds, self.n_voxels))
             T = np.zeros((self.n_contrasts, self.n_voxels))

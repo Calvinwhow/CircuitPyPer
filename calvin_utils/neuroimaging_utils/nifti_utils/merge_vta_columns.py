@@ -4,7 +4,7 @@ from typing import Iterable, List
 
 import pandas as pd
 
-from calvin_utils.ccm_utils.bounding_box import NiftiBoundingBox
+from calvin_utils.neuroimaging_utils.ccm_utils.bounding_box import NiftiBoundingBox
 
 
 class MergeVTAColumns:

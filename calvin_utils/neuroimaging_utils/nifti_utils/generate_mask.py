@@ -3,8 +3,8 @@ from typing import Iterable, List, Tuple
 import numpy as np
 import nibabel as nib
 
-from calvin_utils.ccm_utils.bounding_box import NiftiBoundingBox
-from calvin_utils.nifti_utils.utils_mask import normalize_paths
+from calvin_utils.neuroimaging_utils.ccm_utils.bounding_box import NiftiBoundingBox
+from calvin_utils.neuroimaging_utils.nifti_utils.utils_mask import normalize_paths
 
 
 class GenerateMask:
@@ -43,6 +43,7 @@ class GenerateMask:
         self._mask_img = None
         self._mask_indices = None
         self._collapsed_data = None
+        self.force_reorient = False
 
     # ---- properties ----
     @property
@@ -113,6 +114,7 @@ class GenerateMask:
         if self.verbose:
             print(f"Generating bounding box for {len(self.nifti_paths)} files...")
         bbox = NiftiBoundingBox(self.nifti_paths)
+        bbox.force_reorient = self.force_reorient
         bbox.generate_bounding_box()
         bbox.add_niftis_to_bounding_box()
         self._bbox = bbox

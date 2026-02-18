@@ -6,8 +6,8 @@ import os, numpy as np, matplotlib.pyplot as plt, seaborn as sns, matplotlib
 from typing import List, Tuple
 from itertools import combinations, product
 from calvin_utils.plotting_utils.pair_superiority_plot import PairSuperiorityPlot
-from calvin_utils.ccm_utils.permutation_plot import PermutationVisualizer
-from calvin_utils.ccm_utils.correlations import run_pearson, run_spearman
+from calvin_utils.neuroimaging_utils.ccm_utils.permutation_plot import PermutationVisualizer
+from calvin_utils.neuroimaging_utils.ccm_utils.correlations import run_pearson, run_spearman
 plt.ion()
 
 

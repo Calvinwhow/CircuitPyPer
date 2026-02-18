@@ -2,7 +2,7 @@ from glob import glob
 from nilearn import image
 import os
 import pandas as pd
-from calvin_utils.nifti_utils.matrix_utilities import import_nifti_to_numpy_array
+from calvin_utils.neuroimaging_utils.nifti_utils.matrix_utilities import import_nifti_to_numpy_array
 
 def generate_unique_column_name(file_path: str, seen_names: set) -> str:
     """Generates a unique column name based on the file path and a set of already seen names."""

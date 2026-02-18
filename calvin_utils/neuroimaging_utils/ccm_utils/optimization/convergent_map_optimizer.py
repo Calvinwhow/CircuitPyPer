@@ -2,10 +2,10 @@ import numpy as np
 from tqdm import tqdm
 from time import time
 from scipy.stats import spearmanr
-from calvin_utils.ccm_utils.stat_utils import CorrelationCalculator
-from calvin_utils.ccm_utils.optimization.adam import AdamOptimizer
-from calvin_utils.ccm_utils.optimization.optimal_weights import WeightOptimizer
-from calvin_utils.ccm_utils.optimization.convergence_monitor import ConvergenceMonitor
+from calvin_utils.neuroimaging_utils.ccm_utils.stat_utils import CorrelationCalculator
+from calvin_utils.neuroimaging_utils.ccm_utils.optimization.adam import AdamOptimizer
+from calvin_utils.neuroimaging_utils.ccm_utils.optimization.optimal_weights import WeightOptimizer
+from calvin_utils.neuroimaging_utils.ccm_utils.optimization.convergence_monitor import ConvergenceMonitor
 
 class NiftiOptimizer:
     def __init__(self, corr_map_dict, data_loader, load_in_time=True):

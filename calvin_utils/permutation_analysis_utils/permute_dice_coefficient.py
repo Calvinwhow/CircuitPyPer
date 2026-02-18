@@ -73,7 +73,7 @@ def dice_coefficient(df1: pd.DataFrame, df2: pd.DataFrame) -> float:
     
     return dice_coefficient
 
-from calvin_utils.nifti_utils.matrix_utilities import threshold_matrix
+from calvin_utils.neuroimaging_utils.nifti_utils.matrix_utilities import threshold_matrix
 from calvin_utils.statistical_utils.fisher_z_transform import fisher_z_transform
 from nimlab import datasets as nimds
 

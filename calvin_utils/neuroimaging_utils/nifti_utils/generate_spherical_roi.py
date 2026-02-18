@@ -9,7 +9,7 @@ import nibabel as nib
 import pandas as pd
 from nilearn import plotting
 
-from calvin_utils.nifti_utils.model_vta import ModelVTA
+from calvin_utils.neuroimaging_utils.nifti_utils.model_vta import ModelVTA
 
 
 class SphereROIBuilder:

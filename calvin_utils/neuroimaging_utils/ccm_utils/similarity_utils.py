@@ -8,7 +8,7 @@ from natsort import natsorted
 import matplotlib.pyplot as plt
 from scipy.stats import f_oneway, kruskal, ttest_1samp, pearsonr
 from statsmodels.stats.multicomp import pairwise_tukeyhsd
-from calvin_utils.ccm_utils.stat_utils import CorrelationCalculator
+from calvin_utils.neuroimaging_utils.ccm_utils.stat_utils import CorrelationCalculator
 from calvin_utils.plotting_utils.simple_heatmap import simple_heatmap
 
 class SimilarityTester:

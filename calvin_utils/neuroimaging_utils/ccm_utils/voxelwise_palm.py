@@ -3,7 +3,7 @@ import numpy as np
 import json
 from scipy.stats import pearsonr
 from tqdm import tqdm
-from calvin_utils.ccm_utils.npy_utils import DataLoader
+from calvin_utils.neuroimaging_utils.ccm_utils.npy_utils import DataLoader
 
 # New class for regression analysis using npy files
 class RegressionNPYAnalysis:
