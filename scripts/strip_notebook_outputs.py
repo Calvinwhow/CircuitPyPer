@@ -17,9 +17,6 @@ def strip_outputs(path: str) -> bool:
     """Remove outputs and execution counts; return True if file changed."""
     nb = nbformat.read(path, as_version=nbformat.NO_CONVERT)
     nbformat.validator.normalize(nb)
-    # try:
-    #     validate(nb)
-    # except Exception:
         
     changed = False
 

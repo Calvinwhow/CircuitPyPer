@@ -304,10 +304,10 @@ class VoxelwiseRegression:
         '''Simplified logistic that just works in a voxelwise looped manner'''
         X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
         y = np.nan_to_num(y, nan=0.0, posinf=0.0, neginf=0.0)
-        lr = LogisticRegression(random_sitate=0).fit(X, y, sample_weight=W)
+        lr = LogisticRegression(random_state=0).fit(X, y, sample_weight=W)
         B = lr.coef_
         XTX_inv = np.linalg.pinv( X.T @ X )
-        P = lr.predict(X)
+        P = lr.predict_proba(X)[:, 1]
         return B, XTX_inv, P
 
     def _clipped_sigmoid(self, a, eps=1e-9):
@@ -319,7 +319,7 @@ class VoxelwiseRegression:
         out[~pos] = ea / (1.0 + ea)
         return np.clip(out, eps, 1 - eps)
 
-    def _irls(self, X, Y, B, P, W, eps=1e-9):
+    def _irls(self, X, Y, B, P, W, eps=1e-9, ridge=1e-6):
         '''IRLS from Newton-raphson rewritten in OLS form'''
         V = P * (1.0 - P)                 # bernoulli probability variance function
         V = np.maximum(V, eps)            # add numeric stability
@@ -330,7 +330,7 @@ class VoxelwiseRegression:
         
         X_w = X * s[:, None]               # gets X weighed by ~scaled effective weights
         XtX = X_w.T @ X_w                  # XTWX = covariance matrix = observed fisher info = observed hessian!
-        
+        XtX = XtX + (ridge * np.eye(XtX.shape[0]))
         XtX_inv = np.linalg.pinv(XtX, rcond=1e-10)
         
         B_n = XtX_inv @ (X_w.T @ Z_w)
@@ -345,7 +345,7 @@ class VoxelwiseRegression:
         '''Checks infinity norm'''
         return np.max(np.abs(B_n - B)) < tol
     
-    def _fit_logistic(self, X, Y, W, max_iter=50):
+    def _fit_logistic(self, X, Y, W, max_iter=50, ridge=1e-6, clip=20.0):
         '''
         IRLS for argmax(β) of:
             log-likelihood(β) = Σ_i  W[YβX - log(1 + e^βX)]
@@ -355,14 +355,20 @@ class VoxelwiseRegression:
         n  = Xβ
         '''
         B = np.zeros(self.n_preds)       # init B
+        XtX = None
         for _ in range(max_iter):
             P = self._clipped_sigmoid(X@B)
-            B_n, XtX = self._irls(X, Y, B, P, W)
+            B_n, XtX = self._irls(X, Y, B, P, W, ridge=ridge)
             if self._mahalanobis_norm_test(B_n, B, XtX) or self._infinity_norm_test(B_n, B):
                 B = B_n
                 break
             B = B_n
-        return B, np.linalg.pinv( X.T @ X )
+        if clip is not None:
+            B = np.clip(B, -clip, clip)
+        if XtX is None:
+            XtX = X.T @ X
+        XtX_inv = np.linalg.pinv(XtX, rcond=1e-10)
+        return B, XtX_inv
     
     #### Regression Methods ####
     def get_r2(self, Y, Y_HAT, W, e=1e-6):
