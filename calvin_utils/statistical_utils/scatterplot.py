@@ -4,7 +4,7 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 from scipy.stats import spearmanr, pearsonr, kendalltau
 
-def simple_scatter(df, x_col, y_col, dataset_name, out_dir, y_label='y Axis', x_label='x Axis', flip_axes=False):
+def simple_scatter(df, x_col, y_col, dataset_name, out_dir, y_label='y Axis', x_label='x Axis', flip_axes=False, ax=None, show=True, label_fontsize=20):
     """
     Generate and save a scatterplot of x_col vs. y_col with Spearman and Pearson correlation.
 
@@ -24,6 +24,12 @@ def simple_scatter(df, x_col, y_col, dataset_name, out_dir, y_label='y Axis', x_
         'cosine' or other, used for x-axis label.
     flip_axes : bool
         Plot X on Y and Y on X.
+    ax : matplotlib.axes.Axes, optional
+        Axes to plot into. If None, a new figure is created.
+    show : bool
+        Whether to call plt.show().
+    label_fontsize : int
+        Fontsize for x/y axis labels.
     """
     # Drop NaNs from both columns before plotting/correlation
     valid_idx = df[[x_col, y_col]].dropna().index
@@ -35,40 +41,50 @@ def simple_scatter(df, x_col, y_col, dataset_name, out_dir, y_label='y Axis', x_
 
     plot_df = pd.DataFrame({x_col: x_vals, y_col: y_vals})
 
-    plt.figure(figsize=(6, 6))
-    if flip_axes:
-        sns.lmplot(data=plot_df, x=y_col, y=x_col, height=6, aspect=1,
-                   scatter_kws={'alpha': 0.98, 'color': '#8E8E8E', 's': 150, 'edgecolors': 'white', 'linewidth': 2, 'zorder': 3},
-                   line_kws={'color': '#8E8E8E', 'zorder': 2})
-    else:
-        sns.lmplot(data=plot_df, x=x_col, y=y_col, height=6, aspect=1,
-                   scatter_kws={'alpha': 0.98, 'color': '#8E8E8E', 's': 150, 'edgecolors': 'white', 'linewidth': 2, 'zorder': 3},
-                   line_kws={'color': '#8E8E8E', 'zorder': 2})
+    scatter_kws = {'alpha': 0.98, 'color': '#8E8E8E', 's': 150, 'edgecolors': 'white', 'linewidth': 2, 'zorder': 3}
+    line_kws = {'color': '#8E8E8E', 'zorder': 2}
 
-    plt.title(f"{dataset_name}", fontsize=20)
-    plt.xlabel(x_label, fontsize=20)
-    plt.ylabel(y_label, fontsize=20)
+    if ax is None:
+        if flip_axes:
+            g = sns.lmplot(data=plot_df, x=y_col, y=x_col, height=6, aspect=1,
+                           scatter_kws=scatter_kws, line_kws=line_kws)
+        else:
+            g = sns.lmplot(data=plot_df, x=x_col, y=y_col, height=6, aspect=1,
+                           scatter_kws=scatter_kws, line_kws=line_kws)
+        ax = g.ax
+    else:
+        if flip_axes:
+            sns.regplot(data=plot_df, x=y_col, y=x_col, ax=ax,
+                        scatter_kws=scatter_kws, line_kws=line_kws)
+        else:
+            sns.regplot(data=plot_df, x=x_col, y=y_col, ax=ax,
+                        scatter_kws=scatter_kws, line_kws=line_kws)
+
+    ax.set_title(f"{dataset_name}", fontsize=20)
+    ax.set_xlabel(x_label, fontsize=label_fontsize)
+    ax.set_ylabel(y_label, fontsize=label_fontsize)
 
     x_pos = 0.05
     y_pos = 0.95 if rho > 0 else 0.15
-    plt.text(
+    ax.text(
         x_pos, y_pos,
         f"Rho = {rho:.2f}, p = {p:.2e}\nR = {r:.2f}, p = {pr:.2e}",
         fontsize=16,
-        transform=plt.gca().transAxes,
+        transform=ax.transAxes,
         verticalalignment='top',
         bbox=dict(facecolor='white', alpha=0, edgecolor='none')
     )
 
-    ax = plt.gca()
     ax.tick_params(axis='both', labelsize=16)
     for spine in ax.spines.values():
         spine.set_linewidth(2)
     
     if out_dir is not None:
         os.makedirs(os.path.join(out_dir, 'scatterplots'), exist_ok=True)
-        plt.savefig(os.path.join(out_dir, f"scatterplots/{dataset_name}_scatterplot.svg"), bbox_inches="tight")
-    plt.show()
+        ax.figure.savefig(os.path.join(out_dir, f"scatterplots/{dataset_name}_scatterplot.svg"), bbox_inches="tight")
+    if show:
+        plt.show()
+    return ax
 
 
 class SimpleScatterPlotWrapper:
@@ -83,7 +99,7 @@ class SimpleScatterPlotWrapper:
     def __init__(self, df):
         self.df = df
 
-    def plot(self, x_col, y_col, dataset_name="Scatter Plot", out_dir=None, x_label=None, y_label=None, flip_axes=False):
+    def plot(self, x_col, y_col, dataset_name="Scatter Plot", out_dir=None, x_label=None, y_label=None, flip_axes=False, ax=None, show=True, label_fontsize=20):
         return simple_scatter(
             df=self.df,
             x_col=x_col,
@@ -93,6 +109,9 @@ class SimpleScatterPlotWrapper:
             x_label=x_label or x_col,
             y_label=y_label or y_col,
             flip_axes=flip_axes,
+            ax=ax,
+            show=show,
+            label_fontsize=label_fontsize,
         )
 
 

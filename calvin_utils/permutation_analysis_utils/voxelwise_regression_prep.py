@@ -1,3 +1,7 @@
+import warnings
+
+warnings.filterwarnings("ignore")
+
 import os
 import json
 import numpy as np
@@ -99,7 +103,6 @@ class RegressionPrep:
     def _prep_paths(self, df, term):
         """Ensure the result is a flat list of strings (paths)"""
         paths = df[term].values
-        print("paths are: ", len(paths))
         if isinstance(paths, np.ndarray):
             paths = paths.flatten().tolist()
         elif hasattr(paths, 'tolist'):
@@ -208,14 +211,37 @@ class RegressionPrep:
         return ranks.reshape(arr.shape)
     
     ### INTERNAL REGRESSION MATRIX PREP ####
+    def _interaction_case(self, term1: str, term2: str) -> str:
+        """Classify interaction type: voxelwise-voxelwise, voxelwise-scalar, scalar-scalar."""
+        in_vox1 = term1 in self.voxelwise_variables
+        in_vox2 = term2 in self.voxelwise_variables
+        if in_vox1 and in_vox2:
+            return "voxelwise_voxelwise"
+        if in_vox1 or in_vox2:
+            return "voxelwise_scalar"
+        return "scalar_scalar"
+
     def _apply_interactions(self, voxelwise_data):
-        '''Grabs the voxelwise data and multiplies it by the scalar term'''
+        '''Apply interactions involving voxelwise terms.'''
         for col in self.voxelwise_interactions:
             term1, term2 = [x.strip() for x in (col.split(':') if ':' in col else col.split('*'))]
-            voxel_term = term1 if term1 in self.voxelwise_variables else term2
-            scalar_term = term2 if voxel_term == term1 else term1            
-            interaction_values = self.design_matrix[scalar_term].values.astype(float)
-            voxelwise_data[col] = voxelwise_data[voxel_term] * interaction_values
+            case = self._interaction_case(term1, term2)
+
+            if case == "voxelwise_voxelwise":
+                voxelwise_data[col] = voxelwise_data[term1] * voxelwise_data[term2]
+                continue
+
+            if case == "voxelwise_scalar":
+                voxel_term = term1 if term1 in self.voxelwise_variables else term2
+                scalar_term = term2 if voxel_term == term1 else term1
+                interaction_values = self.design_matrix[scalar_term].values.astype(float)
+                voxelwise_data[col] = voxelwise_data[voxel_term] * interaction_values
+                continue
+
+            raise ValueError(
+                f"Interaction '{col}' has no voxelwise term. "
+                "Use scalar interactions outside voxelwise_interactions."
+            )
         return voxelwise_data
     
     def _prepare_voxelwise_terms(self):

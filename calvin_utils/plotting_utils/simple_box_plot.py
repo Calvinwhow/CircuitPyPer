@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
-from scipy.stats import f_oneway, ttest_1samp, ttest_ind
+from scipy.stats import f_oneway, ttest_1samp, ttest_ind, mannwhitneyu
 import statsmodels.formula.api as smf
 from statsmodels.stats.anova import anova_lm
 
@@ -418,7 +418,8 @@ class SimpleBoxPlotPair(SimpleBoxPlot):
             g2 = self.df.loc[self.df[self.group_col] == order[1], self.value_col].dropna()
             if len(g1) and len(g2):
                 t_stat, p_val = ttest_ind(g1, g2, equal_var=False)
-                text = f"t = {t_stat:.2f}, p = {p_val:.2e}"
+                u_stat, pu_val = mannwhitneyu(g1, g2)
+                text = f"t = {t_stat:.2f}, p = {p_val:.2e}\nU = {u_stat:.2f}, p = {pu_val:.2e}"
             else:
                 text = "t = NaN, p = NaN"
         ax.text(
@@ -459,6 +460,8 @@ class SimpleBoxPlotWrapper:
         if any(isinstance(c, (list, tuple)) for c in columns):
             if pair_names is None:
                 pair_names = ["A", "B"]
+            if not isinstance(pair_names, (list, tuple)) or len(pair_names) != 2:
+                raise ValueError("pair_names must be a 2-item list/tuple like ['A', 'B'].")
             if group_labels is None:
                 group_labels = [f"metric_{i}" for i in range(len(columns))]
             if len(group_labels) != len(columns):

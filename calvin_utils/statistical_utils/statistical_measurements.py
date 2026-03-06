@@ -22,6 +22,7 @@ import numpy as np
 
 # For PDD
 import statsmodels.discrete.discrete_model as smd
+from calvin_utils.statistical_utils.scatterplot import simple_scatter
 
 def calculate_vif(df):
 
@@ -712,13 +713,56 @@ class PartialRegressionPlot():
         sns.set_palette(palette, 1, desat=1)
         sns.set_style('white')
 
+    def _get_exog_df(self):
+        if self.design_matrix is not None:
+            if isinstance(self.design_matrix, pd.DataFrame):
+                x_df = self.design_matrix.copy()
+            else:
+                x_df = pd.DataFrame(self.design_matrix, columns=self.model.model.exog_names)
+        else:
+            x_df = pd.DataFrame(self.model.model.exog, columns=self.model.model.exog_names)
+        return x_df
+
+    def _get_predictor_columns(self, x_df):
+        exog_names = list(getattr(self.model.model, 'exog_names', x_df.columns))
+        candidates = []
+        for col in exog_names:
+            if col not in x_df.columns:
+                continue
+            if col.lower() in {'intercept', 'const'}:
+                continue
+            if pd.Series(x_df[col]).nunique(dropna=False) <= 1:
+                continue
+            candidates.append(col)
+        if not candidates:
+            candidates = [c for c in x_df.columns if c.lower() not in {'intercept', 'const'}]
+        return candidates
+
+    def _calc_grid(self, n_plots):
+        if n_plots <= 0:
+            return 1, 1
+        n_rows = (n_plots + 1) // 2
+        n_cols = 1 if n_rows == n_plots else 2
+        return n_rows, n_cols
+
+    def _partial_residuals(self, y_vals, exog, idx):
+        others = [i for i in range(exog.shape[1]) if i != idx]
+        if len(others) == 0:
+            return exog[:, idx], y_vals
+        X_others = exog[:, others]
+        res_y = sm.OLS(y_vals, X_others).fit()
+        res_x = sm.OLS(exog[:, idx], X_others).fit()
+        return res_x.resid, res_y.resid
+
     def plot_and_save_partregress(self):
         # Adjust the size of the figure based on the number of columns
-        if self.design_matrix is not None:
-            num_cols = len(self.design_matrix.columns)
-            fig_size = ((num_cols*2), (num_cols*2))  
-            plt.figure(figsize=fig_size)
-            sm.graphics.plot_partregress_grid(self.model, fig=plt.gcf())
+        x_df = self._get_exog_df()
+        predictors = self._get_predictor_columns(x_df)
+        if len(predictors) > 0:
+            n_rows, n_cols = self._calc_grid(len(predictors))
+            fig_size = (n_cols * 6, n_rows * 6)
+            fig = plt.figure(figsize=fig_size)
+            sm.graphics.plot_partregress_grid(self.model, exog_idx=predictors, fig=fig, grid=(n_rows, n_cols))
         else:
             sm.graphics.plot_partregress_grid(self.model)
         
@@ -726,15 +770,72 @@ class PartialRegressionPlot():
             # Save the figure in PNG and SVG formats
             plt.savefig(f"{self.out_dir}/partial_regression_plot.png", bbox_inches='tight')
             plt.savefig(f"{self.out_dir}/partial_regression_plot.svg", bbox_inches='tight')
-            print(f'Saved to {self.out_dir}/partial_regression_plot.svg')
+            print(f"Saved to {self.out_dir}/partial_regression_plot.svg")
 
         # Display the plot
         plt.show()
         return plt
+
+    def plot_and_save_scattergrid(self):
+        # Build the plotting DataFrame
+        x_df = self._get_exog_df()
+        predictors = self._get_predictor_columns(x_df)
+        x_df = x_df.loc[:, predictors]
+
+        y_vals = np.asarray(self.model.model.endog)
+        y_name = getattr(self.model.model, 'endog_names', 'y')
+        exog = np.asarray(self.model.model.exog)
+        exog_names = list(self.model.model.exog_names)
+
+        if len(predictors) == 0:
+            raise ValueError("No predictor columns available for plotting.")
+
+        # Layout: roughly square grid
+        n = len(predictors)
+        n_rows, n_cols = self._calc_grid(n)
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=(n_cols * 6, n_rows * 6))
+        axes = np.array(axes).reshape(-1)
+
+        for ax, col in zip(axes, predictors):
+            if col not in exog_names:
+                continue
+            idx = exog_names.index(col)
+            x_resid, y_resid = self._partial_residuals(y_vals, exog, idx)
+            plot_df = pd.DataFrame({col: x_resid, y_name: y_resid})
+            simple_scatter(
+                df=plot_df,
+                x_col=col,
+                y_col=y_name,
+                dataset_name="Partial Regression Plot",
+                out_dir=None,
+                x_label=f"e({col} | X)",
+                y_label=f"e({y_name} | X)",
+                flip_axes=False,
+                ax=ax,
+                show=False,
+                label_fontsize=12
+            )
+
+        # Hide unused axes
+        for ax in axes[len(predictors):]:
+            ax.axis('off')
+
+        plt.tight_layout()
+        if self.out_dir:
+            plt.savefig(f"{self.out_dir}/partial_regression_scattergrid.png", bbox_inches='tight')
+            plt.savefig(f"{self.out_dir}/partial_regression_scattergrid.svg", bbox_inches='tight')
+            print(f"Saved to {self.out_dir}/partial_regression_scattergrid.svg")
+
+        plt.show()
+        return plt
     
     def run(self):
-        plt = self.plot_and_save_partregress()
-        return plt
+        self.last_fig = self.plot_and_save_partregress()
+        return self
+
+    def run_scattergrid(self):
+        self.last_scattergrid_fig = self.plot_and_save_scattergrid()
+        return self
 
 class ForestPlot():
     '''
