@@ -70,7 +70,7 @@ class VoxelwiseRegression:
         Runs weighted linear regression for a single voxel.
     voxelwise_regression(permutation=False)
         Performs voxelwise regression across all voxels, optionally with permutation.
-    _get_max_stat(arr, pseudo_var_smooth=True, t=75)
+    _get_max_stat(arr, pseudo_var_smooth=True, t=99.99)
         Computes the maximum (or high percentile) statistic for permutation testing.
     run_permutation(n_permutations)
         Runs permutation testing to compute FWE-corrected p-values for T and R2.
@@ -609,7 +609,7 @@ class VoxelwiseRegression:
         return self._looped_vs_broadcast_regression(regressor, regressand, weights, regression_idx, permutation)
     
     ### P-VALUE METHODS ###
-    def _get_max_stat(self, arr, pseudo_var_smooth=True, t=95):
+    def _get_max_stat(self, arr, pseudo_var_smooth=True, t=99.99):
         """Return the 99.9th percentile of the absolute values in arr. Or just the raw maximum if pseudo_var_smooth is false (this is subject to chaotic noise)."""
         if pseudo_var_smooth:        
             return np.nanpercentile(np.abs(arr), t, axis=1)  # Calculate along rows, ignoring NaNs

@@ -4,7 +4,7 @@ import shutil
 import os 
 
 from ..nifti_utils.generate_nifti import view_and_save_nifti
-from ..file_utils.import_functions import GiiNiiFileImport
+from calvin_utils.file_utils.import_functions import GiiNiiFileImport
 
 # User-defined variables
 root_dir = r"/Users/cu135/Dropbox (Partners HealthCare)/resources/datasets/Queensland_PD_DBS_STN/BIDSdata/derivatives/leaddbs"
