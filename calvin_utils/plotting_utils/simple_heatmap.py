@@ -36,6 +36,7 @@ def simple_heatmap(
     label_fontsize: int = 20,
     tick_fontsize: int = 16,
     spine_width: int = 2,
+    remove_diag: bool = False,
 ):
     """
     Simple heatmap with consistent styling and flexible colormap logic.
@@ -50,7 +51,8 @@ def simple_heatmap(
     if mask_half:
         matrix = pd.DataFrame(np.tril(matrix.to_numpy()), index=matrix.index, columns=matrix.columns)
 
-    np.fill_diagonal(matrix.values, np.nan)
+    if remove_diag:
+        np.fill_diagonal(matrix.values, np.nan)
 
     cmap = None
     norm = None

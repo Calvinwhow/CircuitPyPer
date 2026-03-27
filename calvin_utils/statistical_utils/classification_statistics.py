@@ -336,7 +336,7 @@ class MulticlassClassificationEvaluation:
     Normalize by all elements ('all') for a comprehensive view of the model's performance relative to the total number of observations.
     """
     
-    def __init__(self, fitted_model, observation_df, normalization=None, predictions_df=None, out_dir=None, thresholds=None, assign_labels=True):
+    def __init__(self, fitted_model, observation_df, normalization=None, predictions_df=None, out_dir=None, thresholds=None, assign_labels=True, exog_df=None):
         """
         Initializes the ModelEvaluation with model results and the true outcomes.
         
@@ -350,12 +350,49 @@ class MulticlassClassificationEvaluation:
                                 If set to False, we will organize our confusion matrix as per scipy's order. 
         """
         self.results = fitted_model
-        self.outcome_matrix = observation_df
+        self.outcome_matrix, self.class_labels = self._coerce_observation_df(observation_df)
         self.normalization = normalization
         self.predictions_df = predictions_df
         self.out_dir = out_dir
         self.thresholds = thresholds
         self.assign_labels = assign_labels
+        self.exog_df = exog_df
+
+    @staticmethod
+    def _coerce_observation_df(observation_df):
+        """
+        Accepts ordinal labels or one-hot observations.
+        - If one-hot DataFrame (cols > 1): return as-is.
+        - If ordinal (Series/array or single-col DataFrame):
+            * for multiclass (n_classes > 2): return one-hot DataFrame
+            * for binary: return single-col DataFrame
+        Returns (outcome_df, class_labels)
+        """
+        if isinstance(observation_df, pd.DataFrame):
+            if observation_df.shape[1] > 1:
+                class_labels = list(observation_df.columns)
+                return observation_df, class_labels
+            labels = observation_df.iloc[:, 0].to_numpy()
+            label_name = observation_df.columns[0]
+        elif isinstance(observation_df, pd.Series):
+            labels = observation_df.to_numpy()
+            label_name = observation_df.name or "class"
+        else:
+            labels = np.asarray(observation_df)
+            label_name = "class"
+
+        labels = labels.reshape(-1)
+        class_labels = sorted(np.unique(labels))
+        n_classes = len(class_labels)
+
+        if n_classes > 2:
+            outcome_df = pd.get_dummies(labels)
+            # ensure deterministic column order
+            outcome_df = outcome_df.reindex(columns=class_labels)
+            outcome_df.columns = [str(c) for c in class_labels]
+        else:
+            outcome_df = pd.DataFrame(labels, columns=[str(label_name)])
+        return outcome_df, class_labels
     
     def relate_index_to_class(self):
         print("Note: The rasterized probability plot show the probability of the correect class by default.")
@@ -437,7 +474,10 @@ class MulticlassClassificationEvaluation:
         if self.predictions_df is not None:
             self.raw_predictions = self.predictions_df.to_numpy()
         else:
-            self.raw_predictions = self.results.predict()
+            if self.exog_df is not None:
+                self.raw_predictions = self.results.predict(self.exog_df)
+            else:
+                self.raw_predictions = self.results.predict()
             
         if self.thresholds is None:
             print("Taking maximum probability as prediction.")
@@ -448,7 +488,20 @@ class MulticlassClassificationEvaluation:
         else:
             print("Applying prescribed thresholds for prediction.")
             self.predictions = self.apply_manual_thresholds()
-        self.predictions_df = pd.DataFrame(self.raw_predictions, columns=self.outcome_matrix.columns)
+        if len(self.raw_predictions.shape) == 1:
+            cols = list(self.outcome_matrix.columns)
+        else:
+            if hasattr(self, "class_labels") and len(self.class_labels) == self.raw_predictions.shape[1]:
+                cols = [str(c) for c in self.class_labels]
+            else:
+                cols = [f"class_{i}" for i in range(self.raw_predictions.shape[1])]
+        self.predictions_df = pd.DataFrame(self.raw_predictions, columns=cols)
+        if len(self.predictions_df) != len(self.outcome_matrix):
+            raise ValueError(
+                f"Predictions length ({len(self.predictions_df)}) does not match "
+                f"observations length ({len(self.outcome_matrix)}). "
+                "If you are evaluating on new data, pass `exog_df` or `predictions_df`."
+            )
     
     def get_observations(self):
         """

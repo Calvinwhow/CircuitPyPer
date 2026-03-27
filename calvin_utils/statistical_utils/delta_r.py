@@ -776,3 +776,238 @@ def save_dicts_as_py(out_dir, **dicts):
             print(f"Successfully saved {file_name}.py")
         except Exception as e:
             print(f"An unexpected error occurred while saving {file_name}.py: {e}")
+
+
+from contextlib import contextmanager
+from itertools import combinations
+from scipy.stats import t
+
+
+class DeltaCorrelationAnalysis:
+    """Multigroup Pearson-r analysis with bootstraps, permutations, and plots."""
+
+    # ---------- basic ----------
+    def __init__(self, df: pd.DataFrame):
+        self.df = df.copy(deep=False)
+        self.boot_corrs: dict[str, np.ndarray] = {}
+        self.perm_results: dict[tuple[str, str], tuple[float, float]] = {}
+
+    @contextmanager
+    def _use_df(self, df: pd.DataFrame):
+        old_df = self.df
+        self.df = df
+        try:
+            yield
+        finally:
+            self.df = old_df
+
+    def _one_vs_rest_df(self, group: str, focus_category: str, rest_label: str) -> pd.DataFrame:
+        if focus_category not in set(self.df[group].dropna().unique()):
+            raise ValueError(
+                f"focus_category '{focus_category}' not found in column '{group}'."
+            )
+        df = self.df.copy()
+        df[group] = np.where(df[group] == focus_category, focus_category, rest_label)
+        return df
+
+    # ---------- statistics ----------
+    @staticmethod
+    def _analytic_ci(x, y, x_grid):
+        slope, intercept = np.polyfit(x, y, 1)
+        y_fit = slope * x_grid + intercept
+
+        resid = y - (slope * x + intercept)
+        stderr = np.sqrt(resid.dot(resid) / (len(y) - 2))
+        t_val = t.ppf(0.975, len(y) - 2)
+        ci = t_val * stderr * np.sqrt(
+            1 / len(x) + (x_grid - x.mean()) ** 2 / ((x - x.mean()) ** 2).sum()
+        )
+        return y_fit - ci, y_fit, y_fit + ci
+
+    def bootstrap_correlations(self, x, y, group, n=1000, seed=None, focus_category=None, rest_label="all_other"):
+        if focus_category is not None:
+            df = self._one_vs_rest_df(group, focus_category, rest_label)
+        else:
+            df = self.df
+
+        rng = np.random.default_rng(seed)
+        for g, sub in df.groupby(group):
+            print(f"Group '{g}' has {len(sub)} values.")
+            r = np.empty(n)
+            for i in range(n):
+                boot = sub.sample(len(sub), replace=True, random_state=rng.integers(2**32))
+                r[i] = boot[x].corr(boot[y])
+            self.boot_corrs[g] = r
+        return self.boot_corrs
+
+    def permute_delta_r(self, x, y, group, pairs=None, n=10000, seed=None, absval=False,
+                        focus_category=None, rest_label="all_other"):
+        if focus_category is not None:
+            df = self._one_vs_rest_df(group, focus_category, rest_label)
+            pairs = [(focus_category, rest_label)]
+        else:
+            df = self.df
+
+        if pairs is None:
+            pairs = combinations(df[group].unique(), 2)
+        rng = np.random.default_rng(seed)
+
+        for a, b in pairs:
+            sub_a = df[df[group] == a]
+            sub_b = df[df[group] == b]
+            n_a, n_b = len(sub_a), len(sub_b)
+
+            if absval:
+                obs = np.abs(sub_a[x].corr(sub_a[y])) - np.abs(sub_b[x].corr(sub_b[y]))
+            else:
+                obs = sub_a[x].corr(sub_a[y]) - sub_b[x].corr(sub_b[y])
+
+            joined = pd.concat([sub_a, sub_b], ignore_index=True)
+            diffs = np.empty(n)
+            for i in range(n):
+                shuffle = rng.permutation(n_a + n_b)
+                pa = joined.iloc[shuffle[:n_a]]
+                pb = joined.iloc[shuffle[n_a:]]
+                if absval:
+                    diffs[i] = np.abs(pa[x].corr(pa[y])) - np.abs(pb[x].corr(pb[y]))
+                else:
+                    diffs[i] = pa[x].corr(pa[y]) - pb[x].corr(pb[y])
+            p_val = (np.abs(diffs) >= abs(obs)).mean()
+            self.perm_results[(a, b)] = (obs, p_val)
+
+        return self.perm_results
+
+    # ---------- plotting ----------
+    def scatter(self, x, y, group, palette="tab10", alpha=.3, figsize=(4, 5), point_hue=None, point_palette="tab20"):
+        plt.rcParams.update({'font.family': 'Helvetica', 'font.size': 16})  # Set font to Helvetica 16
+        fig, ax = plt.subplots(figsize=figsize)
+        if point_hue is None:
+            hue_vals = sorted(self.df[group].dropna().unique())
+            hue_cols = sns.color_palette(palette, len(hue_vals))
+            colour_map = dict(zip(hue_vals, hue_cols))
+
+            for g, col in colour_map.items():
+                sub = self.df[self.df[group] == g]
+                ax.scatter(sub[x], sub[y], color=col, s=20, alpha=alpha, label=g)
+        else:
+            hue_vals = sorted(self.df[point_hue].dropna().unique())
+            hue_cols = sns.color_palette(point_palette, len(hue_vals))
+            colour_map = dict(zip(hue_vals, hue_cols))
+
+            for h in hue_vals:
+                sub = self.df[self.df[point_hue] == h]
+                ax.scatter(sub[x], sub[y], color=colour_map[h], s=20, alpha=alpha, label=str(h), edgecolors="none")
+
+        # ------------ 2) regression lines per GROUP -------------------
+        grp_vals = sorted(self.df[group].dropna().unique())
+        line_cols = sns.color_palette(palette, len(grp_vals))
+        x_grid = np.linspace(self.df[x].min(), self.df[x].max(), 400)
+
+        for g, col in zip(grp_vals, line_cols):
+            sub = self.df[self.df[group] == g]
+            y_lo, y_fit, y_hi = self._analytic_ci(sub[x], sub[y], x_grid)
+            ax.plot(x_grid, y_fit, color=col, linewidth=2.0, label=f"fit {g}")
+            ax.fill_between(x_grid, y_lo, y_hi, color=col, alpha=alpha / 4)
+
+        # ------------ 3) permutation text (if already computed) -------
+        if self.perm_results:
+            txt = "\n".join(
+                f"{a}–{b}: Δr={d:.2f}, p={p:.3f}"
+                for (a, b), (d, p) in self.perm_results.items()
+            )
+            ax.set_title(txt, fontsize=9)
+
+        ax.set_xlabel(x)
+        ax.set_ylabel(y)
+        sns.despine(ax=ax)
+        ax.legend(frameon=False)
+        return fig
+
+    # ---------- plotting ----------
+    def boxplot_boot(self, x: str, y: str, group: str, *,
+        xlim=None, horiz: bool = True, figsize=(4, 4), out_path: str | None = None):
+        """
+        Box-plots of bootstrapped Pearson-r per group with observed r over-laid.
+        Call `bootstrap_correlations` first (or `run`).
+
+        Parameters
+        ----------
+        x, y        : column names whose correlation is analysed.
+        group       : column name used to split the data.
+        xlim        : limits for the correlation axis.
+        horiz       : plot horizontally (True) or vertically (False).
+        """
+        if not self.boot_corrs:
+            raise RuntimeError("Run bootstrap_correlations (or run) first.")
+
+        # long-form DF for Seaborn
+        df_long = (pd.DataFrame(self.boot_corrs).melt(var_name="Group", value_name="r").dropna())
+
+        if xlim is not None: 
+            xlim=xlim
+        elif any (df_long.groupby("Group")["r"].mean() < 0):
+            xlim=(-1, 1)
+        else:
+            xlim=(0, 1)
+
+        fig = plt.figure(figsize=figsize)
+        orient = "h" if horiz else "v"
+
+        if horiz:
+            sns.boxplot(data=df_long, x="r", y="Group", orient=orient, palette="coolwarm")
+            plt.xlim(*xlim)
+            plt.xlabel("Pearson r")
+            plt.ylabel(group)
+        else:
+            sns.boxplot(data=df_long, x="Group", y="r", orient=orient, palette="coolwarm")
+            plt.ylim(*xlim)
+            plt.ylabel("Pearson r")
+            plt.xlabel(group)
+        plt.legend(frameon=False)
+        sns.despine()
+
+        if out_path:
+            fig.savefig(out_path, bbox_inches="tight")
+        return fig
+
+    # ---------- orchestration function ----------
+    def run(self, x: str, y: str, group: str, n_boot: int = 1000, n_perm: int = 10000, absval=True,
+        palette: str = "tab10", alpha: float = 1, xlim: tuple[float, float] = (-1, 1),
+        horiz_box: bool = True, out_dir: str | None = None, seed: int | None = None, figsize=(4, 4.5),
+        point_hue: str | None = None, point_palette: str = "tab20",
+        focus_category: str | None = None, rest_label: str = "all_other"):
+        """
+        One-liner entry: does bootstraps, permutations, scatter & box-plot.
+        If focus_category is provided, all non-focus rows are grouped into `rest_label`.
+        """
+        # Print the number of unique values in the group
+        unique_groups = self.df[group].nunique()
+        print(f"Number of unique groups in '{group}': {unique_groups}")
+
+        if focus_category is None:
+            # 1) statistics
+            self.bootstrap_correlations(x, y, group, n=n_boot, seed=seed)
+            self.permute_delta_r(x, y, group, n=n_perm, seed=seed, absval=absval)
+
+            # 2) figures
+            sc_fig = self.scatter(x, y, group, palette=palette, alpha=alpha, figsize=figsize,
+                                  point_hue=point_hue, point_palette=point_palette)
+            bx_fig = self.boxplot_boot(x, y, group, xlim=xlim, horiz=horiz_box, figsize=figsize)
+        else:
+            temp_df = self._one_vs_rest_df(group, focus_category, rest_label)
+            with self._use_df(temp_df):
+                # 1) statistics
+                self.bootstrap_correlations(x, y, group, n=n_boot, seed=seed)
+                self.permute_delta_r(x, y, group, n=n_perm, seed=seed, absval=absval)
+
+                # 2) figures
+                sc_fig = self.scatter(x, y, group, palette=palette, alpha=alpha, figsize=figsize,
+                                      point_hue=point_hue, point_palette=point_palette)
+                bx_fig = self.boxplot_boot(x, y, group, xlim=xlim, horiz=horiz_box, figsize=figsize)
+
+        # 3) save, if requested
+        if out_dir:
+            sc_fig.savefig(f"{out_dir}/scatter.svg", bbox_inches="tight")
+            bx_fig.savefig(f"{out_dir}/boot_box.svg", bbox_inches="tight")
+
+        return sc_fig, bx_fig
