@@ -289,26 +289,27 @@ class VoxelwiseRegression:
         XtX_inv = np.linalg.pinv(XtX, rcond=1e-10)
         return B, XtX_inv
     
-    def get_r2(self, Y, Y_HAT, W, e=1e-6):
+    def get_r2(self, Y, Y_HAT, W, eps=1e-12):
         """
-        Weighted R^2: 1 - SSE_w / TSS_w
-        Y      : (o,)
-        Y_HAT  : (o,) or (o,vox)
-        W      : (o,)
-        Return : scalar if Y_HAT is (o,), else (1,vox)
+        Weighted R^2 = 1 - SSE_w / TSS_w
+
+        Y     : (n_obs,) or (n_obs, n_targets)
+        Y_HAT : (n_obs,) or (n_obs, n_targets)
+        W     : (n_obs,)
         """
-        wsum = W.sum()
-        W = W[:, np.newaxis]
-        ybar_w = (W * Y).sum() / wsum   # scalar weighted mean
-        
-        if Y_HAT.ndim == 1: # (o,)
-            sse = np.sum(W * (Y - Y_HAT) ** 2)               # scalar
-            tss = np.sum(W * (Y - ybar_w) ** 2)              # scalar
-            return 1 - (sse / (tss + e))                     # scalar
-        elif Y_HAT.ndim == 2: # (o, v)
-            sse = np.sum(W[:, None] * (Y[:, None] - Y_HAT) ** 2, axis=0, keepdims=True)              # (1, v)
-            tss = np.sum(W * (Y - ybar_w) ** 2)              # scalar
-            return 1 - (sse / (tss + e))                     # (1, v)
+        if Y.ndim == 1:
+            Y = Y[:, None]
+        if Y_HAT.ndim == 1:
+            Y_HAT = Y_HAT[:, None]
+
+        W = W[:, None]                                         # (n_obs, 1)
+        wsum = np.sum(W, axis=0)                               # (1,)
+        ybar_w = np.sum(W * Y, axis=0) / (wsum + eps)         # (n_targets,)
+
+        sse = np.sum(W * (Y - Y_HAT) ** 2, axis=0)            # (n_targets,)
+        tss = np.sum(W * (Y - ybar_w[None, :]) ** 2, axis=0)  # (n_targets,)
+
+        return 1.0 - (sse / (tss + eps))
     
     def _get_pseudo_r2(self, Y, W, P, eps=1e-9):
         '''
@@ -449,39 +450,42 @@ class VoxelwiseRegression:
         dof = self.n_obs - self.n_preds                             # (1,)
         MSE = np.sum(W[:, None] * RES**2, axis=0) / dof             # (1, n_voxels) <- summed (n_obs, )^2
         T = self.apply_contrasts(XtX_inv, BETA, MSE)                # (n_contrasts, n_voxels) <- (n_cov, n_voxels) / (n_cov, n_voxels)
-        R2 = self.get_r2(Y.flatten(), Y_HAT, W.flatten())           # (1, n_voxels)
+        R2 = self.get_r2(Y, Y_HAT, W)                               # (1, n_voxels)
         return BETA, T, R2
     
     def _run_linear(self, X, Y, W):
         """
-        Runs a standard linear regression. Gets Betas and T values.
-            
+        Weighted linear regression.
+
         Parameters
         ----------
-        X : (n_obs, n_preds) design matrix
-        Y : (n_obs, n_voxels) outcome data
-        W : (n_obs,) weights  (use w_i = sample_size_i  or any precision proxy)
+        X : (n_obs, n_preds)
+        Y : (n_obs,) or (n_obs, n_targets)
+        W : (n_obs,)
         """
-        wsqrt = np.sqrt(W)                                              # (n_obs,) <-- rooting w array enables its multiple multiplications to remain equivalet to X.T @ W @ X
-        Xw = X * wsqrt[:, None]                                         # scale each row
-        Yw = Y * wsqrt[:, None]                                         # scale each row
-        XtX_inv = np.linalg.pinv(Xw.T @ Xw)                             # (preds, preds)
-        BETA = XtX_inv @ Xw.T @ Yw                                      # (n_preds,) <- (n_preds,n_obs) @ (n_obs,)
-        Y_HAT  = X @ BETA                                               # (obs,) <- (obs, preds) @ (preds,)
-        residuals = Y - Y_HAT                                           # (n_obs, ) <- (n_obs, ) - (n_obs,)
-        dof = self.n_obs - self.n_preds                                 # (1,)
-        mse = np.sum(W * residuals**2, axis=0) / dof                    # (1,) <- summed (n_obs, )^2
-        T = self.apply_contrasts(XtX_inv, BETA, mse)                    # (n_contrasts,)
-        R2 = self.get_r2(Y, Y_HAT, W)                                   # (1,)
-        return BETA, T, R2, XtX_inv                                     # beta is (predictors,), while T and P are (contrasts,)
+        if Y.ndim == 1:
+            Y = Y[:, None]
 
+        wsqrt = np.sqrt(W)                              # (n_obs,)
+        Xw = X * wsqrt[:, None]                         # (n_obs, n_preds)
+        Yw = Y * wsqrt[:, None]                         # (n_obs, n_targets)
+        XtX_inv = np.linalg.pinv(Xw.T @ Xw)             # (n_preds, n_preds)
+        BETA = XtX_inv @ Xw.T @ Yw                      # (n_preds, n_targets)
+        Y_HAT = X @ BETA                                # (n_obs, n_targets)
+        residuals = Y - Y_HAT                           # (n_obs, n_targets)
+        dof = X.shape[0] - X.shape[1]                   # (1,)
+        mse = np.sum((residuals * wsqrt[:, None])**2, axis=0) / dof   # (n_targets,)
+        T = self.apply_contrasts(XtX_inv, BETA, mse)    # should return (n_contrasts, n_targets)
+        R2 = self.get_r2(Y, Y_HAT, W)                   # should return (n_targets,)
+
+        return BETA, T, R2, XtX_inv
+    
     #### Voxelwise Model Switching Methods ####
-    def _run_voxelwise_model(self, regressor, regressand, weights, regression_idx):
+    def _run_voxelwise_model(self, regressor, regressand, weights, regression_idx, permutation):
         """Choose which regression to run, and how to run it"""
         X, Y, W = self._prep_targets(regressor, regressand, weights, 'whole_brain', regression_idx)
         B = np.zeros((self.n_preds, self.n_voxels)); T = np.zeros((self.n_contrasts, self.n_voxels)); R2 = np.zeros((1, self.n_voxels)) 
         LOG_PRIORS = np.zeros((1, self.n_voxels))
-        XTX_inv = np.zeros((1, self.n_voxels))
         
         # Linear regression
         if (self.regression_type=='linear') and (not np.all(self.XTX_inv == 0)): # Linear regression, broadcast (XTX inv precalcualted)
@@ -492,17 +496,17 @@ class VoxelwiseRegression:
         elif (self.regression_type=='linear'):                                                  # linear regression, voxelwise
             for idx in (range(self.n_voxels) if permutation else tqdm(range(self.n_voxels), desc='Running voxelwise regressions')):
                 X, Y, W = self._prep_targets(regressor, regressand, weights, idx, regression_idx)
-                B[:,idx], T[:,idx], R2[:,idx], XTX_inv[:, :, idx] = self._run_linear(X, Y, W)
-            if not permutation: self.XTX_inv = XTX_inv
+                B[:,idx], T[:,idx], R2[:,idx], XTX_inv = self._run_linear(X, Y, W)
+                if not permutation: self.XTX_inv[:, :, idx] = XTX_inv
         
         # Naive Bayes
-        elif (self.regression_type=='naive_bayes') and (outcome_tensor.shape[2] == self.n_voxels):      # Naive bayes, voxelwise
+        elif (self.regression_type=='naive_bayes') and (self.outcome_tensor.shape[2] == self.n_voxels):      # Naive bayes, voxelwise
             for idx in tqdm(range(self.n_voxels), desc='Running voxelwise regressions'):
                 X, Y, W = self._prep_targets(regressor, regressand, weights, idx, regression_idx)
                 B[:, idx], T[:, idx], R2[:, idx], LOG_PRIORS[:, idx] = self._run_naive_bayes(X, Y, W)
         elif (self.regression_type=='naive_bayes'):                                                 # Naive bayes, batched
             Y = regressand[:, regression_idx, 0]
-            for s, e in voxel_batches(self.n_voxels, batch_size):
+            for s, e in voxel_batches(self.n_voxels, batch_size=5000):
                 if regressor.shape[2] == self.n_voxels: # build per-voxel design for batch
                     Xb = regressor[:, :, s:e]
                 else:
@@ -518,9 +522,12 @@ class VoxelwiseRegression:
         return B, T, R2, LOG_PRIORS
         
     def voxelwise_regression(self, permutation=False, regression_idx=0):
-        """Attemps to do a whole-brain broadcasting if possible. Otherwise defaults to standard looped regression."""        
+        """
+        Attemps to do a whole-brain broadcasting if possible. Otherwise defaults to standard looped regression.
+        Anything that will be written to disk should be stored here
+        """        
         regressor, regressand, weights = self._get_targets(permutation)  
-        B, T, R2, LOG_PRIORS = self._run_voxelwise_model(regressor, regressand, weights, regression_idx)
+        B, T, R2, LOG_PRIORS = self._run_voxelwise_model(regressor, regressand, weights, regression_idx, permutation)
         if (not permutation) and (self.regression_type=='naive_bayes'):
             self.LOG_PRIORS = LOG_PRIORS
         return B, T, R2
@@ -722,36 +729,6 @@ class VoxelwiseRegression:
             return self._run_linear_prediction(X, B)
         raise NotImplementedError(f"Prediction for regression_type='{self.regression_type}' is not yet implemented.")
     
-    def _fit_naive_bayes_prediction_params(self, regressor, regressand, weights, regression_idx=0, batch_size=5000):
-        """
-        Fit naive bayes params for prediction from in-memory arrays.
-        Returns:
-            BETA : (n_preds, n_vox)
-            LOG_PRIORS : (n_vox,)
-        """
-        BETA = np.zeros((self.n_preds, self.n_voxels))
-        LOG_PRIORS = np.zeros((self.n_voxels,))
-
-        if regressand.shape[2] == self.n_voxels:  # voxelwise outcome
-            for idx in tqdm(range(self.n_voxels), desc='Running voxelwise naive_bayes (LOOCV)'):
-                X, Y, W = self._prep_targets(regressor, regressand, weights, idx, regression_idx)
-                B, _, _, logp = self._run_naive_bayes(X, Y, W)
-                BETA[:, idx] = B[:, 0] if B.ndim == 2 else B
-                LOG_PRIORS[idx] = logp
-            return BETA, LOG_PRIORS
-
-        Y = regressand[:, regression_idx, 0]
-        for s, e in voxel_batches(self.n_voxels, batch_size):
-            if regressor.shape[2] == self.n_voxels:
-                Xb = regressor[:, :, s:e]
-            else:
-                Xb = np.broadcast_to(regressor[:, :, 0][:, :, None], (regressor.shape[0], self.n_preds, e - s)).copy()
-            X_inv_b, XTX_inv_b = self._prep_naive_bayes(Xb)
-            B, _, _, logp = self._run_naive_bayes(Xb, Y, weights, X_inv_b, XTX_inv_b)
-            BETA[:, s:e] = B
-            LOG_PRIORS[s:e] = logp
-        return BETA, LOG_PRIORS
-
     #### Public Code ####
     def run_prediction(self, params_dir):
         """
@@ -769,40 +746,42 @@ class VoxelwiseRegression:
         Populates self.PREDICTIONS with per-observation predictions.
         """
         preds = np.zeros((self.n_obs, self.n_voxels))
+        orig_design = self.design_tensor
+        orig_outcome = self.outcome_tensor
+        orig_weights = self.weight_vector
         orig_n_obs = self.n_obs
+        orig_out_dir = self.out_dir
+
+        params_dir = os.path.join(self.out_dir or "/tmp", "loocv_prediction_params")
+        os.makedirs(params_dir, exist_ok=True)
+
         for i in tqdm(range(self.n_obs), desc="LOOCV predictions"):
             train_idx = np.ones(self.n_obs, dtype=bool)
             train_idx[i] = False
-            regressor = self.design_tensor[train_idx, :, :]
-            regressand = self.outcome_tensor[train_idx, :, :]
-            weights = self.weight_vector[train_idx]
-            self.n_obs = regressor.shape[0]
 
-            if self.regression_type == "linear":
-                if regressand.shape[2] == self.n_voxels:
-                    Y = regressand[:, regression_idx, :]
-                else:
-                    Y = np.broadcast_to(regressand[:, regression_idx, 0][:, None], (regressor.shape[0], self.n_voxels)).copy()
-                X = regressor
-                BETA, _, _ = run_linear_batched(X, Y, weights, self.contrast_matrix)
-                B = BETA.T
-            elif self.regression_type == "naive_bayes":
-                BETA, LOG_PRIORS = self._fit_naive_bayes_prediction_params(regressor, regressand, weights, regression_idx=regression_idx, batch_size=batch_size)
-                B = BETA.T
-            else:
-                self.n_obs = orig_n_obs
-                raise NotImplementedError(f"LOOCV prediction for regression_type='{self.regression_type}' is not yet implemented.")
+            # Fit on N-1 using the established regression path
+            self.design_tensor = orig_design[train_idx, :, :]
+            self.outcome_tensor = orig_outcome[train_idx, :, :]
+            self.weight_vector = orig_weights[train_idx]
+            self.n_obs = self.design_tensor.shape[0]
+            self.out_dir = params_dir
 
-            X_test = self.design_tensor[i:i+1, :, :]
-            if X_test.ndim == 2: X_test = X_test[:, :, None]
-            if X_test.shape[2] == 1: X_test = np.broadcast_to(X_test, (1, self.n_preds, B.shape[0])).copy()
-            if self.regression_type == "naive_bayes":
-                A = LOG_PRIORS if LOG_PRIORS.ndim == 1 else LOG_PRIORS.flatten()
-                preds[i, :] = self._run_naive_bayes_prediction(X_test, B, A)[0, :]
-            else:
-                preds[i, :] = self._run_linear_prediction(X_test, B)[0, :]
+            self.BETA, self.T, self.R2 = self.voxelwise_regression(regression_idx=regression_idx)
+            self._save_nifti_maps()
 
+            # Predict on held-out using the established prediction loader
+            self.design_tensor = orig_design[i:i+1, :, :]
+            self.n_obs = 1
+            self.PREDICTIONS = self._run_prediction_switch(params_dir)
+            preds[i, :] = self.PREDICTIONS[0, :]
+
+        # Restore original state
+        self.design_tensor = orig_design
+        self.outcome_tensor = orig_outcome
+        self.weight_vector = orig_weights
         self.n_obs = orig_n_obs
+        self.out_dir = orig_out_dir
+
         self.PREDICTIONS = preds
         self._save_nifti_maps()
     
