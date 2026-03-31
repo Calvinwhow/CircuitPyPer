@@ -14,64 +14,60 @@ from calvin_utils.neuroimaging_utils.nifti_utils.generate_nifti import view_and_
 from pathlib import Path
 from tqdm import tqdm
 import random
+from uuid import uuid4
+from calvin_utils.neuroimaging_utils.surface_utils.surface_io import SurfaceIO
+from calvin_utils.neuroimaging_utils.nifti_utils.volume_io import NiftiIO
+
 
 class GiiNiiFileImport:
     """
-    A versatile class for importing and processing NIFTI and GIFTI files into NumPy arrays.
+    Import NIFTI, GIFTI, or NPY files into a pandas DataFrame.
 
-    This class is designed to handle the import of NIFTI and GIFTI files, convert them into NumPy arrays,
-    and provide options for customizing the import process, handling special values, and generating column names.
+    Supports three input styles:
+    1) A folder path plus a glob `file_pattern`
+    2) A CSV path plus a `file_column` that contains file paths
+    3) A pandas Series of file paths
+
+    Column naming can be customized via regex extraction or string splicing.
 
     Parameters:
     -----------
     import_path : str
-        The path to the directory containing the files to be imported or the path to a CSV file with file paths.
-    subject_pattern : str, optional
-        A regular expression pattern indicating the part of the file path to be used as the subject ID.
-    process_special_values : bool, optional
-        Whether to handle NaNs and infinities in the data without significantly biasing the distribution.
+        Path to a folder or CSV file, or a pandas Series of file paths.
     file_column : str, optional
-        The name of the column in the CSV file that stores file paths (required if importing from CSV).
+        Column in the CSV that contains file paths (required when `import_path` is a CSV).
     file_pattern : str, optional
-        A file pattern to filter specific files in a folder (e.g., '*.nii.gz').
+        Glob pattern for files within a folder (e.g., '*.nii.gz').
+    pre_splice : str, optional
+        String used to split file paths for column name generation.
+    post_splice : str, optional
+        String used to split file paths for column name generation.
+    subject_pattern : str, optional
+        Regex pattern used to extract subject IDs from file paths.
+    process_special_values : bool, optional
+        Whether to replace NaNs/Infs with finite values (NaN->0, +Inf->max, -Inf->min).
+    transpose : bool, optional
+        If True, returns a transposed DataFrame (files as rows).
 
     Attributes:
     -----------
-    import_path : str
-        The provided import path.
-    subject_pattern : str
-        The subject ID pattern.
-    process_special_values : bool
-        Indicates whether special values should be processed.
-    file_column : str
-        The name of the column in the CSV file storing file paths (if applicable).
-    file_pattern : str
-        The file pattern for filtering files in a folder.
-    matrix_df : pandas.DataFrame
-        A DataFrame to store imported data.
     seen_names : set
         A set to track unique column names.
-    pattern : re.Pattern
-        A compiled regular expression pattern for extracting subject IDs.
-        
-    Note:
-    -----
-    This class provides a flexible way to import and process neuroimaging data in NIFTI and GIFTI formats,
-    making it suitable for various data analysis tasks.
-
     """
-    def __init__(self, import_path, subject_pattern='', process_special_values=True, file_column: str=None, file_pattern: str=None, transpose=False):
+    def __init__(self, import_path, file_column: str=None, file_pattern: str=None, pre_splice='sub', post_splice="", subject_pattern=None, process_special_values=True, transpose=False, mask_path='default'):
         self.import_path = import_path
         self.file_pattern = file_pattern
         self.file_column = file_column
         self.transpose = transpose
-        self.subject_pattern = re.compile(subject_pattern) if subject_pattern is not None else None
         self.process_special_values = process_special_values
-        self.matrix_df = pd.DataFrame({})
         self.seen_names = set()
-        self.pattern = re.compile(f"{self.subject_pattern}(\d+)")
-    
-    def generate_unique_column_name(self, file_path: str) -> str:
+        self.pre_splice  = pre_splice
+        self.post_splice = post_splice
+        self.subject_pattern = re.compile(subject_pattern) if subject_pattern is not None else None
+        self.mask_path = mask_path
+        
+    ### Column Name Generation ###
+    def _generate_unique_column_name(self, file_path: str) -> str:
         base_name = os.path.basename(file_path)
         if base_name in self.seen_names:
             name = file_path
@@ -80,217 +76,174 @@ class GiiNiiFileImport:
             self.seen_names.add(base_name)
         return name
     
-    def match_id(self, file_path):
-        match = self.subject_pattern.search(file_path)
-        if match:
-            start_index = match.start()
-            subject_id = file_path[start_index:]
-            return subject_id
-        else:
-            return None
-        
-    def generate_name(self, file_path: str):
-        """
-        Generates a name based on the file path and an optional subject ID pattern.
-
-        Parameters:
-        -----------
-        file_path : str
-            The file path from which to extract the base name or subject ID.
-        subject_id_pattern : str, optional
-            A pattern indicating the part of the file_path to be used as the subject ID.
-
-        Returns:
-        --------
-        str
-            A generated name based on the file path and the specified pattern.
-        """
-
-        if self.subject_pattern is not None:
-            name = self.match_id(file_path)
-        else:
-            name = self.generate_unique_column_name(file_path)
-        return name 
+    def _match_id(self, file_paths):
+        """Use regex to extract subject ID"""
+        names_list = []
+        for file_path in file_paths:
+            match = self.subject_pattern.search(file_path)
+            if match:
+                start_index = match.start()
+                subject_id = file_path[start_index:]
+                names_list.append(subject_id)
+            else:
+                names_list.append(None)
+        return names_list
     
-    def handle_special_values(self, data):
-        """
-        Handles NaNs and infinities in the data without significantly biasing the distribution.
-
-        Args:
-            data: NumPy array with the data.
-
-        Returns:
-            Updated data with NaNs and infinities handled.
-        # """
-        max_val = np.nanmax(data)
-        min_val = np.nanmin(data)
-        data = np.nan_to_num(data, nan=0.0, posinf=max_val, neginf=min_val)
-        return data
+    def _splice_colnames(self, file_list):
+        """Generates column names by string splicing"""
+        names_list = []
+        for name in file_list:
+            new_name = name
+            if self.pre_splice not in (None, ""):
+                if self.pre_splice in new_name:
+                    new_name = new_name.split(self.pre_splice, 1)[1]
+            if self.post_splice not in (None, ""):
+                if self.post_splice in new_name:
+                    new_name = new_name.split(self.post_splice, 1)[0]
+            names_list.append(new_name)
+        return names_list
     
-    @property
-    def affines(self):
-        if not hasattr(self, '_affines'):
-            self._affines = set()
-        return self._affines
+    def _coerce_duplicate_names(self, names_list):
+        for idx, name in enumerate(names_list):
+            if names_list.count(name) > 1:
+                names_list[idx] = f"{name}_{uuid4()}"
+                print("WARNING: DUPLICATE FILES ARE BEING IMPORTED INTO YOUR DATA. THIS CAN SEVERELY CONFOUND ANALYSES IF UNINTENTIONAL.\n\tCAUSE:", name)
+        return names_list
+    
+    def _generate_colnames(self, file_paths):
+        """Switching function for different ways of getting colnames from filenames"""
+        if self._import_type_switch(file_paths) == 'npy':
+            data = np.load(file_paths[0]).T
+            names_list = [f"sub_{i}" for i in range(data.shape[1])]
+        elif self.subject_pattern is not None:
+            names_list = self._match_id(file_paths)
+        elif (self.pre_splice is not None) or (self.post_splice is not None):
+            names_list = self._splice_colnames(file_paths)
+        else:
+            names_list = [self._generate_unique_column_name(file_path) for file_path in file_paths]
 
-    @affines.setter
-    def affines(self, value):
-        if not hasattr(self, '_affines'):
-            self._affines = set()
-        self._affines.add(value)
+        names_list = self._coerce_duplicate_names(names_list)
+        return names_list
+    
+    def _handle_special_values(self, arr):
+        """Handles NaNs and infinities in the data without significantly biasing the distribution."""
+        max_val = np.nanmax(arr)
+        min_val = np.nanmin(arr)
+        arr = np.nan_to_num(arr, nan=0.0, posinf=max_val, neginf=min_val)
+        return arr
 
-    def import_npy_to_numpy_array(self, file_path):
-        '''Loads a numpy array from a .npy file. Calvin formats these as (subjects, voxels), which are the entire dataframe.'''
-        data = np.load(file_path)
-        data = data.T  # Transpose to (voxels, observations)
-        column_names = [f"sub_{i}" for i in range(data.shape[1])]  # Generate column names
-        return pd.DataFrame(data, columns=column_names)  # Assign to DataFrame with column names
+    ### Dataframe Creation Methods ###
+    def _initialize_dataframe(self, arr, file_paths):
+        cols = self._generate_colnames(file_paths)
+        df = pd.DataFrame(data=arr, columns=cols)
+        return df
+    
+    def _transpose_dataframe(self, df, transpose):
+        if transpose:
+            return df.transpose(copy=False)
+        return df
+    
+    def prepare_dataframe(self, arr, file_paths):
+        """Orchestrator for dataframe quality control"""
+        if self.process_special_values:
+            arr = self._handle_special_values(arr)
+        df  = self._initialize_dataframe(arr, file_paths)
+        df  = self._transpose_dataframe(df, self.transpose)
+        return df
+    
+    ### Import Functions ###
+    def _identify_file_type(self, path):
+        """Detects file type"""
+        p = Path(path)
+        suffixes = [s.lower() for s in p.suffixes]
+        basename = p.name.lower()
+        if suffixes[-2:] == ['.nii', '.gz'] or suffixes[-1:] == ['.nii']:
+            return 'nii'
+        if suffixes[-2:] == ['.gii', '.gz'] or suffixes[-1:] == ['.gii']:
+            return 'gii'
+        if suffixes[-1:] == ['.npy']:
+            return 'npy'
+        freesurfer_suffixes = {
+            '.thickness',
+            '.pial',
+            '.volume',
+            '.white',
+            '.curv',
+            '.sulc',
+            '.sphere',
+        }
+        if any(basename.endswith(s) for s in freesurfer_suffixes):
+            return 'freesurfer'
+        return 'unknown'
+
+    def _import_type_switch(self, file_paths):
+        """Chooses import type to return"""
+        path_types = {self._identify_file_type(path) for path in file_paths}
+        if len(path_types) != 1:
+            raise ValueError(f"Multiple file types detected: {path_types}")
+        return next(iter(path_types))
+
+    def _import_matrices(self, file_paths):
+        """Orchestrates import"""
+        ftype = self._import_type_switch(file_paths)
+        if ftype == "npy":
+            arr = self.import_npy_to_numpy_array(file_paths)
+        elif ftype == "nii":
+            arr = self.import_nifti_to_numpy_array(file_paths)
+        elif ftype in {"gii", "freesurfer"}:
+            arr = self.import_surface_to_numpy_array(file_paths)
+        else:
+            raise RuntimeError(f"Unknown file type ({ftype}) imported. Did not detect nifti, gifti, or npy. Please provide one of these files for import.")
+        return arr
+
+    def import_npy_to_numpy_array(self, file_paths):
+        '''Loads a numpy array from a single .npy file. Calvin formats these as (subjects, voxels), which are the entire dataframe.'''
+        if len(file_paths) != 1:
+            raise ValueError(f"NPY import expects a single file, but received {len(file_paths)}.")
+        data = np.load(file_paths[0])
+        return data.T  # Transpose to (voxels, observations)
 
     def import_nifti_to_numpy_array(self, file_path):
-        '''
-        Does what it says. Just provide the absolute filepath.
-        Args:
-            filepath: absolute path to the file to import
-        Returns:
-            nifti_data: nifti_data as a numpy array
-        '''
-        try:
-            nifti_img = image.load_img(file_path)
-            # print(nifti_img.affine)
-            self.affines = tuple(nifti_img.affine.flatten())
-            nifti_data = nifti_img.get_fdata().flatten()
-            return nifti_data
-        except Exception as e:
-            print("Error:", e)
-            return None
+        """Loads niftis"""
+        self.nifti_io = NiftiIO(mask_path=self.mask_path)
+        data = self.nifti_io.import_nifti_to_numpy_array(file_path)
+        return data
 
-    def import_gifti_to_numpy_array(self, file_path):
-        """Imports a GIFTI file and converts it to a NumPy array."""
-        try:
-            gifti_img = nib.load(file_path)
-            gifti_data = gifti_img.darrays[0].data.flatten()
-            return gifti_data
-        except Exception as e:
-            print("Error:", e)
-            return None
+    def import_surface_to_numpy_array(self, file_paths):
+        """Imports surface files (GIFTI/FreeSurfer) and converts them to a NumPy array."""
+        mask_path = None if self.mask_path == 'default' else self.mask_path
+        self.surface_io = SurfaceIO(mask_path=mask_path)
+        arr = self.surface_io.import_surface_to_numpy_array(file_paths)
+        return arr
         
-    def identify_file_type(self, file_path: str) -> str:
-        """Identifies file extension"""
-        try:
-            p = Path(file_path)
-            ext = ''.join(p.suffixes).lower()
-            if any(e in ext for e in ['.nii', '.nii.gz']):
-                return 'nii'
-            elif any(e in ext for e in ['.gii', '.gii.gz']):
-                return 'gii'
-            elif any(e in ext for e in ['.npy']):
-                return 'npy'
-            else:
-                return ext
-        except Exception:
-            return 'unrecognized'
-
-    def align_imported_matrices(self, file_paths):
-        '''Using the affines of the imported matrices, we will create a bounding box that encompasses all the matrices and place them in it.'''
-        self.bbox = NiftiBoundingBox(file_paths)
-        self.bbox.generate_bounding_box()
-        self.bbox.add_niftis_to_bounding_box()
-        self.bbox.collapse_bbox_to_3d()
-        self.bbox_mask = self.bbox.collapsed_bbox_to_mask()
-        self.bbox_4d = self.bbox._stacked_data
-    
-    def import_matrices(self, file_paths, duplicate_cols=True):
-        '''
-        Given a list of file paths, import the data and return a dataframe with the imported files, flattened such that each column is a file.
-        
-        Params
-        duplicate_cols (bool): if true, allows duplicate columns. Will change their names to allow this. 
-        '''
-        for file_path in tqdm(file_paths, desc='Importing niftis'):
-            path = self.identify_file_type(file_path)
-            if path == 'nii':
-                data = self.import_nifti_to_numpy_array(file_path)
-            elif path == 'gii':
-                data = self.import_gifti_to_numpy_array(file_path)
-            elif path == 'npy':
-                data = self.import_npy_to_numpy_array(file_path)
-                
-            elif path == 'unrecognized':    
-                continue # Skip unrecognized files
-            else:
-                raise RuntimeError(f"Failed to import file: {file_path}. Error: path type {path} is not yet implemented")
-
-            if path == 'npy':                   # The data is a whole dataframe in the numpy version, by virtue of standard NPY packaging with Calvin Howard's code.
-                self.matrix_df = data
-            else:                  # Assign to the matrix in (voxels, observations) form for when voxels are observations. 
-                if file_path in self.matrix_df.columns:
-                    id = random.randint(1, 1000000)
-                    name = file_path + str(id)
-                    print("WARNING: DUPLICATE NIFTIS ARE BEING IMPORTED INTO YOUR DATA. THIS CAN SEVERELY CONFOUND ANALYSES IF UNINTENTIONAL. \n\tCAUSE: ", file_path)
-                else:
-                    name = file_path
-                self.matrix_df[name] = data
-
-
-        if len(self.affines) > 1:
-            print("Warning: Multiple affines detected. Aligning to common space. Mask is available as self.bbox_mask and 4d data as self.bbox_4d.")
-            self.matrix_df = pd.DataFrame({})               # Reset the matrix_df to empty
-            self.align_imported_matrices(file_paths)
-            for i, file_path in tqdm(enumerate(file_paths), desc='Aligning misaligned files'):
-                data = self.bbox_4d[:, :, :, i]
-                self.matrix_df[file_path] = data.flatten()
-                
-        for file_path, data in self.matrix_df.items():
-            if self.process_special_values:
-                try:
-                    data = self.handle_special_values(data)
-                except Exception as e:
-                    data = 0
-            new_name = self.generate_name(file_path)
-            self.matrix_df[new_name] = data
-
-        # drop the original file paths so we only have the processed filenames
-        self.matrix_df = self.matrix_df.drop(columns=[file_path for file_path in self.matrix_df.keys() if file_path not in self.matrix_df.columns])
-        return self.matrix_df
-
     def import_from_csv(self):
+        print("Attempting to import from CSV. Expecting CSV full of filenames.")
         print(f'Attempting to import from: {os.path.basename(self.import_path)}')
-        if self.import_path is None:
+        if self.file_column is None:
             raise ValueError ("Argument file_column is None. Please specify file_column='column_storing_file_paths.")
-        self.paths = pd.read_csv(self.import_path)[self.file_column].tolist()
-        return self.import_matrices(self.paths)
+        file_paths = pd.read_csv(self.import_path)[self.file_column].tolist()
+        return self._import_matrices(file_paths), file_paths
 
     def import_from_folder(self):
+        print("Attempting to import from globbable path. Expecting globbable filenames.")
         print(f'Attempting to import from: {self.import_path}/{self.file_pattern}')
-        if self.file_pattern == '':
+        if self.file_pattern in (None, ''):
             raise ValueError ("Argument file_pattern is empty. Please specify file_pattern='*my_file*patter.nii.gz'")
         glob_path = os.path.join(self.import_path, self.file_pattern)
         file_paths = glob(glob_path)
         self.file_paths = file_paths
-        return self.import_matrices(file_paths)
+        return self._import_matrices(file_paths), file_paths
     
     def import_from_series(self):
-        print('Attempting to import from pandas series. Will fail unless a series is provided using df["path_column"]')
+        print('Attempting to import from pandas series. expecting PD series full of filenames. Will fail unless a series is provided using df["path_column"]')
         file_paths = list(self.import_path.to_numpy())
-        return self.import_matrices(file_paths)
+        return self._import_matrices(file_paths), file_paths
 
     def detect_input_type(self):
-        """
-        Detects whether the input_path is a CSV file or a folder.
-
-        Parameters:
-        -----------
-        input_path : str
-            The input path to be checked.
-
-        Returns:
-        --------
-        str
-            'csv' if the input is a CSV file, 'folder' if it's a folder, or 'unsupported' if neither.
-        """
+        """Detects whether the input_path is a Pandas DataFrame, a CSV, or a Folder."""
         if isinstance(self.import_path, pd.Series):
             self.import_type = 'pd_series'
-        elif isinstance(self.import_path, (str, Path)) and str(self.import_path).lower().endswith('.csv'):
+        elif isinstance(self.import_path, (str, Path)) and str(self.import_path).lower().endswith('.csv'): 
             self.import_type = 'csv'
         elif isinstance(self.import_path, (str, Path)):
             self.import_type = 'folder'
@@ -302,99 +255,18 @@ class GiiNiiFileImport:
         if self.import_type == 'pd_series':
             return self.import_from_series()
         elif self.import_type == 'csv':
-            # Input is a CSV file
             return self.import_from_csv()
         elif self.import_type == 'folder':
-            # Input is a folder
             return self.import_from_folder()
         else:
             raise ValueError("Invalid input type")
-        
-    @staticmethod
-    def save_files(dataframe, file_paths, dry_run=True, file_suffix=None):
-        """
-        Convenience saving function. Allows saving files after acting upon them. 
-        """
-        for i, file_path in tqdm(enumerate(file_paths), desc='Saving files'):
-            out_dir = os.path.dirname(file_path)
-            nifti_name = os.path.splitext(os.path.basename(file_path))[0] + (file_suffix if file_suffix is not None else '')
-            if dry_run:
-                print(f"Saving to: {os.path.join(out_dir, nifti_name)}")
-            else:
-                view_and_save_nifti(dataframe.iloc[:, i], out_dir=out_dir, output_name=nifti_name, silent=True)
     
-    @staticmethod
-    def mask_dataframe(df: pd.DataFrame, mask_path: str=None, threshold: float=0):
-        """
-        Simple masking function.
-        """
-        if mask_path is None:
-            mask = np.ones(df.shape[0], dtype=bool)
-            mask_indices = np.arange(df.shape[0])
-            masked_df = df
-        else:
-            mask = nib.load(mask_path)
-            mask = mask.get_fdata().flatten()
-            mask_indices = mask > threshold
-            masked_df = df.loc[mask_indices, :]
-        return mask, mask_indices, masked_df
-    
-    @staticmethod
-    def unmask_dataframe(df: pd.DataFrame, mask_path: str=None, threshold: float=0):
-        """
-        Simple unmasking function.
-        """
-        if mask_path is None:
-            unmasked_df = df
-        else:
-            mask = nib.load(mask_path)
-            mask = mask.get_fdata().flatten()
-            mask_indices = mask > threshold
-            unmasked_df = pd.DataFrame(index=mask, columns=df.columns, data=0)
-            unmasked_df.iloc[mask_indices, :] = df
-        return unmasked_df
-    
-    @staticmethod
-    def mask_array(arr: np.array, mask_path: str=None, threshold: float=0):
-        """
-        Simple masking function.
-        """
-        if mask_path is None:
-            mask = np.ones(df.shape[0], dtype=bool)
-            mask_indices = np.arange(df.shape[0])
-            masked_arr = arr
-        else:
-            mask = nib.load(mask_path)
-            mask = mask.get_fdata().flatten()
-            mask_indices = mask > threshold
-            masked_arr = arr[mask_indices]
-        return mask, mask_indices, masked_arr
-    
-    @staticmethod
-    def splice_colnames(df, pre, post):
-        raw_names = df.columns
-        name_mapping = {}
-        # For each column name in the dataframe
-        for name in raw_names:
-            new_name = name  # Default to the original name in case it doesn't match any split command
-            if pre != '':
-                new_name = new_name.split(pre)[1]
-            if post != '':
-                new_name = new_name.split(post)[0]
-            
-            # Add the original and new name to the mapping
-            name_mapping[name] = new_name
-        return df.rename(columns=name_mapping)
-    
-    def return_function(self):
-        if not self.transpose:
-            return self.matrix_df
-        return self.matrix_df.transpose(copy=False)
-    
+    ### Public API ###
     def run(self):
-        self.import_data_based_on_type()
-        df = self.return_function()
+        arr, file_paths = self.import_data_based_on_type()
+        df = self.prepare_dataframe(arr, file_paths)
         return df
+    
 
 class ImportDatasetsToDict(GiiNiiFileImport):
     def __init__(self, df, dataset_col, nifti_col, indep_var_col, covariate_cols):

@@ -81,9 +81,9 @@ class DamageScorer:
         if 'sum' in metrics:
             self.damage_df.loc[subject, f'{roi}_sum'] = self._calculate_dot_product(subject_array, roi_array)
         if 'max_in_roi' in metrics:
-            self.damage_df.loc[subject, f'{roi}_sum'] = self._calculate_max_in_roi(subject_array, roi_array)
-        if 'max_in_roi' in metrics:
-            self.damage_df.loc[subject, f'{roi}_sum'] = self._calculate_min_in_roi(subject_array, roi_array)
+            self.damage_df.loc[subject, f'{roi}_max_in_roi'] = self._calculate_max_in_roi(subject_array, roi_array)
+        if 'min_in_roi' in metrics:
+            self.damage_df.loc[subject, f'{roi}_min_in_roi'] = self._calculate_min_in_roi(subject_array, roi_array)
         if 'avg_in_target' in metrics:
             self.damage_df.loc[subject, f'{roi}_average_subject_in_target'] = self._calculate_normalized_dot_product(subject_array, roi_array, denominator='avg_in_target')
         if 'avg_in_subject' in metrics:
@@ -268,9 +268,20 @@ class DamageScorer:
             self._calculate_metrics(self.dv_df, self.roi_df, target_suffix, subject, metrics)
 
         for metric in metrics:
-            metric_col = f"{target_suffix}_{metric}"
-            if metric_col not in self.damage_df.columns:
-                raise ValueError(f"Expected damage column not found: {metric_col}")
+            if metric == "spatial_correlation":
+                metric_col = f"{target_suffix}_spatial_corr"
+            elif metric == "avg_in_target":
+                metric_col = f"{target_suffix}_average_subject_in_target"
+            elif metric == "avg_in_subject":
+                metric_col = f"{target_suffix}_average_target_in_subject"
+            elif metric == "dice":
+                metric_col = f"{target_suffix}_dice_coeff"
+            elif metric == "max_in_roi":
+                metric_col = f"{target_suffix}_max_in_roi"
+            elif metric == "min_in_roi":
+                metric_col = f"{target_suffix}_min_in_roi"
+            else:
+                metric_col = f"{target_suffix}_{metric}"
             scores = self.damage_df[metric_col].reindex(subject_paths).to_numpy()
             col_name = f"{metric}_{target_suffix}"
             df[col_name] = scores

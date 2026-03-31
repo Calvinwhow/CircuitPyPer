@@ -465,20 +465,26 @@ class VoxelwiseRegression:
         """
         if Y.ndim == 1:
             Y = Y[:, None]
-
-        wsqrt = np.sqrt(W)                              # (n_obs,)
-        Xw = X * wsqrt[:, None]                         # (n_obs, n_preds)
-        Yw = Y * wsqrt[:, None]                         # (n_obs, n_targets)
+        print(X.shape, Y.shape)
+        wsqrt = np.sqrt(W)                              # (n_obs,)        
+        Xw = X * self.align_w(wsqrt, X)                # (n_obs, n_preds)
+        Yw = Y * self.align_w(wsqrt, Y)                # (n_obs, n_targets)
         XtX_inv = np.linalg.pinv(Xw.T @ Xw)             # (n_preds, n_preds)
         BETA = XtX_inv @ Xw.T @ Yw                      # (n_preds, n_targets)
         Y_HAT = X @ BETA                                # (n_obs, n_targets)
         residuals = Y - Y_HAT                           # (n_obs, n_targets)
         dof = X.shape[0] - X.shape[1]                   # (1,)
-        mse = np.sum((residuals * wsqrt[:, None])**2, axis=0) / dof   # (n_targets,)
+        mse = np.sum((residuals * self.align_w(wsqrt, residuals)  )**2, axis=0) / dof   # (n_targets,)
         T = self.apply_contrasts(XtX_inv, BETA, mse)    # should return (n_contrasts, n_targets)
         R2 = self.get_r2(Y, Y_HAT, W)                   # should return (n_targets,)
 
         return BETA, T, R2, XtX_inv
+    
+    def align_w(self, w, arr):
+        if arr.shape[0] != w.shape[0]:
+            raise ValueError(f"w has {w.shape[0]} but arr has {arr.shape[0]}")
+        return w.reshape((w.shape[0],) + (1,) * (arr.ndim - 1))
+
     
     #### Voxelwise Model Switching Methods ####
     def _run_voxelwise_model(self, regressor, regressand, weights, regression_idx, permutation):
