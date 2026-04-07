@@ -16,7 +16,8 @@ from tqdm import tqdm
 import random
 from uuid import uuid4
 from calvin_utils.neuroimaging_utils.surface_utils.surface_io import SurfaceIO
-from calvin_utils.neuroimaging_utils.nifti_utils.volume_io import NiftiIO
+from calvin_utils.neuroimaging_utils.nifti_utils.volume_io import NiftiIO, VolumetricTimeSeriesIO
+from calvin_utils.neuroimaging_utils.tract_utils.fiber_io import FiberIO
 
 
 class GiiNiiFileImport:
@@ -65,6 +66,7 @@ class GiiNiiFileImport:
         self.post_splice = post_splice
         self.subject_pattern = re.compile(subject_pattern) if subject_pattern is not None else None
         self.mask_path = mask_path
+        self.output_ftype = "nifti"
         
     ### Column Name Generation ###
     def _generate_unique_column_name(self, file_path: str) -> str:
@@ -112,7 +114,9 @@ class GiiNiiFileImport:
     
     def _generate_colnames(self, file_paths):
         """Switching function for different ways of getting colnames from filenames"""
-        if self._import_type_switch(file_paths) == 'npy':
+        ftype = self._import_type_switch(file_paths)
+
+        if ftype == 'npy':
             data = np.load(file_paths[0]).T
             names_list = [f"sub_{i}" for i in range(data.shape[1])]
         elif self.subject_pattern is not None:
@@ -157,10 +161,17 @@ class GiiNiiFileImport:
         p = Path(path)
         suffixes = [s.lower() for s in p.suffixes]
         basename = p.name.lower()
+        
         if suffixes[-2:] == ['.nii', '.gz'] or suffixes[-1:] == ['.nii']:
+            img = nib.load(str(path))
+            shape = img.shape
+            if len(shape) == 4 and shape[3] > 1:
+                return 'nii_timeseries'
             return 'nii'
         if suffixes[-2:] == ['.gii', '.gz'] or suffixes[-1:] == ['.gii']:
             return 'gii'
+        if suffixes[-2:] == ['.fib', '.npy']:
+            return 'fiber'
         if suffixes[-1:] == ['.npy']:
             return 'npy'
         freesurfer_suffixes = {
@@ -185,16 +196,26 @@ class GiiNiiFileImport:
 
     def _import_matrices(self, file_paths):
         """Orchestrates import"""
-        ftype = self._import_type_switch(file_paths)
-        if ftype == "npy":
+        self.output_ftype = self._import_type_switch(file_paths)
+        if self.output_ftype == "npy":
             arr = self.import_npy_to_numpy_array(file_paths)
-        elif ftype == "nii":
+        elif self.output_ftype == "nii":
             arr = self.import_nifti_to_numpy_array(file_paths)
-        elif ftype in {"gii", "freesurfer"}:
+        elif self.output_ftype == "nii_timeseries":
+            arr = self.import_nifti_timeseries_to_numpy_array(file_paths)
+        elif self.output_ftype in {"gii", "freesurfer"}:
             arr = self.import_surface_to_numpy_array(file_paths)
+        elif self.output_ftype == "fiber":
+            arr = self.import_fiber_to_numpy_array(file_paths)
         else:
-            raise RuntimeError(f"Unknown file type ({ftype}) imported. Did not detect nifti, gifti, or npy. Please provide one of these files for import.")
+            raise RuntimeError(f"Unknown file type ({self.output_ftype}) imported. Did not detect nifti, gifti, fiber, or npy. Please provide one of these files for import.")
         return arr
+
+    def import_nifti_timeseries_to_numpy_array(self, file_paths):
+        """Loads 4D volumetric timeseries niftis"""
+        self.timeseries_io = VolumetricTimeSeriesIO(mask_path=self.mask_path)
+        data = self.timeseries_io.import_nifti_to_numpy_array(file_paths)
+        return data
 
     def import_npy_to_numpy_array(self, file_paths):
         '''Loads a numpy array from a single .npy file. Calvin formats these as (subjects, voxels), which are the entire dataframe.'''
@@ -214,6 +235,12 @@ class GiiNiiFileImport:
         mask_path = None if self.mask_path == 'default' else self.mask_path
         self.surface_io = SurfaceIO(mask_path=mask_path)
         arr = self.surface_io.import_surface_to_numpy_array(file_paths)
+        return arr
+    
+    def import_fiber_to_numpy_array(self, file_paths):
+        mask_path = None if self.mask_path == 'default' else self.mask_path
+        self.fiber_io = FiberIO(mask_path=mask_path)
+        arr = self.fiber_io.import_fiber_to_numpy_array(file_paths)
         return arr
         
     def import_from_csv(self):
@@ -295,7 +322,7 @@ class ImportDatasetsToDict(GiiNiiFileImport):
             # Extract NIFTI file paths and import them using GiiNiiFileImport
             nifti_paths = dataset_df[self.nifti_col].tolist()
             nifti_importer = GiiNiiFileImport(import_path=None, file_column=None, file_pattern=None)
-            self.data_dict[dataset]['niftis'] = nifti_importer.import_matrices(nifti_paths)
+            self.data_dict[dataset]['niftis'] = nifti_importer._import_matrices(nifti_paths)
 
             # Extract independent variable and covariates
             self.data_dict[dataset]['indep_var'] = dataset_df.loc[:, [self.indep_var_col]]

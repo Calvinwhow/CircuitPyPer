@@ -170,3 +170,36 @@ class SurfaceIO:
         _, _, arr = self.mask_array(arr, mask)
 
         return arr
+    
+    def save_files(self, arr, file_paths, dry_run=True, file_suffix=None, fill_value=0):
+        """
+        Save per-file surface statistics back to geometry-aware outputs.
+
+        arr shape:
+        - 1D: (n_vertices_kept,)
+        - 2D: (n_vertices_kept, n_files)
+
+        Writes masked data back onto the reference surface length, then saves
+        a single scalar GIFTI file per column.
+        """
+        if arr.ndim == 1:
+            arr = arr[:, None]
+
+        mask = self._resolve_mask_vector()
+
+        for i, file_path in tqdm(list(enumerate(file_paths)), desc='Saving surface files'):
+            out_dir = os.path.dirname(file_path)
+            base = os.path.splitext(os.path.basename(file_path))[0]
+            out_name = base + (file_suffix if file_suffix is not None else '')
+
+            full_arr = self.unmask_array(arr[:, i], mask, fill_value=fill_value).astype(np.float32)
+
+            out_path = os.path.join(out_dir, f"{out_name}.gii")
+
+            if dry_run:
+                print(f"Saving to: {out_path}")
+            else:
+                gifti = nib.gifti.GiftiImage(
+                    darrays=[nib.gifti.GiftiDataArray(full_arr)]
+                )
+                nib.save(gifti, out_path)

@@ -11,7 +11,7 @@ from sklearn.linear_model import LogisticRegression
 from calvin_utils.statistical_utils.scatterplot import simple_scatter
 from calvin_utils.neuroimaging_utils.ccm_utils.npy_utils import DataLoader
 from calvin_utils.neuroimaging_utils.nifti_utils.damage_score_utils import DamageScorer
-
+from calvin_utils.neuroimaging_utils.output_functions import NeuroimageFileOutporter
 
 class VoxelwiseRegression:
     """
@@ -98,7 +98,6 @@ class VoxelwiseRegression:
     """
     def __init__(self, json_path, mask_path=None, out_dir=None, regression_type='linear', n_permutations=0):
         self.json_path = json_path
-        self.mask_path = mask_path
         self.out_dir = out_dir
         self.regression_type = regression_type
         self.n_permutations = n_permutations
@@ -108,11 +107,17 @@ class VoxelwiseRegression:
         self._validate_regression_type()
         self.XTX_inv = np.zeros((self.n_preds, self.n_preds, self.n_voxels))    # (n_preds, n_preds, n_voxels)
         self.X_inv = None
+        
+        # For writing results
+        info = self.data_loader.output_info()
+        self.output_ftype = info["output_ftype"]
+        self.mask_path = mask_path if mask_path is not None else info["mask_path"]
+        self.output_handler = NeuroimageFileOutporter(output_ftype=self.output_ftype, mask_path=self.mask_path)
 
     #### Setter/Getter methods ####
     def load_data(self):
         with open(self.json_path, 'r') as f:
-            paths = json.load(f)['voxelwise_regression']
+            paths = json.load(f)['neuroimaging_regression']
         design_tensor = np.load(paths['design_matrix'])                        # shape: (observations, predictors,  voxels)
         outcome_data = np.load(paths['outcome_data'])                          # shape: (observations, regressions, voxels)
         contrast_matrix = np.load(paths['contrast_matrix'])                    # shape: (contrasts, predictors)
@@ -476,101 +481,56 @@ class VoxelwiseRegression:
         self.Tp = Tp / n_permutations 
         self.R2p = R2p / n_permutations
         
-    ### Nifti Saving Methods ####
-    def _unmask_array(self, data_array):
-        """
-        Unmasks a vectorized image to full-brain shape using self.mask_path.
-        Returns:
-            unmasked_array: full-brain NIfTI-like array
-            mask_affine: affine transformation from mask
-        """
-        if self.mask_path is None:
-            raise ValueError("Mask path is not provided. Provide the mask used to create the data_array.")
-        else:
-            mask = nib.load(self.mask_path)
-            mask_data = mask.get_fdata()
-            mask_indices = mask_data.flatten() > 0  # Assuming mask is binary
-            unmasked_array = np.zeros(mask_indices.shape)
-            unmasked_array[mask_indices] = data_array.flatten()
-        return unmasked_array.reshape(mask_data.shape), mask.affine
-
-    def _save_map(self, map_data, file_name):
-        """
-        Saves unmasked NIfTI image to disk.
-        """
-        if self.out_dir is None:
-            return None
-        
-        unmasked_map, mask_affine = self._unmask_array(map_data)
-        img = nib.Nifti1Image(unmasked_map, affine=mask_affine)
-        file_path = os.path.join(self.out_dir, file_name)
-        os.makedirs(os.path.dirname(file_path), exist_ok=True)
-        nib.save(img, file_path)
-        return img
-    
-    def _save_nifti_maps(self):
-        """
-        Example method that unmasks and saves NIfTI maps for BETA & T.
-        Assumes you have self._unmask_array() and self._save_map() in place.
-        """
-        if not self.out_dir or not self.mask_path:
+    ### Neuroimaging File Saving Methods ####
+    def _save_result_maps(self):
+        """Method to orchestrate writing results to disk"""
+        if not self.out_dir:
             return
-        
-        # Save multi-output regression results
+
         if hasattr(self, 'B_multi'):
             for j in range(self.n_outputs):
                 for i in range(self.n_contrasts):
-                    beta_name = f"beta_predictor_{i}_output_{j}.nii.gz"
-                    self._save_map(self.B_multi[i, :, j], beta_name)
+                    self.output_handler.save_map(self.B_multi[i, :, j], f"beta_predictor_{i}_output_{j}", self.out_dir)
+
         if hasattr(self, 'T_multi'):
             for j in range(self.n_outputs):
                 for i in range(self.n_contrasts):
-                    t_name = f"contrast_{i}_tval_output_{j}.nii.gz"
-                    self._save_map(self.T_multi[i, :, j], t_name)
+                    self.output_handler.save_map(self.T_multi[i, :, j], f"contrast_{i}_tval_output_{j}", self.out_dir)
+
         if hasattr(self, 'R2_multi'):
             for j in range(self.n_outputs):
-                for i in range(self.n_contrasts):
-                    r2_name = f"R2_output_{j}.nii.gz"
-                    self._save_map(self.R2_multi[i, :, j], r2_name)
-        
-        # Save betas: shape (n_preds, n_voxels)
+                self.output_handler.save_map(self.R2_multi[0, :, j], f"R2_output_{j}", self.out_dir)
+
         if hasattr(self, 'BETA'):
             for i in range(self.n_preds):
-                beta_name = f"beta_predictor_{i}.nii.gz"
-                self._save_map(self.BETA[i, :], beta_name)
-        # Save T-values for Betas: shape (n_preds, n_voxels)
+                self.output_handler.save_map(self.BETA[i, :], f"beta_predictor_{i}", self.out_dir)
+
         if hasattr(self, 'T'):
             for c in range(self.n_contrasts):
-                self._save_map(self.T[c, :], f"contrast_{c}_tval.nii.gz")
-        # Save overall R2 (measure of model overall model fit)
-        if hasattr(self, 'R2'):
-            self._save_map(self.R2, f"R2_vals.nii.gz")
-        # Save log priors (naive bayes for log(p1 / p0))
-        if hasattr(self, 'LOG_PRIORS'):
-            self._save_map(self.LOG_PRIORS, f"LOG_PRIORS.nii.gz")
+                self.output_handler.save_map(self.T[c, :], f"contrast_{c}_tval", self.out_dir)
 
-        # Save FWE-corrected significance masks if we have permutation results
+        if hasattr(self, 'R2'):
+            self.output_handler.save_map(self.R2, "R2_vals", self.out_dir)
+
+        if hasattr(self, 'LOG_PRIORS'):
+            self.output_handler.save_map(self.LOG_PRIORS, "LOG_PRIORS", self.out_dir)
+
         if hasattr(self, 'Tp'):
             for c in range(self.n_contrasts):
-                sig_mask = (self.Tp[c, :] < 0.05)
-                sig_tvals = np.where(sig_mask, self.T[c, :], np.nan)
-                self._save_map(sig_tvals, f"contrast_{c}_tval_FWE.nii.gz")
-                self._save_map(self.Tp[c, :], f"contrast_{c}_pval_FWE.nii.gz")
-                
-        # Save FWE-corrected significance masks if we have permutation results
-        if hasattr(self, 'R2p'):
-            sig_mask = self.R2p < 0.05
-            sig_r2vals = np.where(sig_mask, self.R2, np.nan)
-            self._save_map(sig_r2vals, f"R2_FWE.nii.gz")
-            self._save_map(self.R2p, f"R2_pval_FWE.nii.gz")
-            
-        # Save predictions
-        if hasattr(self, 'PREDICTIONS'):
-            obs, vox = self.PREDICTIONS.shape
-            for o in range(obs):
-                self._save_map(self.PREDICTIONS[o, :], f"prediction_{o}.nii.gz")
+                sig_tvals = np.where(self.Tp[c, :] < 0.05, self.T[c, :], np.nan)
+                self.output_handler.save_map(sig_tvals, f"contrast_{c}_tval_FWE", self.out_dir)
+                self.output_handler.save_map(self.Tp[c, :], f"contrast_{c}_pval_FWE", self.out_dir)
 
-    #### Prediction Helpers ####
+        if hasattr(self, 'R2p'):
+            sig_r2vals = np.where(self.R2p < 0.05, self.R2, np.nan)
+            self.output_handler.save_map(sig_r2vals, "R2_FWE", self.out_dir)
+            self.output_handler.save_map(self.R2p, "R2_pval_FWE", self.out_dir)
+
+        if hasattr(self, 'PREDICTIONS'):
+            for o in range(self.PREDICTIONS.shape[0]):
+                self.output_handler.save_map(self.PREDICTIONS[o, :], f"prediction_{o}", self.out_dir)
+
+    #### Prediction Helpers #### ---TODO: MAKE NIFTI-AGNOSTIC.
     def _mask_array(self, data_array):
         """
         Masks a full-brain array to a vector using self.mask_path.
@@ -728,7 +688,7 @@ class VoxelwiseRegression:
             self.out_dir = temp_dir
 
             self.BETA, self.T, self.R2 = self.voxelwise_regression(regression_idx=regression_idx)
-            self._save_nifti_maps()
+            self._save_result_maps()
 
             self.design_tensor = orig_design[test_idx, :, :]
             self.n_obs = self.design_tensor.shape[0]
@@ -745,7 +705,7 @@ class VoxelwiseRegression:
         self.weight_vector = orig_weights
         self.n_obs = orig_n_obs
         self.out_dir = orig_out_dir
-        self._save_nifti_maps()
+        self._save_result_maps()
         return scalar_preds
 
     def _evaluate_map(self, regression_idx=0, batch_size=5000, cv="loocv"):
@@ -825,7 +785,7 @@ class VoxelwiseRegression:
             # Run one regression for this output
             self.BETA, self.T, self.R2 = self.voxelwise_regression(regression_idx=j)
             self.run_permutation(self.n_permutations)
-            self._save_nifti_maps()
+            self._save_result_maps()
 
     def run(self):
         """
@@ -842,7 +802,7 @@ class VoxelwiseRegression:
         """
         self.BETA, self.T, self.R2 = self.voxelwise_regression()
         self.run_permutation(self.n_permutations)
-        self._save_nifti_maps()
+        self._save_result_maps()
 
 # -----------------------
 # batching / assembly

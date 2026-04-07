@@ -32,6 +32,7 @@ class RegressionPrep:
         data_transform_method='standardize',
         voxelwise_variables=None,          # backward compatibility
         voxelwise_interactions=None,       # backward compatibility
+        formula=None,
     ):
         """
         Initializes the RegressionPrep class.
@@ -60,6 +61,7 @@ class RegressionPrep:
         self.exchangeability_block = exchangeability_block
         self.data_transform_method = data_transform_method
         self.weights_vector = self.get_weights(weights)
+        self.formula=formula
 
         if neuroimaging_variables is None:
             neuroimaging_variables = voxelwise_variables
@@ -151,7 +153,7 @@ class RegressionPrep:
             transpose=False,
         )
         loaded = importer.run()
-
+        
         if not isinstance(loaded, pd.DataFrame):
             raise TypeError(f"Expected GiiNiiFileImport.run() to return a DataFrame, got {type(loaded)}")
 
@@ -163,6 +165,8 @@ class RegressionPrep:
                 f"but dataframe has {df.shape[0]}"
             )
 
+        self.output_ftype = importer.output_ftype
+        self.mask_path = importer.mask_path
         return arr
 
     ### Data Preprocessing ###
@@ -294,7 +298,10 @@ class RegressionPrep:
             'neuroimaging_regression': {
                 "design_matrix": f"{self.out_dir}/design_matrix.npy",
                 "contrast_matrix": f"{self.out_dir}/contrast_matrix.npy",
-                "outcome_data": f"{self.out_dir}/outcome_data.npy"
+                "outcome_data": f"{self.out_dir}/outcome_data.npy",
+                "output_ftype": self.output_ftype,
+                "mask_path": self.mask_path,
+                "formula": self.formula
             }
         }
 

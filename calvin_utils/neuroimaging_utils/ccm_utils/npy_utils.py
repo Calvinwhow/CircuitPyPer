@@ -88,6 +88,18 @@ class DataLoader:
             'niftis': np.load(paths[nifti_type])
         }
         return data
+    
+    def _read_json(self):
+        with open(self.data_dict_path, "r") as f:
+            return json.load(f)
+        
+    def output_info(self):
+        payload = self._read_json()["neuroimaging_regression"]
+        return {
+            "output_ftype": payload.get("output_ftype", "nifti"),
+            "mask_path": payload.get("mask_path", None)
+        }
+        
 
                 
 ###for regression analysis###
