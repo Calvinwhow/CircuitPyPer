@@ -4,7 +4,7 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 from scipy.stats import spearmanr, pearsonr, kendalltau
 
-def simple_scatter(df, x_col, y_col, dataset_name, out_dir, y_label='y Axis', x_label='x Axis', flip_axes=False, ax=None, show=True, label_fontsize=20):
+def simple_scatter(df, x_col, y_col, dataset_name, out_dir, y_label='y Axis', x_label='x Axis', flip_axes=False, ax=None, show=True, label_fontsize=20, extra_lines=None):
     """
     Generate and save a scatterplot of x_col vs. y_col with Spearman and Pearson correlation.
 
@@ -66,9 +66,12 @@ def simple_scatter(df, x_col, y_col, dataset_name, out_dir, y_label='y Axis', x_
 
     x_pos = 0.05
     y_pos = 0.95 if rho > 0 else 0.15
+    extra_text = ""
+    if extra_lines:
+        extra_text = "\n" + "\n".join(extra_lines)
     ax.text(
         x_pos, y_pos,
-        f"Rho = {rho:.2f}, p = {p:.2e}\nR = {r:.2f}, p = {pr:.2e}",
+        f"Rho = {rho:.2f}, p = {p:.2e}\nR = {r:.2f}, p = {pr:.2e}{extra_text}",
         fontsize=16,
         transform=ax.transAxes,
         verticalalignment='top',
@@ -99,7 +102,7 @@ class SimpleScatterPlotWrapper:
     def __init__(self, df):
         self.df = df
 
-    def plot(self, x_col, y_col, dataset_name="Scatter Plot", out_dir=None, x_label=None, y_label=None, flip_axes=False, ax=None, show=True, label_fontsize=20):
+    def plot(self, x_col, y_col, dataset_name="Scatter Plot", out_dir=None, x_label=None, y_label=None, flip_axes=False, ax=None, show=True, label_fontsize=20, extra_lines=None):
         return simple_scatter(
             df=self.df,
             x_col=x_col,
@@ -112,6 +115,7 @@ class SimpleScatterPlotWrapper:
             ax=ax,
             show=show,
             label_fontsize=label_fontsize,
+            extra_lines=extra_lines,
         )
 
 

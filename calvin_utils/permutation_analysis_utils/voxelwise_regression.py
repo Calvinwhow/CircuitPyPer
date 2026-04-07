@@ -1,13 +1,17 @@
+import os
 import json
 import numpy as np
-from scipy.stats import t
-from calvin_utils.neuroimaging_utils.ccm_utils.npy_utils import DataLoader
-import os
+import pandas as pd
 from tqdm import tqdm
 import nibabel as nib
+from scipy.stats import t
 import statsmodels.api as sm
-from sklearn.linear_model import LogisticRegression
 from scipy.special import expit
+from sklearn.linear_model import LogisticRegression
+from calvin_utils.statistical_utils.scatterplot import simple_scatter
+from calvin_utils.neuroimaging_utils.ccm_utils.npy_utils import DataLoader
+from calvin_utils.neuroimaging_utils.nifti_utils.damage_score_utils import DamageScorer
+
 
 class VoxelwiseRegression:
     """
@@ -219,42 +223,6 @@ class VoxelwiseRegression:
             F[obs_start:obs_stop, :] = term1 * np.maximum(term2, eps)
         return F
         
-    def _voxelwise_logit(X, y, W):
-        '''Simplified logistic that just works in a voxelwise looped manner'''
-        X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
-        y = np.nan_to_num(y, nan=0.0, posinf=0.0, neginf=0.0)
-        lr = LogisticRegression(random_state=0).fit(X, y, sample_weight=W)
-        B = lr.coef_
-        XTX_inv = np.linalg.pinv( X.T @ X )
-        P = lr.predict_proba(X)[:, 1]
-        return B, XTX_inv, P
-
-    def _clipped_sigmoid(self, a, eps=1e-9):
-        '''Returns a numerically stable sigmoid to get p(y|x)'''
-        out = np.empty_like(a, dtype=float)
-        pos = a >= 0
-        out[pos]  = 1.0 / (1.0 + np.exp(-a[pos]))
-        ea = np.exp(a[~pos])
-        out[~pos] = ea / (1.0 + ea)
-        return np.clip(out, eps, 1 - eps)
-
-    def _irls(self, X, Y, B, P, W, eps=1e-9, ridge=1e-6):
-        '''IRLS from Newton-raphson rewritten in OLS form'''
-        V = P * (1.0 - P)                 # bernoulli probability variance function
-        V = np.maximum(V, eps)            # add numeric stability
-        s = np.sqrt(W*V)                  # sqrt of weights * bernoulli variance (effective weight). Scaled.
-
-        Z = (X@B) + ((Y - P) / V)         # current response 
-        Z_w = Z * s                       # gets Z weighed by ~scaled effective weights
-        
-        X_w = X * s[:, None]               # gets X weighed by ~scaled effective weights
-        XtX = X_w.T @ X_w                  # XTWX = covariance matrix = observed fisher info = observed hessian!
-        XtX = XtX + (ridge * np.eye(XtX.shape[0]))
-        XtX_inv = np.linalg.pinv(XtX, rcond=1e-10)
-        
-        B_n = XtX_inv @ (X_w.T @ Z_w)
-        return B_n, XtX
-    
     def _mahalanobis_norm_test(self, B_n, B, XtX, tol=1e-5):
         '''Mahalanobis norm is the natural fit for IRLS'''
         DB = B_n - B
@@ -263,31 +231,6 @@ class VoxelwiseRegression:
     def _infinity_norm_test(self, B_n, B, tol=1e-8): 
         '''Checks infinity norm'''
         return np.max(np.abs(B_n - B)) < tol
-    
-    def _fit_logistic(self, X, Y, W, max_iter=50, ridge=1e-6, clip=20.0):
-        '''
-        IRLS for argmax(β) of:
-            log-likelihood(β) = Σ_i  W[YβX - log(1 + e^βX)]
-        which can be maximized with 
-        Bn = (XTWX)^-1 XTW_eZ_e <- used to update W 
-        z  = Xβ + ( (y - p) / p(1-p) )
-        n  = Xβ
-        '''
-        B = np.zeros(self.n_preds)       # init B
-        XtX = None
-        for _ in range(max_iter):
-            P = self._clipped_sigmoid(X@B)
-            B_n, XtX = self._irls(X, Y, B, P, W, ridge=ridge)
-            if self._mahalanobis_norm_test(B_n, B, XtX) or self._infinity_norm_test(B_n, B):
-                B = B_n
-                break
-            B = B_n
-        if clip is not None:
-            B = np.clip(B, -clip, clip)
-        if XtX is None:
-            XtX = X.T @ X
-        XtX_inv = np.linalg.pinv(XtX, rcond=1e-10)
-        return B, XtX_inv
     
     def get_r2(self, Y, Y_HAT, W, eps=1e-12):
         """
@@ -394,7 +337,8 @@ class VoxelwiseRegression:
         if X_inv is None or XTX_inv is None:
             X_inv, XTX_inv = self._prep_naive_bayes(X)
         j, J = (Y == 1), (Y == 0)
-        p1 = j.sum() / self.n_obs; p0 = 1.0 - p1
+        p1 = j.sum() / self.n_obs
+        p0 = 1.0 - p1
         LL = 0
         for k in range(self.n_preds):
             num = self._gaussian_kernel(X,j,k)
@@ -407,31 +351,6 @@ class VoxelwiseRegression:
         T = self.apply_contrasts(XTX_inv, B, MSE=1)                 # (n_contrast, n_voxels) <- setting MSE = 1 converts this to a Wald t-stat
         return B, T, PR2, np.log((p1 + eps)/(p0 + eps))                    
     
-    def _run_logistic(self, X, Y, W, vectorize=True):
-        """
-        Binomial logistic regression via IRLS (Y in {0,1}).
-        Returns: BETA (p,), T (n_contrasts,), R2 (McFadden) as (1,)
-        """
-        try:
-            if vectorize:
-                B, XTX_inv = self._fit_logistic(X, Y, W)
-                P = self._clipped_sigmoid(X @ B) # Gets probability, but clips for safety
-            else:
-                B, XTX_inv, P = self._voxelwise_logit(X, Y, W)
-            PR2 = self._get_pseudo_r2(Y, W, P)
-            T = self.apply_contrasts(XTX_inv, B, MSE=1)     # setting MSE = 1 converts this to a Wald t-stat
-        except Exception as e:
-            if 'SVD did not converge' in str(e):
-                B  = np.zeros(self.n_preds)
-                T  = np.zeros(self.n_contrasts)
-                PR2= np.zeros((1,))
-            else:
-                print(f"Error in running logistic regression: {e}")
-                B  = np.full(self.n_preds, np.nan)
-                T  = np.full(self.n_contrasts, np.nan)
-                PR2= np.full((1,), np.nan)
-        return B, T, PR2
-
     def _run_precomputed_linear(self, X, Y, W, XtX_inv):
         """
         Runs a precomputed linear regression using known XTX and Y to speed up permutations. 
@@ -465,7 +384,6 @@ class VoxelwiseRegression:
         """
         if Y.ndim == 1:
             Y = Y[:, None]
-        print(X.shape, Y.shape)
         wsqrt = np.sqrt(W)                              # (n_obs,)        
         Xw = X * self.align_w(wsqrt, X)                # (n_obs, n_preds)
         Yw = Y * self.align_w(wsqrt, Y)                # (n_obs, n_targets)
@@ -490,7 +408,9 @@ class VoxelwiseRegression:
     def _run_voxelwise_model(self, regressor, regressand, weights, regression_idx, permutation):
         """Choose which regression to run, and how to run it"""
         X, Y, W = self._prep_targets(regressor, regressand, weights, 'whole_brain', regression_idx)
-        B = np.zeros((self.n_preds, self.n_voxels)); T = np.zeros((self.n_contrasts, self.n_voxels)); R2 = np.zeros((1, self.n_voxels)) 
+        B = np.zeros((self.n_preds, self.n_voxels)); 
+        T = np.zeros((self.n_contrasts, self.n_voxels)); 
+        R2 = np.zeros((1, self.n_voxels)) 
         LOG_PRIORS = np.zeros((1, self.n_voxels))
         
         # Linear regression
@@ -498,19 +418,14 @@ class VoxelwiseRegression:
             B, T, R2 = self._run_precomputed_linear(X,Y,W, self.XTX_inv)
         elif (self.regression_type=='linear') and (np.all(self.XTX_inv == 0)) and (self.design_tensor.shape[2] != self.n_voxels): # Linear regression, broadcast (XTX inv not yet calculated)
             B, T, R2, XTX_inv = self._run_linear(X, Y, W)                                       # defines self.XTX_inv for use in permutations
-            if not permutation: self.XTX_inv = XTX_inv
-        elif (self.regression_type=='linear'):                                                  # linear regression, voxelwise
-            for idx in (range(self.n_voxels) if permutation else tqdm(range(self.n_voxels), desc='Running voxelwise regressions')):
-                X, Y, W = self._prep_targets(regressor, regressand, weights, idx, regression_idx)
-                B[:,idx], T[:,idx], R2[:,idx], XTX_inv = self._run_linear(X, Y, W)
-                if not permutation: self.XTX_inv[:, :, idx] = XTX_inv
+            self.XTX_inv = XTX_inv if not permutation else self.XTX_inv
+        elif self.regression_type=='linear':                                                  # linear regression, voxelwise
+            raise NotImplementedError("Voxelwise linear regression path removed; use broadcast design or implement a fixed voxelwise path.")
         
         # Naive Bayes
         elif (self.regression_type=='naive_bayes') and (self.outcome_tensor.shape[2] == self.n_voxels):      # Naive bayes, voxelwise
-            for idx in tqdm(range(self.n_voxels), desc='Running voxelwise regressions'):
-                X, Y, W = self._prep_targets(regressor, regressand, weights, idx, regression_idx)
-                B[:, idx], T[:, idx], R2[:, idx], LOG_PRIORS[:, idx] = self._run_naive_bayes(X, Y, W)
-        elif (self.regression_type=='naive_bayes'):                                                 # Naive bayes, batched
+            raise NotImplementedError("Voxelwise naive_bayes path removed; use non-voxelwise outcome or implement a fixed voxelwise path.")
+        elif self.regression_type=='naive_bayes':                                                 # Naive bayes, batched
             Y = regressand[:, regression_idx, 0]
             for s, e in voxel_batches(self.n_voxels, batch_size=5000):
                 if regressor.shape[2] == self.n_voxels: # build per-voxel design for batch
@@ -522,7 +437,7 @@ class VoxelwiseRegression:
         
         # Logistic
         elif self.regression_type=='logistic':
-            B, T, R2 = self._run_logistic(X, Y, W)
+            raise NotImplementedError("Logistic regression path removed; previous voxelwise path was broken.")
         else:
             raise ValueError(f"Regression type {self.regression_type} not implemented. Please set regression_type='linear' or 'logistic'.")
         return B, T, R2, LOG_PRIORS
@@ -584,7 +499,7 @@ class VoxelwiseRegression:
         Saves unmasked NIfTI image to disk.
         """
         if self.out_dir is None:
-            return
+            return None
         
         unmasked_map, mask_affine = self._unmask_array(map_data)
         img = nib.Nifti1Image(unmasked_map, affine=mask_affine)
@@ -644,7 +559,7 @@ class VoxelwiseRegression:
                 
         # Save FWE-corrected significance masks if we have permutation results
         if hasattr(self, 'R2p'):
-            sig_mask = (self.R2p < 0.05)
+            sig_mask = self.R2p < 0.05
             sig_r2vals = np.where(sig_mask, self.R2, np.nan)
             self._save_map(sig_r2vals, f"R2_FWE.nii.gz")
             self._save_map(self.R2p, f"R2_pval_FWE.nii.gz")
@@ -719,78 +634,167 @@ class VoxelwiseRegression:
                 loaded.append(self._mask_array(arr_full))
         return loaded
 
-    def _run_prediction_switch(self, params_dir):
+    def _run_prediction_switch(self, temp_dir):
         """
         Dispatch prediction based on regression_type.
         """
         X = self.design_tensor
-        if X.ndim == 2: X = X[:, :, None]
+        X = X[:, :, None] if X.ndim == 2 else X
+        X = np.broadcast_to(X, (self.n_obs, self.n_preds, self.n_voxels)).copy() if X.shape[2] == 1 else X 
         if self.regression_type == "naive_bayes":
-            B, A = self._load_prediction_params(params_dir, ["beta_predictor_*", "LOG_PRIORS"])
-            if X.shape[2] == 1: X = np.broadcast_to(X, (self.n_obs, self.n_preds, B.shape[0])).copy()
+            B, A = self._load_prediction_params(temp_dir, ["beta_predictor_*", "LOG_PRIORS"])
             return self._run_naive_bayes_prediction(X, B, A)
         if self.regression_type == "linear":
-            (B,) = self._load_prediction_params(params_dir, ["beta_predictor_*"])
-            if X.shape[2] == 1: X = np.broadcast_to(X, (self.n_obs, self.n_preds, B.shape[0])).copy()
+            (B,) = self._load_prediction_params(temp_dir, ["beta_predictor_*"])
             return self._run_linear_prediction(X, B)
         raise NotImplementedError(f"Prediction for regression_type='{self.regression_type}' is not yet implemented.")
     
-    #### Public Code ####
-    def run_prediction(self, params_dir):
+    def _get_scalar_predictions(self, temp_dir, subject_arr, prediction_arr):
+        """Takes voxelwise prediction arrays (or t-maps) and extracts an average value from them"""
+        preds = np.zeros((1, self.n_contrasts+1))
+        for i in range(self.n_contrasts):
+            (T,) = self._load_prediction_params(temp_dir, [f"contrast_{i}_tval*"])
+            dmg_value_dict = DamageScorer._calculate_metrics(subject_arr, T, ["cosine"])
+            preds[0, i] = dmg_value_dict["cosine"]
+        dmg_value_dict = DamageScorer._calculate_metrics(subject_arr, prediction_arr, ["cosine"])
+        preds[0, -1]   = dmg_value_dict["cosine"]
+        return preds
+
+
+    ### Cross Validated Predictions ###
+    def _get_cv_splits(self, cv):
         """
-        Loads prediction parameters from params_dir and runs prediction
-        using the current regression_type.
-        Returns:
-            P : (n_obs, n_vox) predicted probabilities for naive_bayes or predictions for linear
+        Returns a list of (train_idx, test_idx) tuples.
+        cv can be:
+            - "loocv"
+            - "loo"
+            - integer number of folds, e.g. 2, 5, 10
         """
-        self.PREDICTIONS = self._run_prediction_switch(params_dir)
-        self._save_nifti_maps()
-    
-    def run_prediction_loocv(self, regression_idx=0, batch_size=5000):
+        n = self.n_obs
+        indices = np.arange(n)
+
+        if isinstance(cv, str):
+            cv = cv.lower()
+            if cv in {"loocv", "loo"}:
+                splits = []
+                for i in range(n):
+                    test_idx = np.array([i])
+                    train_idx = indices[indices != i]
+                    splits.append((train_idx, test_idx))
+                return splits
+            raise ValueError(f"Unrecognized cv string: {cv}")
+
+        if isinstance(cv, int):
+            if cv < 2:
+                raise ValueError("cv must be 'loocv'/'loo' or an integer >= 2.")
+            if cv > n:
+                raise ValueError(f"cv={cv} cannot exceed n_obs={n}.")
+
+            fold_indices = np.array_split(indices, cv)
+            splits = []
+            for k in range(cv):
+                test_idx = fold_indices[k]
+                train_idx = np.concatenate([fold_indices[j] for j in range(cv) if j != k])
+                splits.append((train_idx, test_idx))
+            return splits
+
+        raise ValueError("cv must be 'loocv'/'loo' or an integer >= 2.")
+
+    def run_prediction_cv(self, regression_idx=0, batch_size=5000, cv="loocv"):
         """
-        Leave-one-out CV predictions using in-sample data.
+        Cross-validated predictions using in-sample data.
+        cv can be 'loocv'/'loo' or an integer number of folds.
         Populates self.PREDICTIONS with per-observation predictions.
         """
-        preds = np.zeros((self.n_obs, self.n_voxels))
+        scalar_preds = np.zeros((self.n_obs, self.n_contrasts + 1))
+        self.PREDICTIONS = np.zeros((self.n_obs, self.n_voxels))
+
         orig_design = self.design_tensor
         orig_outcome = self.outcome_tensor
         orig_weights = self.weight_vector
         orig_n_obs = self.n_obs
         orig_out_dir = self.out_dir
 
-        params_dir = os.path.join(self.out_dir or "/tmp", "loocv_prediction_params")
-        os.makedirs(params_dir, exist_ok=True)
+        temp_dir = os.path.join(self.out_dir or "/tmp", f"{cv}_prediction_params")
+        os.makedirs(temp_dir, exist_ok=True)
 
-        for i in tqdm(range(self.n_obs), desc="LOOCV predictions"):
-            train_idx = np.ones(self.n_obs, dtype=bool)
-            train_idx[i] = False
+        splits = self._get_cv_splits(cv)
 
-            # Fit on N-1 using the established regression path
+        for fold_idx, (train_idx, test_idx) in enumerate(tqdm(splits, desc=f"{cv} predictions")):
             self.design_tensor = orig_design[train_idx, :, :]
             self.outcome_tensor = orig_outcome[train_idx, :, :]
             self.weight_vector = orig_weights[train_idx]
             self.n_obs = self.design_tensor.shape[0]
-            self.out_dir = params_dir
+            self.out_dir = temp_dir
 
             self.BETA, self.T, self.R2 = self.voxelwise_regression(regression_idx=regression_idx)
             self._save_nifti_maps()
 
-            # Predict on held-out using the established prediction loader
-            self.design_tensor = orig_design[i:i+1, :, :]
-            self.n_obs = 1
-            self.PREDICTIONS = self._run_prediction_switch(params_dir)
-            preds[i, :] = self.PREDICTIONS[0, :]
+            self.design_tensor = orig_design[test_idx, :, :]
+            self.n_obs = self.design_tensor.shape[0]
+            prediction_arr = self._run_prediction_switch(temp_dir)
 
-        # Restore original state
+            self.PREDICTIONS[test_idx, :] = prediction_arr
+
+            for local_i, global_i in enumerate(test_idx):
+                subject_arr = orig_outcome[global_i, regression_idx, :]
+                scalar_preds[global_i, :] = self._get_scalar_predictions(temp_dir, subject_arr, prediction_arr[local_i, :])
+
         self.design_tensor = orig_design
         self.outcome_tensor = orig_outcome
         self.weight_vector = orig_weights
         self.n_obs = orig_n_obs
         self.out_dir = orig_out_dir
-
-        self.PREDICTIONS = preds
         self._save_nifti_maps()
+        return scalar_preds
+
+    def _evaluate_map(self, regression_idx=0, batch_size=5000, cv="loocv"):
+        """
+        Run CV prediction and generate scatterplots of predicted vs actual Y.
+        Adds RMSE and MAE to the plot text.
+        """
+        if not self.out_dir:
+            raise ValueError("out_dir must be set for cross-validation plotting.")
+        scalar_preds = self.run_prediction_cv(regression_idx=regression_idx, batch_size=batch_size, cv=cv)
+
+        if self.outcome_tensor.shape[2] == 1:
+            actual_y = self.outcome_tensor[:, regression_idx, 0]
+        else:
+            actual_y = np.nanmean(self.outcome_tensor[:, regression_idx, :], axis=1)
+
+        for j in range(scalar_preds.shape[1]):
+            pred_col = scalar_preds[:, j]
+            rmse = float(np.sqrt(np.mean((pred_col - actual_y) ** 2)))
+            mae = float(np.mean(np.abs(pred_col - actual_y)))
+            df = pd.DataFrame({"pred": pred_col, "actual": actual_y})
+
+            if j < self.n_contrasts:
+                name = f"{cv}_contrast_{j}_correlation"
+            else:
+                name = f"{cv}_voxelwisemodel_aggregate-prediction"
+
+            simple_scatter(
+                df=df,
+                x_col="pred",
+                y_col="actual",
+                dataset_name=name,
+                out_dir=os.path.join(self.out_dir, "cross_validations"),
+                x_label="Predicted",
+                y_label="Actual",
+                extra_lines=[f"RMSE = {rmse:.3g}", f"MAE = {mae:.3g}"],
+                show=False,
+            )
+            
     
+    #### Public Code - Fitting ####
+    def run_cross_validation(self):
+        """Orchestrates cross-validated relation of t-maps and voxelwise predictions to outcomes"""
+        n = self.n_obs
+        self._evaluate_map(cv="loocv")
+        self._evaluate_map(cv=2)
+        self._evaluate_map(cv=5)
+        self._evaluate_map(cv=10)
+        
     def run_single_multiout_regression(self, permutation=False):
         """Runs regression across all outputs a single time and returns the associated arrays."""
         B_multi = np.zeros((self.n_contrasts, self.n_voxels, self.n_outputs))
@@ -799,7 +803,7 @@ class VoxelwiseRegression:
         for j in range(self.n_outputs):
             B_multi[:,:,j], T_multi[:,:,j], R2_multi[:,:,j] = self.voxelwise_regression(permutation=permutation, regression_idx=j)
         
-        if permutation == False:            # Store the results in the class attributes for use later
+        if permutation is False:            # Store the results in the class attributes for use later
             self.B_multi, self.T_multi, self.R2_multi = B_multi, T_multi, R2_multi
         return B_multi, T_multi, R2_multi
 

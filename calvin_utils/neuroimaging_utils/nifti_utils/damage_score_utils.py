@@ -67,42 +67,45 @@ class DamageScorer:
         """Initialize an empty damage dataframe."""
         return pd.DataFrame(index=self.dv_df.columns)
 
-    def _calculate_metrics(self, thresholded_df, region_of_interest_df, roi, subject, metrics):
+    @staticmethod
+    def _calculate_metrics(subject_array, roi_array, metrics):
         '''Gets metric of damage between each independent variable nifti and dependent variable nifti'''
-        subject_array = thresholded_df[subject].values
-        roi_array = region_of_interest_df[roi].values
         subject_array = np.nan_to_num(subject_array, nan=0.0, posinf=np.nanmax(subject_array[np.isfinite(subject_array)]) if np.isfinite(subject_array).any() else 0, neginf=np.nanmin(subject_array[np.isfinite(subject_array)]) if np.isfinite(subject_array).any() else 0)
         roi_array = np.nan_to_num(roi_array, nan=0.0, posinf=np.nanmax(roi_array[np.isfinite(roi_array)]) if np.isfinite(roi_array).any() else 0, neginf=np.nanmin(roi_array[np.isfinite(roi_array)]) if np.isfinite(roi_array).any() else 0)
         
+        results = {}
         if 'spatial_correlation' in metrics:
-            self.damage_df.loc[subject, f'{roi}_spatial_corr'] = self._calculate_spatial_correlation(subject_array, roi_array)
+            results['spatial_correlation'] = DamageScorer._calculate_spatial_correlation(subject_array, roi_array)
         if 'cosine' in metrics:
-            self.damage_df.loc[subject, f'{roi}_cosine'] = self._calculate_cosine_similarity(subject_array, roi_array)
+            results['cosine'] = DamageScorer._calculate_cosine_similarity(subject_array, roi_array)
         if 'sum' in metrics:
-            self.damage_df.loc[subject, f'{roi}_sum'] = self._calculate_dot_product(subject_array, roi_array)
+            results['sum'] = DamageScorer._calculate_dot_product(subject_array, roi_array)
         if 'max_in_roi' in metrics:
-            self.damage_df.loc[subject, f'{roi}_max_in_roi'] = self._calculate_max_in_roi(subject_array, roi_array)
+            results['max_in_roi'] = DamageScorer._calculate_max_in_roi(subject_array, roi_array)
         if 'min_in_roi' in metrics:
-            self.damage_df.loc[subject, f'{roi}_min_in_roi'] = self._calculate_min_in_roi(subject_array, roi_array)
+            results['min_in_roi'] = DamageScorer._calculate_min_in_roi(subject_array, roi_array)
         if 'avg_in_target' in metrics:
-            self.damage_df.loc[subject, f'{roi}_average_subject_in_target'] = self._calculate_normalized_dot_product(subject_array, roi_array, denominator='avg_in_target')
+            results['avg_in_target'] = DamageScorer._calculate_normalized_dot_product(subject_array, roi_array, denominator='avg_in_target')
         if 'avg_in_subject' in metrics:
-            self.damage_df.loc[subject, f'{roi}_average_target_in_subject'] = self._calculate_normalized_dot_product(subject_array, roi_array, denominator='avg_in_subject')
+            results['avg_in_subject'] = DamageScorer._calculate_normalized_dot_product(subject_array, roi_array, denominator='avg_in_subject')
         if 'num_in_roi' in metrics:
-            self.damage_df.loc[subject, f'{roi}_num_in_roi'] = self._count_voxels_greater_than_threshold(subject_array, mask=roi_array, threshold=2)
+            results['num_in_roi'] = DamageScorer._count_voxels_greater_than_threshold(subject_array, mask=roi_array, threshold=2)
         if 'dice' in metrics:
-            self.damage_df.loc[subject, f'{roi}_dice_coeff'] = self._calculate_dice(subject_array, roi_array)
-        return self.damage_df
-    
-    def _calculate_max_in_roi(self, array1, roi_arr):
+            results['dice'] = DamageScorer._calculate_dice(subject_array, roi_array)
+        return results
+
+    @staticmethod
+    def _calculate_max_in_roi(array1, roi_arr):
         '''Expects a binary'''
         return np.nanmax(array1[roi_arr>0])
         
-    def _calculate_min_in_roi(self, array1, roi_arr):
+    @staticmethod
+    def _calculate_min_in_roi(array1, roi_arr):
         '''Expects a binary'''
         return np.nanmin(array1[roi_arr>0])
 
-    def _calculate_spatial_correlation(self, array1, array2):
+    @staticmethod
+    def _calculate_spatial_correlation(array1, array2):
         '''Calculates pearson correlation of 2 arrays'''
         mean1 = np.mean(array1)
         mean2 = np.mean(array2)
@@ -112,7 +115,8 @@ class DamageScorer:
             return 0  # Avoid division by zero
         return numerator / denominator
 
-    def _calculate_cosine_similarity(self, array1, array2):
+    @staticmethod
+    def _calculate_cosine_similarity(array1, array2):
         '''Calculate cosine similarity between two arrays'''
         dot_product = np.dot(array1, array2)
         norm1 = np.linalg.norm(array1)
@@ -121,15 +125,18 @@ class DamageScorer:
             return 0  # Avoid division by zero
         return dot_product / (norm1 * norm2)
 
-    def _calculate_dice(self, array1, array2):
+    @staticmethod
+    def _calculate_dice(array1, array2):
         '''Calculates dice coefficient'''
         return dice(array1, array2)
         
-    def _calculate_dot_product(self, array1, array2):
+    @staticmethod
+    def _calculate_dot_product(array1, array2):
         '''Calculate the dot product of two arrays'''
         return np.dot(array1, array2)
 
-    def _calculate_normalized_dot_product(self, subj_arr, roi_arr, denominator='array_1'):
+    @staticmethod
+    def _calculate_normalized_dot_product(subj_arr, roi_arr, denominator='array_1'):
         '''Calculate the normalized dot product (average of the dot product)'''
         dot_product = np.dot(subj_arr, roi_arr)
         if denominator == 'avg_in_target':
@@ -142,13 +149,11 @@ class DamageScorer:
             return 0  # Avoid division by zero
         return dot_product / non_zero_elements
 
-    def _count_voxels_greater_than_threshold(self, array, mask=None, threshold=2):
+    @staticmethod
+    def _count_voxels_greater_than_threshold(array, roi_arr, threshold=2):
         '''Count the number of voxels where the value is greater than the threshold within a given mask'''
-        if mask is None:
-            mask = self.brain_indices
-        if mask is not None:
-            mask_indices = np.where(mask > 0)[0] # Ensure mask provides binary indices
-            array = array[mask_indices]
+        mask_indices = np.where(roi_arr != 0)[0] # Ensure mask provides binary indices
+        array = array[mask_indices]
         return np.sum(array > threshold)
 
     def score_csv_against_target(
@@ -265,7 +270,25 @@ class DamageScorer:
         self.damage_df = self._initialize_damage_df()
         metrics = [selected_damage] if isinstance(selected_damage, str) else list(selected_damage)
         for subject in self.dv_df.columns:
-            self._calculate_metrics(self.dv_df, self.roi_df, target_suffix, subject, metrics)
+            subject_array = self.dv_df[subject].values
+            roi_array = self.roi_df[target_suffix].values
+            results = self._calculate_metrics(subject_array, roi_array, metrics)
+            for metric, value in results.items():
+                if metric == "spatial_correlation":
+                    col_name = f"{target_suffix}_spatial_corr"
+                elif metric == "avg_in_target":
+                    col_name = f"{target_suffix}_average_subject_in_target"
+                elif metric == "avg_in_subject":
+                    col_name = f"{target_suffix}_average_target_in_subject"
+                elif metric == "dice":
+                    col_name = f"{target_suffix}_dice_coeff"
+                elif metric == "max_in_roi":
+                    col_name = f"{target_suffix}_max_in_roi"
+                elif metric == "min_in_roi":
+                    col_name = f"{target_suffix}_min_in_roi"
+                else:
+                    col_name = f"{target_suffix}_{metric}"
+                self.damage_df.loc[subject, col_name] = value
 
         for metric in metrics:
             if metric == "spatial_correlation":
@@ -301,31 +324,19 @@ class DamageScorer:
         Calculate damage scores for dv_df and roi_df based on specified metrics.
         This function computes damage scores by iterating through regions of interest and subjects,
         applying the specified metrics to evaluate the atrophy data.
-        Args:
-            metrics (list of str, optional): A list of metrics to calculate damage scores. 
-                Default is ['spatial_correlation', 'cosine', 'sum', 'average', 'num_in_roi'].
-                Supported metrics include:
-                    - 'spatial_correlation': Measures spatial correlation between niftis.
-                    - 'cosine': Computes cosine similarity.
-                    - 'sum': Calculates the sum of values.
-                    - 'avg_in_roi': Computes the average of subject within target, treating the target as an ROI. i.e. calculate connectivity within a region
-                    - 'avg_in_subject': Computes average of target within the subject, treating the subject as an ROI. i.e. calculate how connected some constant map (target) is to a subject's VTA 
-                    - 'num_in_roi': Counts the number of suprathreshold voxels inside the mmask.
-                    - 'dice': Takes the dice coefficient 
-                    - 'max_in_roi': takes a binary roi
-                    - 'min_in_roi': takes a binary roi 
-            trace (bool): determines if a trace matrix should be created or not
+
         Returns:
             pd.DataFrame: A DataFrame containing the calculated damage scores for each subject
             and region of interest. Columns represent subjects, and rows represent regions.
         """
         self.damage_df = self._initialize_damage_df()            # (n_subjects, n_rois)
         for roi_idx, roi in tqdm(enumerate(self.roi_df.columns)):               # iterate over each roi
-            for sub_idx, subject in enumerate(self.dv_df.columns):              # iterate over each subject
-                if not trace:
-                    self._calculate_metrics(self.dv_df, self.roi_df, roi, subject, metrics)
-                elif (trace) and (roi_idx == sub_idx):
-                    self._calculate_metrics(self.dv_df, self.roi_df, roi, subject, metrics)
+            for sub_idx, subject in enumerate(self.dv_df.columns):  
+                subject_array = self.dv_df[subject].values
+                roi_array = self.roi_df[roi].values# iterate over each subject
+                results = self._calculate_metrics(subject_array, roi_array, metrics) if (not trace or roi_idx == sub_idx) else {}
+                for metric, value in results.items():
+                    self.damage_df.loc[subject, f"{roi}_{metric}"] = value
         if trace:
             self.damage_df['diagonal'] = np.diag(self.damage_df)
             self.damage_df = self.damage_df.loc[:,['diagonal']]
