@@ -562,17 +562,33 @@ class VoxelwiseRegression:
                 self.output_handler.save_map(self.PREDICTIONS[o, :], f"prediction_{o}", self.out_dir)
 
     #### Prediction Helpers #### ---TODO: MAKE NIFTI-AGNOSTIC.
+    def _get_mask_indices(self):
+        """
+        Cached boolean mask (flattened) used for vectorizing/unvectorizing.
+        """
+        if self.mask_path is None:
+            raise ValueError("Mask path is not provided. Provide the mask used to create the data_array.")
+
+        cache = getattr(self, "_mask_cache", None)
+        if cache is not None and cache.get("mask_path") == self.mask_path:
+            return cache["mask_indices"]
+
+        mask_img = nib.load(self.mask_path)
+        mask_data = mask_img.get_fdata()
+        mask_indices = mask_data.flatten() > 0
+        self._mask_cache = {
+            "mask_path": self.mask_path,
+            "mask_indices": mask_indices,
+        }
+        return mask_indices
+
     def _mask_array(self, data_array):
         """
         Masks a full-brain array to a vector using self.mask_path.
         Returns:
             masked_array: vectorized data (n_vox,)
         """
-        if self.mask_path is None:
-            raise ValueError("Mask path is not provided. Provide the mask used to create the data_array.")
-        mask = nib.load(self.mask_path)
-        mask_data = mask.get_fdata()
-        mask_indices = mask_data.flatten() > 0
+        mask_indices = self._get_mask_indices()
         return data_array.flatten()[mask_indices]
 
     def _load_prediction_params(self, params_dir, files):
@@ -625,7 +641,7 @@ class VoxelwiseRegression:
                 loaded.append(self._mask_array(arr_full))
         return loaded
 
-    def _run_prediction_switch(self, temp_dir):
+    def _run_prediction_switch(self, temp_dir=None, *, B=None, A=None):
         """
         Dispatch prediction based on regression_type.
         """
@@ -633,17 +649,26 @@ class VoxelwiseRegression:
         X = X[:, :, None] if X.ndim == 2 else X
         X = np.broadcast_to(X, (self.n_obs, self.n_preds, self.n_voxels)).copy() if X.shape[2] == 1 else X 
         if self.regression_type == "naive_bayes":
-            B, A = self._load_prediction_params(temp_dir, ["beta_predictor_*", "LOG_PRIORS"])
+            if B is None or A is None:
+                if temp_dir is None:
+                    raise ValueError("temp_dir is required when B/A are not provided.")
+                B, A = self._load_prediction_params(temp_dir, ["beta_predictor_*", "LOG_PRIORS"])
             return self._run_naive_bayes_prediction(X, B, A)
         if self.regression_type == "linear":
-            (B,) = self._load_prediction_params(temp_dir, ["beta_predictor_*"])
+            if B is None:
+                if temp_dir is None:
+                    raise ValueError("temp_dir is required when B is not provided.")
+                (B,) = self._load_prediction_params(temp_dir, ["beta_predictor_*"])
             return self._run_linear_prediction(X, B)
         raise NotImplementedError(f"Prediction for regression_type='{self.regression_type}' is not yet implemented.")
     
-    def _get_scalar_predictions(self, temp_dir, subject_arr, prediction_arr):
+    def _get_scalar_predictions(self, temp_dir, subject_arr, prediction_arr, *, T_all=None):
         """Takes voxelwise prediction arrays (or t-maps) and extracts an average value from them"""
         preds = np.zeros((1, self.n_contrasts+1))
-        (T_all,) = self._load_prediction_params(temp_dir, ["contrast_tval_*"])  # (n_vox, n_contrasts)
+        if T_all is None:
+            if temp_dir is None:
+                raise ValueError("temp_dir is required when T_all is not provided.")
+            (T_all,) = self._load_prediction_params(temp_dir, ["contrast_tval_*"])  # (n_vox, n_contrasts)
         for i in range(self.n_contrasts):
             T = T_all[:, i]
             dmg_value_dict = DamageScorer._calculate_metrics(subject_arr, T, ["cosine"])
@@ -692,7 +717,7 @@ class VoxelwiseRegression:
 
         raise ValueError("cv must be 'loocv'/'loo' or an integer >= 2.")
 
-    def run_prediction_cv(self, regression_idx=0, batch_size=5000, cv="loocv"):
+    def run_prediction_cv(self, regression_idx=0, batch_size=5000, cv="loocv", *, save_fold_params=False):
         """
         Cross-validated predictions using in-sample data.
         cv can be 'loocv'/'loo' or an integer number of folds.
@@ -706,9 +731,16 @@ class VoxelwiseRegression:
         orig_weights = self.weight_vector
         orig_n_obs = self.n_obs
         orig_out_dir = self.out_dir
+        # Avoid accidentally saving the final fold's fitted maps into orig_out_dir at the end.
+        orig_maps = {}
+        for name in ("B_multi", "T_multi", "R2_multi", "BETA", "T", "R2", "LOG_PRIORS", "Tp", "R2p"):
+            if hasattr(self, name):
+                orig_maps[name] = getattr(self, name)
 
-        temp_dir = os.path.join(self.out_dir or "/tmp", f"{cv}_prediction_params")
-        os.makedirs(temp_dir, exist_ok=True)
+        temp_dir = None
+        if save_fold_params:
+            temp_dir = os.path.join(self.out_dir or "/tmp", f"{cv}_prediction_params")
+            os.makedirs(temp_dir, exist_ok=True)
 
         splits = self._get_cv_splits(cv)
 
@@ -717,26 +749,41 @@ class VoxelwiseRegression:
             self.outcome_tensor = orig_outcome[train_idx, :, :]
             self.weight_vector = orig_weights[train_idx]
             self.n_obs = self.design_tensor.shape[0]
-            self.out_dir = temp_dir
+            self.out_dir = temp_dir if save_fold_params else None
 
             self.BETA, self.T, self.R2 = self.voxelwise_regression(regression_idx=regression_idx)
-            self._save_result_maps()
+            if save_fold_params:
+                self._save_result_maps()
 
             self.design_tensor = orig_design[test_idx, :, :]
             self.n_obs = self.design_tensor.shape[0]
-            prediction_arr = self._run_prediction_switch(temp_dir)
+            B = self.BETA.T  # (n_vox, n_preds)
+            A = getattr(self, "LOG_PRIORS", None)
+            A = np.asarray(A).squeeze() if A is not None else None
+            prediction_arr = self._run_prediction_switch(temp_dir, B=B, A=A)
 
             self.PREDICTIONS[test_idx, :] = prediction_arr
 
             for local_i, global_i in enumerate(test_idx):
                 subject_arr = orig_outcome[global_i, regression_idx, :]
-                scalar_preds[global_i, :] = self._get_scalar_predictions(temp_dir, subject_arr, prediction_arr[local_i, :])
+                scalar_preds[global_i, :] = self._get_scalar_predictions(
+                    temp_dir,
+                    subject_arr,
+                    prediction_arr[local_i, :],
+                    T_all=self.T.T,
+                )
 
         self.design_tensor = orig_design
         self.outcome_tensor = orig_outcome
         self.weight_vector = orig_weights
         self.n_obs = orig_n_obs
         self.out_dir = orig_out_dir
+        # Restore any pre-existing fitted maps; otherwise drop fold artifacts.
+        for name in ("B_multi", "T_multi", "R2_multi", "BETA", "T", "R2", "LOG_PRIORS", "Tp", "R2p"):
+            if name in orig_maps:
+                setattr(self, name, orig_maps[name])
+            elif hasattr(self, name):
+                delattr(self, name)
         self._save_result_maps()
         return scalar_preds
 
