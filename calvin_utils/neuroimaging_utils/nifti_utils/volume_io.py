@@ -19,6 +19,12 @@ class NiftiIO:
         self.bbox_4d = None
 
     @property
+    def resolved_mask_path(self):
+        if self.mask_path == 'default':
+            return DEFAULT_MASK
+        return self.mask_path
+
+    @property
     def mask(self):
         if self.mask_path == 'default':
             return nib.load(DEFAULT_MASK).get_fdata().flatten()
@@ -98,16 +104,85 @@ class NiftiIO:
 
         return arr
 
-    @staticmethod
-    def save_files(arr: np.ndarray, file_paths, dry_run=True, file_suffix=None):
-        for i, file_path in tqdm(enumerate(file_paths), desc='Saving files'):
+    def save_files(self, arr: np.ndarray, file_paths, dry_run=True, file_suffix=None, fill_value=0):
+        """
+        Save one NIfTI map per output file.
+
+        Accepted arr shapes:
+        - (n_voxels,) for a single file
+        - (n_voxels, n_files)
+        - (1, n_voxels) for a single file
+        - (n_voxels, 1) for a single file
+
+        If a mask is provided, arr is treated as masked when its length equals the number
+        of voxels in the mask above threshold; otherwise it must match the full volume size.
+        """
+        arr = np.asarray(arr)
+
+        if arr.ndim == 1:
+            arr = arr[:, None]
+        elif arr.ndim == 2 and len(file_paths) == 1:
+            if arr.shape[1] == 1:
+                pass
+            elif arr.shape[0] == 1:
+                arr = arr.T
+            else:
+                raise ValueError(f"Ambiguous 2D arr shape for single file: {arr.shape}")
+        elif arr.ndim != 2:
+            raise ValueError(f"Unsupported arr.ndim={arr.ndim}")
+
+        if arr.shape[1] != len(file_paths):
+            raise ValueError(
+                f"Number of files ({len(file_paths)}) does not match arr.shape[1] ({arr.shape[1]})"
+            )
+
+        mask_path = self.resolved_mask_path
+        mask_img = None
+        mask_indices = None
+        full_size = None
+        n_masked = None
+
+        if mask_path is not None:
+            mask_img = nib.load(mask_path)
+            mask_data = mask_img.get_fdata()
+            mask_indices = mask_data.flatten() > self.threshold
+            full_size = int(mask_indices.shape[0])
+            n_masked = int(mask_indices.sum())
+
+        for i, file_path in tqdm(list(enumerate(file_paths)), desc='Saving files'):
             out_dir = os.path.dirname(file_path)
-            nifti_name = os.path.splitext(os.path.basename(file_path))[0] + (file_suffix if file_suffix is not None else '')
+            base = os.path.splitext(os.path.basename(file_path))[0]
+            out_name = base + (file_suffix if file_suffix is not None else '')
+            out_path = os.path.join(out_dir, f"{out_name}.nii.gz")
+
+            data_vec = arr[:, i]
+
+            if mask_img is None:
+                if dry_run:
+                    print(f"Saving to: {out_path}")
+                else:
+                    os.makedirs(out_dir, exist_ok=True)
+                    view_and_save_nifti(data_vec, out_dir=out_dir, output_name=out_name, silent=True)
+                continue
+
+            if data_vec.shape[0] == n_masked:
+                full_vec = np.full(full_size, fill_value, dtype=data_vec.dtype)
+                full_vec[mask_indices] = data_vec
+            elif data_vec.shape[0] == full_size:
+                full_vec = data_vec
+            else:
+                raise ValueError(
+                    f"Map length {data_vec.shape[0]} does not match masked ({n_masked}) or full ({full_size}) voxel counts."
+                )
+
+            vol3d = full_vec.reshape(mask_img.shape).astype(np.float32)
 
             if dry_run:
-                print(f"Saving to: {os.path.join(out_dir, nifti_name)}")
+                print(f"Saving to: {out_path}")
             else:
-                view_and_save_nifti(arr[:, i], out_dir=out_dir, output_name=nifti_name, silent=True)
+                os.makedirs(out_dir, exist_ok=True)
+                img = nib.Nifti1Image(vol3d, affine=mask_img.affine)
+                nib.save(img, out_path)
                 
 DEFAULT_MASK = "circuit_pyper/resources/MNI152_T1_2mm_brain_mask.nii"
 

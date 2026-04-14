@@ -165,11 +165,11 @@ class VoxelwiseRegression:
         Ensure shape of X, Y, and W matrices. 
         If a regression_idx is provided, it selects the corresponding output channel. This enables multi-output regression.
         """
-        if voxel_idx=="whole_brain":                             # for whole-brain one-shot regression
+        if voxel_idx=="whole_brain":                       # for whole-brain one-shot regression
             X = regressor[:, :, :]
         elif regressor.shape[2] == self.n_voxels:          # for voxel-wise design with potential multiple outputs
             X = regressor[:, :, voxel_idx]
-        else:                                            # for broadcast design
+        else:                                              # for broadcast design (2D design matrix)
             X = regressor[:, :, 0]                       
 
         if voxel_idx=="whole_brain":                             # for whole-brain one-shot regression
@@ -383,23 +383,34 @@ class VoxelwiseRegression:
 
         Parameters
         ----------
-        X : (n_obs, n_preds)
-        Y : (n_obs,) or (n_obs, n_targets)
+        X : (n_obs, n_preds, n_vox)
+        Y : (n_obs, n_vox)
         W : (n_obs,)
         """
-        if Y.ndim == 1:
-            Y = Y[:, None]
-        wsqrt = np.sqrt(W)                              # (n_obs,)        
-        Xw = X * self.align_w(wsqrt, X)                # (n_obs, n_preds)
-        Yw = Y * self.align_w(wsqrt, Y)                # (n_obs, n_targets)
-        XtX_inv = np.linalg.pinv(Xw.T @ Xw)             # (n_preds, n_preds)
-        BETA = XtX_inv @ Xw.T @ Yw                      # (n_preds, n_targets)
-        Y_HAT = X @ BETA                                # (n_obs, n_targets)
-        residuals = Y - Y_HAT                           # (n_obs, n_targets)
-        dof = X.shape[0] - X.shape[1]                   # (1,)
-        mse = np.sum((residuals * self.align_w(wsqrt, residuals)  )**2, axis=0) / dof   # (n_targets,)
-        T = self.apply_contrasts(XtX_inv, BETA, mse)    # should return (n_contrasts, n_targets)
-        R2 = self.get_r2(Y, Y_HAT, W)                   # should return (n_targets,)
+        o, p, vx = X.shape
+        _, vy = Y.shape
+        if vx == 1:
+            X = np.broadcast_to(X, (o, p, vy))
+        
+        wsqrt = np.sqrt(W)
+        Xw = X * wsqrt[:, None, None]                           # (o, p, v)
+        Yw = Y * wsqrt[:, None]                                 # (o, v)
+
+        XtX = np.einsum("opv,oqv->pqv", Xw, Xw, optimize=True)  # (p, p, v)
+        XtY = np.einsum("opv,ov->pv", Xw, Yw, optimize=True)    # (p, v)
+
+        XtX_inv = np.linalg.pinv(np.moveaxis(XtX, 2, 0))        # (v, p, p)
+        XtX_inv = np.moveaxis(XtX_inv, 0, 2)                    # (p, p, v)
+
+        BETA = np.einsum("pqv,qv->pv", XtX_inv, XtY, optimize=True)
+        Y_HAT = np.einsum("opv,pv->ov", X, BETA, optimize=True)
+
+        residuals = Y - Y_HAT
+        dof = o - p
+        mse = np.sum(W[:, None] * residuals**2, axis=0) / dof
+
+        T = self.apply_contrasts(XtX_inv, BETA, mse)
+        R2 = self.get_r2(Y, Y_HAT, W)
 
         return BETA, T, R2, XtX_inv
     
@@ -408,6 +419,23 @@ class VoxelwiseRegression:
             raise ValueError(f"w has {w.shape[0]} but arr has {arr.shape[0]}")
         return w.reshape((w.shape[0],) + (1,) * (arr.ndim - 1))
 
+    
+    ### Switch Helper ###
+    def _detect_switch(self):
+        """Returns a string based on circumstances"""
+        if (self.regression_type=='linear') and (not np.all(self.XTX_inv == 0)):
+            return "xtx_complete"
+        if (self.regression_type=='linear') and (np.all(self.XTX_inv == 0)) and (self.design_tensor.shape[2] != self.n_voxels):
+            return "xtx_incomplete_broadcast"
+        if (self.regression_type=='linear') and (np.all(self.XTX_inv == 0)) and (self.design_tensor.shape[2] == self.n_voxels):
+            return "xtx_incomplete_voxelwise"
+        if (self.regression_type=='naive_bayes') and (self.outcome_tensor.shape[2] == self.n_voxels):
+            return "naive_bayes_voxelwise"
+        if self.regression_type=='naive_bayes':
+            return "naive_bayes"
+        if self.regression_type=='logistic':
+            return "logistic"
+        return None
     
     #### Voxelwise Model Switching Methods ####
     def _run_voxelwise_model(self, regressor, regressand, weights, regression_idx, permutation):
@@ -419,18 +447,21 @@ class VoxelwiseRegression:
         LOG_PRIORS = np.zeros((1, self.n_voxels))
         
         # Linear regression
-        if (self.regression_type=='linear') and (not np.all(self.XTX_inv == 0)): # Linear regression, broadcast (XTX inv precalcualted)
+        switch = self._detect_switch()
+        if switch=="xtx_complete":                                                                # Linear regression, broadcast (XTX inv precalcualted)
             B, T, R2 = self._run_precomputed_linear(X,Y,W, self.XTX_inv)
-        elif (self.regression_type=='linear') and (np.all(self.XTX_inv == 0)) and (self.design_tensor.shape[2] != self.n_voxels): # Linear regression, broadcast (XTX inv not yet calculated)
-            B, T, R2, XTX_inv = self._run_linear(X, Y, W)                                       # defines self.XTX_inv for use in permutations
+        elif switch=="xtx_incomplete_broadcast":                                                  # Linear regression, broadcast (XTX inv not yet calculated)
+            B, T, R2, XTX_inv = self._run_linear(X, Y, W)                                         # defines self.XTX_inv for use in permutations
             self.XTX_inv = XTX_inv if not permutation else self.XTX_inv
-        elif self.regression_type=='linear':                                                  # linear regression, voxelwise
-            raise NotImplementedError("Voxelwise linear regression path removed; use broadcast design or implement a fixed voxelwise path.")
+        elif switch=='xtx_incomplete_voxelwise':                                                  # linear regression, voxelwise
+            for voxel_idx in range(self.n_voxels):
+                X, Y, W = self._prep_targets(regressor, regressand, weights, 'whole_brain', regression_idx)
+                B[:,voxel_idx], T[:,voxel_idx], R2[:,voxel_idx], self.XTX_inv[:, :, voxel_idx] = self._run_linear(X, Y, W)
         
         # Naive Bayes
-        elif (self.regression_type=='naive_bayes') and (self.outcome_tensor.shape[2] == self.n_voxels):      # Naive bayes, voxelwise
+        elif switch=='naive_bayes_voxelwise':                                                     # Naive bayes, voxelwise
             raise NotImplementedError("Voxelwise naive_bayes path removed; use non-voxelwise outcome or implement a fixed voxelwise path.")
-        elif self.regression_type=='naive_bayes':                                                 # Naive bayes, batched
+        elif switch=='naive_bayes_voxelwise':                                                     # Naive bayes, batched
             Y = regressand[:, regression_idx, 0]
             for s, e in voxel_batches(self.n_voxels, batch_size=5000):
                 if regressor.shape[2] == self.n_voxels: # build per-voxel design for batch
@@ -441,7 +472,7 @@ class VoxelwiseRegression:
                 B[:, s:e], T[:, s:e], R2[:, s:e], LOG_PRIORS[:, s:e] = self._run_naive_bayes(Xb, Y, weights, X_inv, XTX_inv)
         
         # Logistic
-        elif self.regression_type=='logistic':
+        elif switch=='logistic':
             raise NotImplementedError("Logistic regression path removed; previous voxelwise path was broken.")
         else:
             raise ValueError(f"Regression type {self.regression_type} not implemented. Please set regression_type='linear' or 'logistic'.")
@@ -507,7 +538,7 @@ class VoxelwiseRegression:
 
         if hasattr(self, 'T'):
             for c in range(self.n_contrasts):
-                self.output_handler.save_map(self.T[c, :], f"contrast_{c}_tval", self.out_dir)
+                self.output_handler.save_map(self.T[c, :], f"contrast_tval_{c}", self.out_dir)
 
         if hasattr(self, 'R2'):
             self.output_handler.save_map(self.R2, "R2_vals", self.out_dir)
@@ -518,8 +549,8 @@ class VoxelwiseRegression:
         if hasattr(self, 'Tp'):
             for c in range(self.n_contrasts):
                 sig_tvals = np.where(self.Tp[c, :] < 0.05, self.T[c, :], np.nan)
-                self.output_handler.save_map(sig_tvals, f"contrast_{c}_tval_FWE", self.out_dir)
-                self.output_handler.save_map(self.Tp[c, :], f"contrast_{c}_pval_FWE", self.out_dir)
+                self.output_handler.save_map(sig_tvals, f"contrast_tval_FWE_{c}", self.out_dir)
+                self.output_handler.save_map(self.Tp[c, :], f"contrast_pval_FWE_{c}", self.out_dir)
 
         if hasattr(self, 'R2p'):
             sig_r2vals = np.where(self.R2p < 0.05, self.R2, np.nan)
@@ -612,8 +643,9 @@ class VoxelwiseRegression:
     def _get_scalar_predictions(self, temp_dir, subject_arr, prediction_arr):
         """Takes voxelwise prediction arrays (or t-maps) and extracts an average value from them"""
         preds = np.zeros((1, self.n_contrasts+1))
+        (T_all,) = self._load_prediction_params(temp_dir, ["contrast_tval_*"])  # (n_vox, n_contrasts)
         for i in range(self.n_contrasts):
-            (T,) = self._load_prediction_params(temp_dir, [f"contrast_{i}_tval*"])
+            T = T_all[:, i]
             dmg_value_dict = DamageScorer._calculate_metrics(subject_arr, T, ["cosine"])
             preds[0, i] = dmg_value_dict["cosine"]
         dmg_value_dict = DamageScorer._calculate_metrics(subject_arr, prediction_arr, ["cosine"])

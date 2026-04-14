@@ -3,7 +3,7 @@ import json
 import numpy as np
 from pathlib import Path
 from tqdm import tqdm
-from calvin_utils.neuroimaging_utils.tract_utils.fiber_format_converter import FiberFormatConverter
+from calvin_utils.neuroimaging_utils.tract_utils.fiber_converter import FiberFormatConverter
 
 DEFAULT_FIBER_MASK = None
 

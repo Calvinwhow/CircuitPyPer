@@ -18,7 +18,7 @@ class NeuroimageFileOutporter:
         self.output_ftype = output_ftype
         self.mask_path = mask_path
 
-        if output_ftype == "nifti":
+        if output_ftype == "nii":
             self.io = NiftiIO(mask_path=mask_path)
         elif output_ftype == "surface":
             self.io = SurfaceIO(mask_path=mask_path)

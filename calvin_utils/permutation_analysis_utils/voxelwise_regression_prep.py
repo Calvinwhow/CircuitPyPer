@@ -14,8 +14,7 @@ import json
 import numpy as np
 import pandas as pd
 
-from calvin_utils.file_utils.import_matrices import GiiNiiFileImport
-
+from calvin_utils.file_utils.import_functions import GiiNiiFileImport
 
 class RegressionPrep:
     def __init__(
