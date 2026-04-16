@@ -2,6 +2,7 @@ import os
 import json
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
 from tqdm import tqdm
 import nibabel as nib
 from scipy.stats import t
@@ -787,32 +788,41 @@ class VoxelwiseRegression:
         self._save_result_maps()
         return scalar_preds
 
-    def _evaluate_map(self, regression_idx=0, batch_size=5000, cv="loocv"):
+    def _evaluate_map(
+        self,
+        regression_idx=0,
+        batch_size=5000,
+        cv="loocv",
+        *,
+        dependent_variable_source="outcome",
+        dependent_cols=None,
+    ):
         """
         Run CV prediction and generate scatterplots of predicted vs actual Y.
         Adds RMSE and MAE to the plot text.
+
+        Parameters
+        ----------
+        dependent_variable_source : str
+            - "outcome": (default) uses outcome_tensor; voxelwise outcomes are reduced as mean across voxels.
+            - "design": uses 1D vectors from design_matrix.csv (written by the 05b workflow).
+        dependent_cols : list[str] | None
+            Only used when dependent_variable_source=="design".
+            - None: evaluate against all columns in design_matrix.csv.
+            - list: evaluate against the specified design column(s).
         """
         if not self.out_dir:
             raise ValueError("out_dir must be set for cross-validation plotting.")
         scalar_preds = self.run_prediction_cv(regression_idx=regression_idx, batch_size=batch_size, cv=cv)
 
-        if self.outcome_tensor.shape[2] == 1:
-            actual_y = self.outcome_tensor[:, regression_idx, 0]
-        else:
-            actual_y = np.nanmean(self.outcome_tensor[:, regression_idx, :], axis=1)
+        def _safe_name(s: str) -> str:
+            return "".join(ch if (ch.isalnum() or ch in "._-") else "_" for ch in str(s))[:120]
 
-        for j in range(scalar_preds.shape[1]):
-            pred_col = scalar_preds[:, j]
+        def _scatter(pred_col, actual_y, *, name: str):
             rmse = float(np.sqrt(np.mean((pred_col - actual_y) ** 2)))
             mae = float(np.mean(np.abs(pred_col - actual_y)))
             df = pd.DataFrame({"pred": pred_col, "actual": actual_y})
-
-            if j < self.n_contrasts:
-                name = f"{cv}_contrast_{j}_correlation"
-            else:
-                name = f"{cv}_voxelwisemodel_aggregate-prediction"
-
-            simple_scatter(
+            ax = simple_scatter(
                 df=df,
                 x_col="pred",
                 y_col="actual",
@@ -823,16 +833,86 @@ class VoxelwiseRegression:
                 extra_lines=[f"RMSE = {rmse:.3g}", f"MAE = {mae:.3g}"],
                 show=False,
             )
-            
+            # Avoid accumulating open figures when evaluating many models/columns.
+            try:
+                plt.close(ax.figure)
+            except Exception:
+                pass
+
+        if dependent_variable_source not in {"outcome", "design"}:
+            raise ValueError("dependent_variable_source must be 'outcome' or 'design'")
+
+        if dependent_variable_source == "outcome":
+            if self.outcome_tensor.shape[2] == 1:
+                actual_y = self.outcome_tensor[:, regression_idx, 0]
+            else:
+                actual_y = np.nanmean(self.outcome_tensor[:, regression_idx, :], axis=1)
+
+            for j in range(scalar_preds.shape[1]):
+                pred_col = scalar_preds[:, j]
+                if j < self.n_contrasts:
+                    name = f"{cv}_contrast_{j}_correlation"
+                else:
+                    name = f"{cv}_voxelwisemodel_aggregate-prediction"
+                _scatter(pred_col, actual_y, name=name)
+            return
+
+        # dependent_variable_source == "design"
+        design_csv = os.path.join(self.out_dir, "design_matrix.csv")
+        if not os.path.exists(design_csv):
+            raise FileNotFoundError(
+                f"design_matrix.csv not found at {design_csv}. "
+                "To use dependent_variable_source='design', run via the 05b workflow (which writes design_matrix.csv)."
+            )
+        design_df = pd.read_csv(design_csv)
+        cols = list(design_df.columns) if dependent_cols is None else list(dependent_cols)
+        missing = [c for c in cols if c not in design_df.columns]
+        if missing:
+            raise ValueError(f"Missing dependent_cols in design_matrix.csv: {missing[:20]}")
+
+        # Force to a true 1D vector per column (n_obs,)
+        for dep_col in cols:
+            actual_y = pd.to_numeric(design_df[dep_col], errors="coerce").to_numpy()
+            if actual_y.shape[0] != scalar_preds.shape[0]:
+                raise ValueError(
+                    f"Dependent column '{dep_col}' length {actual_y.shape[0]} != n_obs {scalar_preds.shape[0]}"
+                )
+
+            # If constant, spearman/pearson are undefined; still write plot for visibility.
+            for j in range(scalar_preds.shape[1]):
+                pred_col = scalar_preds[:, j]
+                if j < self.n_contrasts:
+                    base = f"{cv}_contrast_{j}_correlation"
+                else:
+                    base = f"{cv}_voxelwisemodel_aggregate-prediction"
+                name = f"{base}__actual_design_{_safe_name(dep_col)}"
+                _scatter(pred_col, actual_y, name=name)
+
     
     #### Public Code - Fitting ####
-    def run_cross_validation(self):
-        """Orchestrates cross-validated relation of t-maps and voxelwise predictions to outcomes"""
+    def run_cross_validation(self, *, dependent_variable_source="outcome", dependent_cols=None):
+        """Orchestrates cross-validated relation of t-maps and voxelwise predictions to dependent variables"""
         n = self.n_obs
-        self._evaluate_map(cv="loocv")
-        self._evaluate_map(cv=2)
-        self._evaluate_map(cv=5)
-        self._evaluate_map(cv=10)
+        self._evaluate_map(
+            cv="loocv",
+            dependent_variable_source=dependent_variable_source,
+            dependent_cols=dependent_cols,
+        )
+        self._evaluate_map(
+            cv=2,
+            dependent_variable_source=dependent_variable_source,
+            dependent_cols=dependent_cols,
+        )
+        self._evaluate_map(
+            cv=5,
+            dependent_variable_source=dependent_variable_source,
+            dependent_cols=dependent_cols,
+        )
+        self._evaluate_map(
+            cv=10,
+            dependent_variable_source=dependent_variable_source,
+            dependent_cols=dependent_cols,
+        )
         
     def run_single_multiout_regression(self, permutation=False):
         """Runs regression across all outputs a single time and returns the associated arrays."""

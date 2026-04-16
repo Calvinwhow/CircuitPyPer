@@ -300,7 +300,7 @@ class RegressionPrep:
                 "outcome_data": f"{self.out_dir}/outcome_data.npy",
                 "output_ftype": self.output_ftype,
                 "mask_path": self.mask_path,
-                "formula": self.formula
+                "formula": self.formula,
             }
         }
 
