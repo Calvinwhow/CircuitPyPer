@@ -77,15 +77,15 @@ class DatasetNiftiImporter(GiiNiiFileImport):
             }
 
             nifti_paths = dataset_df[self.nifti_col].tolist()
-            nifti_importer = GiiNiiFileImport(import_path=None, file_column=None, file_pattern=None)
-            self.data_dict[dataset]['niftis'] = nifti_importer.import_matrices(nifti_paths)
+            nifti_importer = GiiNiiFileImport(import_path=None, file_column=None, file_pattern=None, mask_path=self.mask_path)
+            self.data_dict[dataset]['niftis'] = nifti_importer._import_matrices(nifti_paths)
             self.data_dict[dataset]['indep_var'] = self.prep_dmatrix(dataset_df.loc[:, [self.indep_var_col]])
             self.data_dict[dataset]['covariates'] = self.prep_dmatrix(dataset_df.loc[:, self.covariate_cols])
         
-            if hasattr(nifti_importer, 'bbox_mask') and (nifti_importer.bbox_mask is not None) and (self.mask_path is None):
-                print("----- \n MASK NOT FOUND NOR PROVIDED. GENERATING MASK AT BELOW PATH. RERUN THIS NOTEBOOK USING THE MASK BELOW: \m")
-                print("\t Use this mask for all subsequent analyses: ", os.path.join(self.out_dir, 'mask.nii.gz'))
-                nifti_importer.bbox.save_nifti(nifti_importer.bbox_mask, os.path.join(self.out_dir, 'mask.nii.gz'))
+            # if hasattr(nifti_importer, 'bbox_mask') and (nifti_importer.bbox_mask is not None) and (self.mask_path is None):
+            #     print("----- \n MASK NOT FOUND NOR PROVIDED. GENERATING MASK AT BELOW PATH. RERUN THIS NOTEBOOK USING THE MASK BELOW: \m")
+            #     print("\t Use this mask for all subsequent analyses: ", os.path.join(self.out_dir, 'mask.nii.gz'))
+            #     nifti_importer.bbox.save_nifti(nifti_importer.bbox_mask, os.path.join(self.out_dir, 'mask.nii.gz'))
             self._process_dataset(dataset, dataset_dir)
             
     def prep_dmatrix(self, df):
@@ -210,17 +210,14 @@ class DatasetNiftiImporter(GiiNiiFileImport):
             np.save(fpath, arr)
         
     def _process_dataset(self, dataset, dataset_dir):
-        niftis = self.data_dict[dataset]['niftis'] # Get the nifti
-        _, _, masked_niftis = self.mask_dataframe(niftis, mask_path=self.mask_path) # mask the nifti 
-        masked_niftis_arr = masked_niftis.values.T                          # shape (samples, voxels)
-        
+        niftis_arr = self.data_dict[dataset]['niftis'].T                    # shape (samples, voxels)  
         indep_var_arr = self.data_dict[dataset]['indep_var'].values         # shape (samples, 1)
         covariates_arr = self.data_dict[dataset]['covariates'].values       # shape (samples, N_covariates)
         covariates_arr = self._add_intercept(covariates_arr)                # shape (samples, N_covariates+1)
         
-        masked_niftis_arr, indep_var_arr, covariates_arr = self._handle_nans(masked_niftis_arr, indep_var_arr, covariates_arr) 
-        masked_niftis_arr, indep_var_arr, covariates_arr = self._run_transform(masked_niftis_arr, indep_var_arr, covariates_arr) 
-        nifti_residuals, indep_residuals = self._run_regression(masked_niftis_arr, indep_var_arr, covariates_arr)
+        niftis_arr, indep_var_arr, covariates_arr = self._handle_nans(niftis_arr, indep_var_arr, covariates_arr) 
+        niftis_arr, indep_var_arr, covariates_arr = self._run_transform(niftis_arr, indep_var_arr, covariates_arr) 
+        nifti_residuals, indep_residuals = self._run_regression(niftis_arr, indep_var_arr, covariates_arr)
 
         self._save_residuals(dataset_dir, nifti_residuals, indep_residuals, covariates_arr)
 

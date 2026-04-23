@@ -89,7 +89,7 @@ class DamageScorer:
         if 'avg_in_subject' in metrics:
             results['avg_in_subject'] = DamageScorer._calculate_normalized_dot_product(subject_array, roi_array, denominator='avg_in_subject')
         if 'num_in_roi' in metrics:
-            results['num_in_roi'] = DamageScorer._count_voxels_greater_than_threshold(subject_array, mask=roi_array, threshold=2)
+            results['num_in_roi'] = DamageScorer._count_voxels_greater_than_threshold(subject_array, roi_array, threshold=2)
         if 'dice' in metrics:
             results['dice'] = DamageScorer._calculate_dice(subject_array, roi_array)
         return results

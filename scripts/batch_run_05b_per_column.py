@@ -42,32 +42,56 @@ if str(_CIRCUIT_PYPER_DIR) not in sys.path:
     sys.path.insert(0, str(_CIRCUIT_PYPER_DIR))
 
 
-# Edit these defaults and just run the script with no CLI args.
-# Note: if `batch_voxelwise_regression_cross_validation.selected` exists, that
-# config is preferred automatically when running with no CLI args.
-selected: dict[str, Any] = {
-    "input_csv": "/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/results/best_selection.csv",
+### Script-mode config (edit these and run this file directly) ###
+SCRIPT_ARGS: dict[str, Any] = {
+    "input_csv": "/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/results/master_list_redo.csv",
     "mask_path": "/Users/cu135/Software_Local/calvin_utils_project/circuit_pyper/resources/MNI152_T1_2mm_brain_mask.nii",
-    "paths_col": "onetouch_path",  # column in input_csv that points to nifti paths
-    "out_root": "/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/results/05b_batch",
-    # Choose columns explicitly or set all_numeric=True
-    "columns": ["TotalBarsScore"],
+    "paths_col": "onetouch_path",
+    "out_root": "/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/results/optimzation/batch_0cv_100perms_n34",
+    # Summary CSV is always written into out_root (basename only).
+    "summary_csv": "batch_05b_summary.csv",
+    # Cross-validation: loocv | 2 | 5 | 10 | 0 (or none) for permutation-only.
+    "cv": 0,
+    "n_permutations": 1000,
+    # Columns: either explicit list, or set all_numeric=True.
+    "columns": [
+    "Gait",
+    "HeelToShinTestLeft",
+    "HeelToShinTestRight",
+    "FingerToNoseTestLeft",
+    "FingerToNoseTestRight",
+    "LimbAtaxia",
+    "Speech",
+    "Oculomotor",
+    "TotalBarsScore"
+],
     "all_numeric": False,
-    "exclude_cols": ["selected", "subid", "session", "id", "local_id", "paths", "onetouch_path", "_resolved_path"],
-    # Optional generic filtering (keeps rows where df[filter_col] == filter_value)
-    "filter_col": 'Selected',
+    "exclude_cols": [
+        "selected",
+        "subid",
+        "session",
+        "id",
+        "local_id",
+        "paths",
+        "onetouch_path",
+        "_resolved_path",
+    ],
+    # Optional row filter
+    "filter_col": "selected",
     "filter_value": 1,
-    # Drop rows whose NIfTI path does not exist (prevents 05b from crashing).
+    # Behavior flags
     "skip_missing_paths": True,
-    # 05b knobs
-    "cv": "loocv",
-    "n_permutations": 10,
-    "data_transform": None,  # None|standardize|rank
-    # batching behavior
     "overwrite": False,
+    "continue_on_error": False,
+    "echo_05b": False,
     "verbose": True,
+    # Optional: none | standardize | rank
+    "data_transform": None,
+    # Rows with NaN in these columns are dropped before 05b prep.
+    "drop_nans": ["AffectFailS"],
 }
 
+### Script ###
 
 def _load_module_from_path(name: str, path: Path):
     spec = importlib.util.spec_from_file_location(name, str(path))
@@ -84,7 +108,28 @@ def _safe_name(name: str, max_len: int = 80) -> str:
     return s[:max_len] if len(s) > max_len else s
 
 
-def _is_complete(out_dir: Path, *, cv: str | None) -> bool:
+def _normalize_cv(raw: Any) -> str | None:
+    """
+    Normalize CV arg.
+    Returns None to mean "disable CV".
+    """
+    if raw is None:
+        return None
+    s = str(raw).strip().lower()
+    if s in {"", "0", "none", "off", "false", "no"}:
+        return None
+    return str(raw)
+
+
+def _find_fwe_tval_maps(out_dir: Path) -> list[Path]:
+    """
+    Match voxelwise_regression.py naming convention exactly:
+      contrast_tval_FWE_{c}.nii(.gz)
+    """
+    return sorted(out_dir.glob("contrast_tval_FWE_*.nii*"))
+
+
+def _is_complete(out_dir: Path, *, cv: str | None, require_fwe: bool = False) -> bool:
     """
     Best-effort completion check so we only skip truly finished runs.
     If `cv` is set, we expect the cv contrast-0 scatterplot to exist.
@@ -95,13 +140,16 @@ def _is_complete(out_dir: Path, *, cv: str | None) -> bool:
         return False
     if cv:
         scatter_dir = out_dir / "cross_validations" / "scatterplots"
+        fwe_ok = (not require_fwe) or bool(_find_fwe_tval_maps(out_dir))
         if scatter_dir.exists():
             # Accept either legacy naming or the newer dependent-variable-qualified naming.
             if any(scatter_dir.glob(f"{cv}_contrast_0_correlation*_scatterplot.svg")):
-                return True
+                return fwe_ok
             if any(scatter_dir.glob("2_contrast_0_correlation*_scatterplot.svg")):
-                return True
+                return fwe_ok
         return False
+    if require_fwe:
+        return bool(_find_fwe_tval_maps(out_dir))
     return any(out_dir.rglob("*.nii")) or any(out_dir.rglob("*.nii.gz"))
 
 
@@ -182,15 +230,14 @@ def _strip_nii_suffix(name: str) -> str:
 
 def _dot_product_with_mask(map_path: Path, *, mask_data: np.ndarray) -> float:
     """
-    Returns sum(map * mask) where mask is binary-ish (nonzero kept).
-    Equivalent to dot(map.flatten(), mask.flatten()) for a 0/1 mask.
+    Returns sum(map * mask) in image space.
+    This is the dot product of the full-volume arrays (flattened), ignoring NaNs.
     """
     img = nib.load(str(map_path))
     data = np.asanyarray(img.dataobj)
     if data.shape != mask_data.shape:
         raise ValueError(f"Shape mismatch: map {data.shape} vs mask {mask_data.shape} for {map_path.name}")
-    m = mask_data != 0
-    return float(np.nansum(data[m]))
+    return float(np.nansum(data * mask_data))
 
 
 def _append_row(summary_csv: Path, row: dict[str, Any]) -> None:
@@ -206,6 +253,45 @@ def _append_row(summary_csv: Path, row: dict[str, Any]) -> None:
     out.to_csv(summary_csv, index=False)
 
 
+def _run_posthoc_permutations(*, dataset_json: Path, out_dir: Path, mask_path: str, n_permutations: int) -> None:
+    """
+    Workaround runner for permutation/FWE maps.
+
+    Why this exists:
+    - Some regression code paths can make the built-in permutation runner crash
+      when n_permutations>0.
+    - We avoid that by running the main 05b fit with n_permutations=0 (so CV works),
+      then re-running a fit here and running a wrapper permutation loop that correctly
+      handles 1D R2 vectors.
+    """
+    if n_permutations < 1:
+        return
+
+    from calvin_utils.permutation_analysis_utils.voxelwise_regression import VoxelwiseRegression
+
+    reg = VoxelwiseRegression(
+        str(dataset_json),
+        mask_path=mask_path,
+        out_dir=str(out_dir),
+        regression_type="linear",
+        n_permutations=0,
+    )
+    reg.run()  # fit once to populate T/R2, etc. (no permutations)
+
+    # Custom permutation loop to avoid numpy AxisError in core code when R2 is 1D.
+    Tp = np.zeros_like(reg.T)
+    R2p = np.zeros_like(reg.R2)
+    for _ in range(int(n_permutations)):
+        _, permT, permR2 = reg.voxelwise_regression(permutation=True)
+        max_statsT = np.nanpercentile(np.abs(permT), 99.99, axis=1)  # (n_contrasts,)
+        max_statsR2 = float(np.nanpercentile(np.abs(permR2), 99.99))  # scalar
+        Tp += (max_statsT[:, None] > np.abs(reg.T)).astype(int)
+        R2p += (max_statsR2 > reg.R2).astype(int)
+    reg.Tp = Tp / float(n_permutations)
+    reg.R2p = R2p / float(n_permutations)
+    reg._save_result_maps()  # writes contrast_tval_FWE_* and contrast_pval_FWE_* etc.
+
+
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="batch_run_05b_per_column.py", description="Run 05b per predictor column.")
     ap.add_argument("--input-csv", required=True)
@@ -215,7 +301,10 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument(
         "--summary-csv",
         default=None,
-        help="Where to write the batch summary CSV (default: <out-root>/batch_05b_summary.csv).",
+        help=(
+            "Summary CSV filename. Always written into --out-root "
+            "(default: batch_05b_summary.csv). If you pass a path, only the basename is used."
+        ),
     )
 
     ap.add_argument("--columns", nargs="*", default=None)
@@ -238,6 +327,12 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--cv", default="2")
     ap.add_argument("--n-permutations", type=int, default=0)
     ap.add_argument("--data-transform", default=None, choices=["none", "standardize", "rank"])
+    ap.add_argument(
+        "--drop-nans",
+        nargs="*",
+        default=["AffectFails"],
+        help="Drop rows with NaNs in these columns during 05b prep (default: AffectFails).",
+    )
 
     ap.add_argument("--overwrite", action="store_true")
     ap.add_argument(
@@ -251,9 +346,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    cv_value = _normalize_cv(args.cv)
     out_root = Path(args.out_root)
     out_root.mkdir(parents=True, exist_ok=True)
-    summary_csv = Path(args.summary_csv) if args.summary_csv else (out_root / "batch_05b_summary.csv")
+    summary_name = Path(args.summary_csv).name if args.summary_csv else "batch_05b_summary.csv"
+    summary_csv = out_root / summary_name
     summary_csv.parent.mkdir(parents=True, exist_ok=True)
     if args.overwrite and summary_csv.exists():
         summary_csv.unlink()
@@ -307,6 +404,8 @@ def main(argv: list[str] | None = None) -> int:
     if missing:
         raise SystemExit(f"Missing predictor columns: {missing[:20]}" + (" ..." if len(missing) > 20 else ""))
 
+    requested_drop_nans = [str(c) for c in (args.drop_nans or []) if str(c).strip()]
+
     for i, pred in enumerate(cols, start=1):
         t0 = time.time()
         out_dir = out_root / _safe_name(pred)
@@ -314,19 +413,39 @@ def main(argv: list[str] | None = None) -> int:
         err = ""
 
         try:
-            if (not args.overwrite) and _is_complete(out_dir, cv=str(args.cv) if args.cv else None):
+            require_fwe = int(args.n_permutations) > 0
+            if (not args.overwrite) and _is_complete(
+                out_dir,
+                cv=cv_value,
+                require_fwe=require_fwe,
+            ):
                 status = "skip_exists"
                 raise RuntimeError("output_complete_exists")
 
             out_dir.mkdir(parents=True, exist_ok=True)
 
             # Build per-predictor input csv (minimal)
-            tmp = pd.DataFrame(
-                {
-                    "paths": df[paths_col].astype(str),
-                    pred: pd.to_numeric(df[pred], errors="coerce"),
-                }
-            ).dropna(subset=["paths", pred])
+            tmp_cols: dict[str, Any] = {
+                "paths": df[paths_col].astype(str),
+                pred: pd.to_numeric(df[pred], errors="coerce"),
+            }
+            for col in requested_drop_nans:
+                if col in {"paths", pred}:
+                    continue
+                if col not in df.columns:
+                    raise SystemExit(
+                        f"Missing drop-nans column '{col}' in input data. "
+                        f"Pass --drop-nans with valid columns or empty list to disable."
+                    )
+                tmp_cols[col] = df[col]
+            tmp = pd.DataFrame(tmp_cols)
+            drop_subset = ["paths", pred]
+            for col in requested_drop_nans:
+                if col == "paths":
+                    continue
+                if col not in drop_subset and col in tmp.columns:
+                    drop_subset.append(col)
+            tmp = tmp.dropna(subset=drop_subset)
             if args.skip_missing_paths:
                 tmp = tmp[tmp["paths"].map(lambda p: Path(p).exists())].copy()
             if len(tmp) < 6:
@@ -338,6 +457,11 @@ def main(argv: list[str] | None = None) -> int:
 
             contrast_path = out_dir / "contrast.json"
             contrast_path.write_text(json.dumps([[0, 1]], indent=2))
+
+            drop_nans_05b = ["paths", pred]
+            for col in requested_drop_nans:
+                if col not in drop_nans_05b:
+                    drop_nans_05b.append(col)
 
             argv_05b = [
                 sys.executable,
@@ -356,21 +480,21 @@ def main(argv: list[str] | None = None) -> int:
                 "--add-intercept",
                 "true",
                 "--drop-nans",
-                "paths",
-                pred,
+                *drop_nans_05b,
                 "--contrast-file",
                 str(contrast_path),
                 "--n-permutations",
-                str(int(args.n_permutations)),
+                # Run permutations post-hoc in this wrapper to avoid permutation crashes in some code paths.
+                "0",
                 "--all-outputs",
                 "false",
             ]
             if args.data_transform and args.data_transform != "none":
                 argv_05b += ["--data-transform", args.data_transform]
-            if args.cv:
+            if cv_value is not None:
                 argv_05b += [
                     "--cv",
-                    str(args.cv),
+                    str(cv_value),
                     # Evaluate CV scatterplots against the scalar predictor column (design-matrix),
                     # i.e. correlate contrast-cosine damage scores vs the predictor vector.
                     "--cv-dependent-source",
@@ -387,23 +511,54 @@ def main(argv: list[str] | None = None) -> int:
             _run_and_tee(argv_05b, log_path=log_path, echo=bool(args.echo_05b))
             print(f"[{i}/{len(cols)}] {pred}: done ({round(time.time() - t0, 1)}s)", flush=True)
 
-            # Parse cv contrast plot (prefers design-dependent naming).
-            scatter_dir = out_dir / "cross_validations" / "scatterplots"
-            plot_path = scatter_dir / f"{args.cv}_contrast_0_correlation__actual_design_{_safe_name(pred)}_scatterplot.svg"
-            if not plot_path.exists():
-                # fallback to any matching newer naming (handles truncation/sanitization)
-                matches = sorted(scatter_dir.glob(f"{args.cv}_contrast_0_correlation__actual_design_*_scatterplot.svg"))
-                plot_path = matches[0] if matches else plot_path
-            if not plot_path.exists():
-                # legacy names
-                plot_path = scatter_dir / f"{args.cv}_contrast_0_correlation_scatterplot.svg"
-            if not plot_path.exists():
-                plot_path = scatter_dir / "2_contrast_0_correlation_scatterplot.svg"
-            metrics = _extract_metrics_from_svg(plot_path)
+            # If requested, run permutation/FWE maps post-hoc into the same out_dir.
+            perm_status = "skipped"
+            if int(args.n_permutations) > 0:
+                dataset_json = out_dir / "dataset_dict.json"
+                if not dataset_json.exists():
+                    raise FileNotFoundError(f"Missing {dataset_json}")
+                print(f"[{i}/{len(cols)}] {pred}: permutations={int(args.n_permutations)} (post-hoc)", flush=True)
+                _run_posthoc_permutations(
+                    dataset_json=dataset_json,
+                    out_dir=out_dir,
+                    mask_path=str(args.mask_path),
+                    n_permutations=int(args.n_permutations),
+                )
+                produced_fwe = _find_fwe_tval_maps(out_dir)
+                if not produced_fwe:
+                    raise RuntimeError(
+                        f"Permutation step finished but no FWE maps found in {out_dir} "
+                        f"(expected files like contrast_tval_FWE_0.nii.gz)."
+                    )
+                perm_status = "ok"
+
+            metrics = {
+                "spearman_rho": float("nan"),
+                "spearman_p": float("nan"),
+                "pearson_r": float("nan"),
+                "pearson_p": float("nan"),
+                "rmse": float("nan"),
+                "mae": float("nan"),
+            }
+            plot_path = Path("")
+            if cv_value is not None:
+                # Parse cv contrast plot (prefers design-dependent naming).
+                scatter_dir = out_dir / "cross_validations" / "scatterplots"
+                plot_path = scatter_dir / f"{cv_value}_contrast_0_correlation__actual_design_{_safe_name(pred)}_scatterplot.svg"
+                if not plot_path.exists():
+                    # fallback to any matching newer naming (handles truncation/sanitization)
+                    matches = sorted(scatter_dir.glob(f"{cv_value}_contrast_0_correlation__actual_design_*_scatterplot.svg"))
+                    plot_path = matches[0] if matches else plot_path
+                if not plot_path.exists():
+                    # legacy names
+                    plot_path = scatter_dir / f"{cv_value}_contrast_0_correlation_scatterplot.svg"
+                if not plot_path.exists():
+                    plot_path = scatter_dir / "2_contrast_0_correlation_scatterplot.svg"
+                metrics = _extract_metrics_from_svg(plot_path)
 
             # Permutation outputs: dot-product any FWE t-maps with the mask and store in summary.
             # Maps are saved by VoxelwiseRegression as: contrast_tval_FWE_{c}.nii.gz
-            fwe_maps = sorted(out_dir.glob("contrast_tval_FWE_*.nii*"))
+            fwe_maps = _find_fwe_tval_maps(out_dir)
             fwe_dots: dict[str, float] = {}
             for mp in fwe_maps:
                 key = f"dot_{_strip_nii_suffix(mp.name)}"
@@ -420,8 +575,11 @@ def main(argv: list[str] | None = None) -> int:
                 "out_dir": str(out_dir),
                 "status": status,
                 "seconds": round(time.time() - t0, 3),
-                "cv_plot": str(plot_path) if plot_path.exists() else "",
+                "cv": "" if cv_value is None else str(cv_value),
+                "cv_plot": str(plot_path) if plot_path and plot_path.exists() else "",
                 "log_path": str(log_path),
+                "n_permutations_requested": int(args.n_permutations),
+                "permutations_status": perm_status,
                 **metrics,
                 **fwe_dots,
                 "error": "",
@@ -464,20 +622,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    def _default_argv() -> list[str]:
-        # Prefer shared config so you only edit one place.
-        # Load via file path so it works even when running from repo root.
-        cfg = selected
-        shared_path = _SCRIPTS_DIR / "batch_voxelwise_regression_cross_validation.py"
-        if shared_path.exists():
-            try:
-                shared = _load_module_from_path("_shared_cfg", shared_path)
-                if hasattr(shared, "selected") and isinstance(shared.selected, dict):
-                    cfg = shared.selected
-            except Exception:
-                cfg = selected
-        out_csv = cfg.get("out_csv")
-        out_root = cfg.get("out_root") or (str(Path(out_csv).with_suffix("")) if out_csv else "/tmp/05b_batch")
+    def _script_argv(cfg: dict[str, Any]) -> list[str]:
         argv = [
             "--input-csv",
             str(cfg["input_csv"]),
@@ -486,20 +631,20 @@ if __name__ == "__main__":
             "--paths-col",
             str(cfg["paths_col"]),
             "--out-root",
-            str(out_root),
+            str(cfg["out_root"]),
+            "--summary-csv",
+            str(cfg.get("summary_csv", "batch_05b_summary.csv")),
             "--cv",
-            str(cfg.get("cv", 2)),
+            str(cfg.get("cv", "2")),
             "--n-permutations",
             str(int(cfg.get("n_permutations", 0))),
         ]
-        if out_csv:
-            argv += ["--summary-csv", str(out_csv)]
+
         if cfg.get("data_transform") is not None:
             argv += ["--data-transform", str(cfg["data_transform"])]
-        if cfg.get("skip_missing_paths", False):
-            argv.append("--skip-missing-paths")
-        if cfg.get("echo_05b", False):
-            argv.append("--echo-05b")
+        if cfg.get("drop_nans") is not None:
+            argv += ["--drop-nans", *[str(c) for c in cfg.get("drop_nans", [])]]
+
         if cfg.get("all_numeric", False):
             argv.append("--all-numeric")
             for c in cfg.get("exclude_cols", []):
@@ -508,13 +653,24 @@ if __name__ == "__main__":
             cols = cfg.get("columns", [])
             if cols:
                 argv += ["--columns", *[str(c) for c in cols]]
+
         if cfg.get("filter_col") is not None:
             argv += ["--filter-col", str(cfg["filter_col"]), "--filter-value", str(cfg.get("filter_value", ""))]
+        if cfg.get("skip_missing_paths", False):
+            argv.append("--skip-missing-paths")
+        if cfg.get("echo_05b", False):
+            argv.append("--echo-05b")
         if cfg.get("overwrite", False):
             argv.append("--overwrite")
+        if cfg.get("continue_on_error", False):
+            argv.append("--continue-on-error")
         if cfg.get("verbose", True):
             argv.append("--verbose")
         return argv
 
-    argv = None if len(sys.argv) > 1 else _default_argv()
-    raise SystemExit(main(argv))
+    # "MATLAB script" behavior: no CLI args => read SCRIPT_ARGS and run.
+    if len(sys.argv) == 1:
+        raise SystemExit(main(_script_argv(SCRIPT_ARGS)))
+
+    # CLI behavior remains available if explicit args are provided.
+    raise SystemExit(main())

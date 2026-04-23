@@ -8,7 +8,7 @@ import nibabel as nib
 from scipy.stats import t
 import statsmodels.api as sm
 from scipy.special import expit
-from sklearn.linear_model import LogisticRegression
+from calvin_utils.file_utils.import_functions import GiiNiiFileImport
 from calvin_utils.statistical_utils.scatterplot import simple_scatter
 from calvin_utils.neuroimaging_utils.ccm_utils.npy_utils import DataLoader
 from calvin_utils.neuroimaging_utils.nifti_utils.damage_score_utils import DamageScorer
@@ -139,6 +139,26 @@ class VoxelwiseRegression:
         else:
             print(f"Outcome is not all binary. You should ensure regression_type='linear'. Detected regression_type: {self.regression_type}")
 
+    def _is_voxelwise_outcome_constant_design(self):
+        """
+        Return True when Y is voxelwise and X is a single shared design matrix.
+
+        This identifies models shaped like:
+            voxelwise_outcome ~ scalar_covariates
+
+        In tensor terms:
+            design_tensor:  (n_obs, n_preds, 1)
+            outcome_tensor: (n_obs, n_outputs, n_voxels)
+        """
+        return (
+            self.regression_type == "linear"
+            and self.design_tensor.ndim == 3
+            and self.outcome_tensor.ndim == 3
+            and self.design_tensor.shape[0] == self.outcome_tensor.shape[0]
+            and self.design_tensor.shape[2] == 1
+            and self.outcome_tensor.shape[2] > 1
+        )
+
     ### REGRESSION HELPERS ###
     def _get_targets(self, permutation):
         """
@@ -161,25 +181,39 @@ class VoxelwiseRegression:
             weights = weights[resample_idx]
         return regressor, regressand, weights  
     
-    def _prep_targets(self, regressor, regressand, weights, voxel_idx, regression_idx=0):
+    def _prep_targets(self, regressor, regressand, weights, voxel_idx="whole_brain", regression_idx=0):
         """
-        Ensure shape of X, Y, and W matrices. 
-        If a regression_idx is provided, it selects the corresponding output channel. This enables multi-output regression.
-        """
-        if voxel_idx=="whole_brain":                       # for whole-brain one-shot regression
-            X = regressor[:, :, :]
-        elif regressor.shape[2] == self.n_voxels:          # for voxel-wise design with potential multiple outputs
-            X = regressor[:, :, voxel_idx]
-        else:                                              # for broadcast design (2D design matrix)
-            X = regressor[:, :, 0]                       
+        Standardize X, Y, W for the four linear cases.
 
-        if voxel_idx=="whole_brain":                             # for whole-brain one-shot regression
-            Y = regressand[:, regression_idx, :]
-        elif regressand.shape[2] == self.n_voxels:         # for voxel-wise outcome with potential multiple outputs
-            Y = regressand[:, regression_idx, voxel_idx]
-        else:                                            # for multi-output voxel-wise outcome
-            Y = regressand[:, regression_idx, 0]
-        return X, Y, weights
+        whole_brain:
+            1) voxelwise Y, constant X   -> X:(n_obs,n_preds),          Y:(n_obs,n_vox)
+            2) voxelwise Y, voxelwise X  -> X:(n_obs,n_preds,n_vox),    Y:(n_obs,n_vox)
+            3) constant Y, constant X    -> X:(n_obs,n_preds),          Y:(n_obs,1)
+            4) constant Y, voxelwise X   -> X:(n_obs,n_preds,n_vox),    Y:(n_obs,n_vox)
+
+        per-voxel:
+            X:(n_obs,n_preds), Y:(n_obs,1)
+        """
+        x_vox = regressor.shape[2] == self.n_voxels
+        y_vox = regressand.shape[2] == self.n_voxels
+
+        def get_X():
+            if voxel_idx == "whole_brain":
+                return regressor if x_vox else regressor[:, :, 0]
+            return regressor[:, :, voxel_idx] if x_vox else regressor[:, :, 0]
+
+        def get_Y():
+            if voxel_idx == "whole_brain":
+                if y_vox:
+                    return regressand[:, regression_idx, :]
+                y = regressand[:, regression_idx, 0][:, None]
+                return np.broadcast_to(y, (y.shape[0], self.n_voxels)) if x_vox else y
+
+            if y_vox:
+                return regressand[:, regression_idx, voxel_idx][:, None]
+            return regressand[:, regression_idx, 0][:, None]
+
+        return get_X(), get_Y(), weights
     
     def _prep_naive_bayes(self, X, store=False):
         """Precompute per-voxel pseudoinverse and (X^T X)^{-1}."""
@@ -258,7 +292,8 @@ class VoxelwiseRegression:
         sse = np.sum(W * (Y - Y_HAT) ** 2, axis=0)            # (n_targets,)
         tss = np.sum(W * (Y - ybar_w[None, :]) ** 2, axis=0)  # (n_targets,)
 
-        return 1.0 - (sse / (tss + eps))
+        R2 = 1.0 - (sse / (tss + eps))
+        return R2[None, :]                                    # (1, n_targets)
     
     def _get_pseudo_r2(self, Y, W, P, eps=1e-9):
         '''
@@ -378,42 +413,45 @@ class VoxelwiseRegression:
         R2 = self.get_r2(Y, Y_HAT, W)                               # (1, n_voxels)
         return BETA, T, R2
     
-    def _run_linear(self, X, Y, W):
+    def _linear_regression(self, X, Y, W, verbose=False):
         """
-        Weighted linear regression.
-
+        Runs a regression with a NON-voxelwise design matrix.
+        
         Parameters
         ----------
-        X : (n_obs, n_preds, n_vox)
+        X : (n_obs, n_preds)
         Y : (n_obs, n_vox)
         W : (n_obs,)
+
+        Returns:
+          beta: (n_predictors, n_voxels)
+          t_values: (n_predictors, n_voxels)
+          mse: (n_voxels,)
         """
-        o, p, vx = X.shape
-        _, vy = Y.shape
-        if vx == 1:
-            X = np.broadcast_to(X, (o, p, vy))
+        wsqrt = np.sqrt(W)                                              # (n_obs,)
+        Xw = X * wsqrt[:, None]                                         # (n_obs, n_preds)    <- (n_obs, n_preds) * (n_obs, 1)
+        Yw = Y * wsqrt[:, None]                                         # (n_obs, n_vox)      <- (n_obs, n_vox) * (n_obs, 1)
         
-        wsqrt = np.sqrt(W)
-        Xw = X * wsqrt[:, None, None]                           # (o, p, v)
-        Yw = Y * wsqrt[:, None]                                 # (o, v)
-
-        XtX = np.einsum("opv,oqv->pqv", Xw, Xw, optimize=True)  # (p, p, v)
-        XtY = np.einsum("opv,ov->pv", Xw, Yw, optimize=True)    # (p, v)
-
-        XtX_inv = np.linalg.pinv(np.moveaxis(XtX, 2, 0))        # (v, p, p)
-        XtX_inv = np.moveaxis(XtX_inv, 0, 2)                    # (p, p, v)
-
-        BETA = np.einsum("pqv,qv->pv", XtX_inv, XtY, optimize=True)
-        Y_HAT = np.einsum("opv,pv->ov", X, BETA, optimize=True)
-
-        residuals = Y - Y_HAT
-        dof = o - p
-        mse = np.sum(W[:, None] * residuals**2, axis=0) / dof
-
-        T = self.apply_contrasts(XtX_inv, BETA, mse)
-        R2 = self.get_r2(Y, Y_HAT, W)
-
-        return BETA, T, R2, XtX_inv
+        XtX_inv = np.linalg.pinv(Xw.T @ Xw)                             # (n_preds, n_preds)  <- (n_preds, n_obs) @ (n_obs, n_preds)
+        XtX_invY = Xw.T @ Yw                                            # (n_preds, n_voxels) <- (n_preds, n_obs) @ (n_obs, n_voxels)
+        beta = XtX_inv @ XtX_invY                                       # (n_preds, n_voxels) <- (n_preds, n_preds) @ (n_preds, n_voxels)
+        Y_hat = X @ beta                                                # (n_obs, n_voxels)   <- (n_obs, n_preds) @ (n_preds, n_voxels)
+        residuals = Y - Y_hat                                           # (n_obs, n_voxels)   <- (n_obs, n_voxels) - (n_obs, n_voxels)
+        dof = X.shape[0] - X.shape[1]                                   # (1, )               <- (n_obs, ) - (n_preds, )
+        mse = np.sum(W[:, None] * residuals**2, axis=0) / dof           # (n_voxels,)         <- summed (n_obs, n_voxels) along n_obs
+        t_values = self.apply_contrasts(XtX_inv, beta, mse)
+        R2 = self.get_r2(Y, Y_hat, W)
+        
+        if verbose:
+            print(f"XtX_inv shape: {XtX_inv.shape}")         # (p, p)
+            print(f"Y_hat shape: {Y_hat.shape}")             # (n_obs, n_voxels)
+            print(f"residuals shape: {residuals.shape}")     # (n_obs, n_voxels)
+            print(f"dof shape: {dof}")                       # Scalar (not an array)
+            print(f"mse shape: {mse.shape}")                 # (n_voxels,)
+            print(f"t_values shape: {t_values.shape}")       # (p, n_voxels)
+            print(f"beta shape: {beta.shape}")         # (p, n_voxels)
+            print(f"R2 shape: {R2.shape}")                 # (n_voxels,)
+        return beta, t_values, R2, XtX_inv
     
     def align_w(self, w, arr):
         if arr.shape[0] != w.shape[0]:
@@ -424,12 +462,17 @@ class VoxelwiseRegression:
     ### Switch Helper ###
     def _detect_switch(self):
         """Returns a string based on circumstances"""
-        if (self.regression_type=='linear') and (not np.all(self.XTX_inv == 0)):
-            return "xtx_complete"
-        if (self.regression_type=='linear') and (np.all(self.XTX_inv == 0)) and (self.design_tensor.shape[2] != self.n_voxels):
-            return "xtx_incomplete_broadcast"
-        if (self.regression_type=='linear') and (np.all(self.XTX_inv == 0)) and (self.design_tensor.shape[2] == self.n_voxels):
-            return "xtx_incomplete_voxelwise"
+        if self.regression_type == 'linear':
+            dmatrix_is_voxelwise = self.design_tensor.shape[2] == self.n_voxels
+            xtx_is_complete = not np.all(self.XTX_inv == 0)
+
+            if not dmatrix_is_voxelwise:
+                return "constant_dmatrix"
+            if dmatrix_is_voxelwise and xtx_is_complete:
+                return "voxelwise_dmatrix_xtx_complete"
+            if dmatrix_is_voxelwise and (not xtx_is_complete):
+                return "voxelwise_dmatrix_xtx_incomplete"
+
         if (self.regression_type=='naive_bayes') and (self.outcome_tensor.shape[2] == self.n_voxels):
             return "naive_bayes_voxelwise"
         if self.regression_type=='naive_bayes':
@@ -449,16 +492,15 @@ class VoxelwiseRegression:
         
         # Linear regression
         switch = self._detect_switch()
-        if switch=="xtx_complete":                                                                # Linear regression, broadcast (XTX inv precalcualted)
+        if switch=="voxelwise_dmatrix_xtx_complete":                                      # Linear regression, broadcast (XTX inv precalcualted)
             B, T, R2 = self._run_precomputed_linear(X,Y,W, self.XTX_inv)
-        elif switch=="xtx_incomplete_broadcast":                                                  # Linear regression, broadcast (XTX inv not yet calculated)
-            B, T, R2, XTX_inv = self._run_linear(X, Y, W)                                         # defines self.XTX_inv for use in permutations
-            self.XTX_inv = XTX_inv if not permutation else self.XTX_inv
-        elif switch=='xtx_incomplete_voxelwise':                                                  # linear regression, voxelwise
+        elif switch=="constant_dmatrix":                                                  # Linear regression, broadcast (XTX inv not yet calculated)
+            B, T, R2, _ = self._linear_regression(X, Y, W)                                # defines self.XTX_inv for use in permutations
+        elif switch=='voxelwise_dmatrix_xtx_incomplete':                                  # linear regression, voxelwise
             for voxel_idx in range(self.n_voxels):
-                X, Y, W = self._prep_targets(regressor, regressand, weights, 'whole_brain', regression_idx)
-                B[:,voxel_idx], T[:,voxel_idx], R2[:,voxel_idx], self.XTX_inv[:, :, voxel_idx] = self._run_linear(X, Y, W)
-        
+                X, Y, W = self._prep_targets(regressor, regressand, weights, voxel_idx, regression_idx)
+                b, t, r2, xtx = self._linear_regression(X, Y, W)
+                B[:,voxel_idx] = b.flatten(); T[:,voxel_idx] = t.flatten(); R2[:,voxel_idx] = r2.flatten(); self.XTX_inv[:, :, voxel_idx] = xtx
         # Naive Bayes
         elif switch=='naive_bayes_voxelwise':                                                     # Naive bayes, voxelwise
             raise NotImplementedError("Voxelwise naive_bayes path removed; use non-voxelwise outcome or implement a fixed voxelwise path.")
@@ -491,7 +533,7 @@ class VoxelwiseRegression:
         return B, T, R2
     
     ### P-VALUE METHODS ###
-    def _get_max_stat(self, arr, pseudo_var_smooth=True, t=99.99):
+    def _get_max_stat(self, arr, pseudo_var_smooth=False, t=99.99):
         """Return the 99.9th percentile of the absolute values in arr. Or just the raw maximum if pseudo_var_smooth is false (this is subject to chaotic noise)."""
         if pseudo_var_smooth:        
             return np.nanpercentile(np.abs(arr), t, axis=1)  # Calculate along rows, ignoring NaNs
@@ -514,7 +556,7 @@ class VoxelwiseRegression:
         self.R2p = R2p / n_permutations
         
     ### Neuroimaging File Saving Methods ####
-    def _save_result_maps(self):
+    def _save_result_maps(self, visualize=False):
         """Method to orchestrate writing results to disk"""
         if not self.out_dir:
             return
@@ -522,45 +564,45 @@ class VoxelwiseRegression:
         if hasattr(self, 'B_multi'):
             for j in range(self.n_outputs):
                 for i in range(self.n_contrasts):
-                    self.output_handler.save_map(self.B_multi[i, :, j], f"beta_predictor_{i}_output_{j}", self.out_dir)
+                    self.output_handler.save_map(self.B_multi[i, :, j], f"beta_predictor_{i}_output_{j}", self.out_dir, visualize=False)
 
         if hasattr(self, 'T_multi'):
             for j in range(self.n_outputs):
                 for i in range(self.n_contrasts):
-                    self.output_handler.save_map(self.T_multi[i, :, j], f"contrast_{i}_tval_output_{j}", self.out_dir)
+                    self.output_handler.save_map(self.T_multi[i, :, j], f"contrast_{i}_tval_output_{j}", self.out_dir, visualize=visualize)
 
         if hasattr(self, 'R2_multi'):
             for j in range(self.n_outputs):
-                self.output_handler.save_map(self.R2_multi[0, :, j], f"R2_output_{j}", self.out_dir)
+                self.output_handler.save_map(self.R2_multi[0, :, j], f"R2_output_{j}", self.out_dir, visualize=visualize)
 
         if hasattr(self, 'BETA'):
             for i in range(self.n_preds):
-                self.output_handler.save_map(self.BETA[i, :], f"beta_predictor_{i}", self.out_dir)
+                self.output_handler.save_map(self.BETA[i, :], f"beta_predictor_{i}", self.out_dir, visualize=False)
 
         if hasattr(self, 'T'):
             for c in range(self.n_contrasts):
-                self.output_handler.save_map(self.T[c, :], f"contrast_tval_{c}", self.out_dir)
+                self.output_handler.save_map(self.T[c, :], f"contrast_tval_{c}", self.out_dir, visualize=visualize)
 
         if hasattr(self, 'R2'):
-            self.output_handler.save_map(self.R2, "R2_vals", self.out_dir)
+            self.output_handler.save_map(self.R2, "R2_vals", self.out_dir, visualize=visualize)
 
         if hasattr(self, 'LOG_PRIORS'):
-            self.output_handler.save_map(self.LOG_PRIORS, "LOG_PRIORS", self.out_dir)
+            self.output_handler.save_map(self.LOG_PRIORS, "LOG_PRIORS", self.out_dir, visualize=visualize)
 
         if hasattr(self, 'Tp'):
             for c in range(self.n_contrasts):
                 sig_tvals = np.where(self.Tp[c, :] < 0.05, self.T[c, :], np.nan)
-                self.output_handler.save_map(sig_tvals, f"contrast_tval_FWE_{c}", self.out_dir)
-                self.output_handler.save_map(self.Tp[c, :], f"contrast_pval_FWE_{c}", self.out_dir)
+                self.output_handler.save_map(sig_tvals, f"contrast_tval_FWE_{c}", self.out_dir, visualize=False)
+                self.output_handler.save_map(self.Tp[c, :], f"contrast_pval_FWE_{c}", self.out_dir, visualize=False)
 
         if hasattr(self, 'R2p'):
             sig_r2vals = np.where(self.R2p < 0.05, self.R2, np.nan)
-            self.output_handler.save_map(sig_r2vals, "R2_FWE", self.out_dir)
-            self.output_handler.save_map(self.R2p, "R2_pval_FWE", self.out_dir)
+            self.output_handler.save_map(sig_r2vals, "R2_FWE", self.out_dir, visualize=False)
+            self.output_handler.save_map(self.R2p, "R2_pval_FWE", self.out_dir, visualize=False)
 
         if hasattr(self, 'PREDICTIONS'):
             for o in range(self.PREDICTIONS.shape[0]):
-                self.output_handler.save_map(self.PREDICTIONS[o, :], f"prediction_{o}", self.out_dir)
+                self.output_handler.save_map(self.PREDICTIONS[o, :], f"prediction_{o}", self.out_dir, visualize=False)
 
     #### Prediction Helpers #### ---TODO: MAKE NIFTI-AGNOSTIC.
     def _get_mask_indices(self):
@@ -664,18 +706,25 @@ class VoxelwiseRegression:
         raise NotImplementedError(f"Prediction for regression_type='{self.regression_type}' is not yet implemented.")
     
     def _get_scalar_predictions(self, temp_dir, subject_arr, prediction_arr, *, T_all=None):
-        """Takes voxelwise prediction arrays (or t-maps) and extracts an average value from them"""
-        preds = np.zeros((1, self.n_contrasts+1))
+        """
+        Takes voxelwise prediction arrays (or t-maps) and extracts an average value from them
+        Returns array with all t-value predictions in the first rows, then the overall prediction in the last row.
+        """
+        preds = np.zeros((1, self.n_contrasts+1))                                   # (one for each contrast, then the regression prediction)
         if T_all is None:
             if temp_dir is None:
                 raise ValueError("temp_dir is required when T_all is not provided.")
             (T_all,) = self._load_prediction_params(temp_dir, ["contrast_tval_*"])  # (n_vox, n_contrasts)
+        
+        # Get cosine similarity of subject's map with the T-map
         for i in range(self.n_contrasts):
             T = T_all[:, i]
             dmg_value_dict = DamageScorer._calculate_metrics(subject_arr, T, ["cosine"])
             preds[0, i] = dmg_value_dict["cosine"]
+        
+        # Get cosine similarity of subject's map with their prediction map
         dmg_value_dict = DamageScorer._calculate_metrics(subject_arr, prediction_arr, ["cosine"])
-        preds[0, -1]   = dmg_value_dict["cosine"]
+        preds[0, -1]    = dmg_value_dict["cosine"]
         return preds
 
 
@@ -718,7 +767,7 @@ class VoxelwiseRegression:
 
         raise ValueError("cv must be 'loocv'/'loo' or an integer >= 2.")
 
-    def run_prediction_cv(self, regression_idx=0, batch_size=5000, cv="loocv", *, save_fold_params=False):
+    def run_prediction_cv(self, subject_arr, regression_idx=0, cv="loocv", *, save_fold_params=False):
         """
         Cross-validated predictions using in-sample data.
         cv can be 'loocv'/'loo' or an integer number of folds.
@@ -742,6 +791,7 @@ class VoxelwiseRegression:
         if save_fold_params:
             temp_dir = os.path.join(self.out_dir or "/tmp", f"{cv}_prediction_params")
             os.makedirs(temp_dir, exist_ok=True)
+            self.out_dir = temp_dir
 
         splits = self._get_cv_splits(cv)
 
@@ -750,11 +800,8 @@ class VoxelwiseRegression:
             self.outcome_tensor = orig_outcome[train_idx, :, :]
             self.weight_vector = orig_weights[train_idx]
             self.n_obs = self.design_tensor.shape[0]
-            self.out_dir = temp_dir if save_fold_params else None
 
             self.BETA, self.T, self.R2 = self.voxelwise_regression(regression_idx=regression_idx)
-            if save_fold_params:
-                self._save_result_maps()
 
             self.design_tensor = orig_design[test_idx, :, :]
             self.n_obs = self.design_tensor.shape[0]
@@ -762,14 +809,15 @@ class VoxelwiseRegression:
             A = getattr(self, "LOG_PRIORS", None)
             A = np.asarray(A).squeeze() if A is not None else None
             prediction_arr = self._run_prediction_switch(temp_dir, B=B, A=A)
-
             self.PREDICTIONS[test_idx, :] = prediction_arr
+            
+            if save_fold_params:
+                self._save_result_maps()
 
             for local_i, global_i in enumerate(test_idx):
-                subject_arr = orig_outcome[global_i, regression_idx, :]
                 scalar_preds[global_i, :] = self._get_scalar_predictions(
                     temp_dir,
-                    subject_arr,
+                    subject_arr[global_i, :],
                     prediction_arr[local_i, :],
                     T_all=self.T.T,
                 )
@@ -785,43 +833,32 @@ class VoxelwiseRegression:
                 setattr(self, name, orig_maps[name])
             elif hasattr(self, name):
                 delattr(self, name)
-        self._save_result_maps()
+                
         return scalar_preds
 
-    def _evaluate_map(
-        self,
-        regression_idx=0,
-        batch_size=5000,
-        cv="loocv",
-        *,
-        dependent_variable_source="outcome",
-        dependent_cols=None,
-    ):
+    def _evaluate_map(self, y_true, subject_files, regression_idx=0, cv="loocv"):
         """
         Run CV prediction and generate scatterplots of predicted vs actual Y.
         Adds RMSE and MAE to the plot text.
 
         Parameters
         ----------
-        dependent_variable_source : str
-            - "outcome": (default) uses outcome_tensor; voxelwise outcomes are reduced as mean across voxels.
-            - "design": uses 1D vectors from design_matrix.csv (written by the 05b workflow).
-        dependent_cols : list[str] | None
-            Only used when dependent_variable_source=="design".
-            - None: evaluate against all columns in design_matrix.csv.
-            - list: evaluate against the specified design column(s).
+        y_true : pd.Series
+            values of shape (n_obs, ) which individual correlations (n_obs, ) can be correlated to.
+        subject_files : pd.Series
+            values of shape (n_obs, ). Contains the files to import the subject files to evaluate.
         """
         if not self.out_dir:
             raise ValueError("out_dir must be set for cross-validation plotting.")
-        scalar_preds = self.run_prediction_cv(regression_idx=regression_idx, batch_size=batch_size, cv=cv)
+        
+        importer = GiiNiiFileImport(import_path=subject_files, mask_path=self.mask_path, transpose=True)
+        subject_arr = importer.run().values
+        scalar_preds = self.run_prediction_cv(subject_arr=subject_arr, regression_idx=regression_idx, cv=cv)
 
-        def _safe_name(s: str) -> str:
-            return "".join(ch if (ch.isalnum() or ch in "._-") else "_" for ch in str(s))[:120]
-
-        def _scatter(pred_col, actual_y, *, name: str):
-            rmse = float(np.sqrt(np.mean((pred_col - actual_y) ** 2)))
-            mae = float(np.mean(np.abs(pred_col - actual_y)))
-            df = pd.DataFrame({"pred": pred_col, "actual": actual_y})
+        def _scatter(pred_col, y_true, *, name: str):
+            rmse = float(np.sqrt(np.mean((pred_col - y_true) ** 2)))
+            mae = float(np.mean(np.abs(pred_col - y_true)))
+            df = pd.DataFrame({"pred": pred_col, "actual": y_true})
             ax = simple_scatter(
                 df=df,
                 x_col="pred",
@@ -831,7 +868,7 @@ class VoxelwiseRegression:
                 x_label="Predicted",
                 y_label="Actual",
                 extra_lines=[f"RMSE = {rmse:.3g}", f"MAE = {mae:.3g}"],
-                show=False,
+                show=True,
             )
             # Avoid accumulating open figures when evaluating many models/columns.
             try:
@@ -839,81 +876,34 @@ class VoxelwiseRegression:
             except Exception:
                 pass
 
-        if dependent_variable_source not in {"outcome", "design"}:
-            raise ValueError("dependent_variable_source must be 'outcome' or 'design'")
-
-        if dependent_variable_source == "outcome":
-            if self.outcome_tensor.shape[2] == 1:
-                actual_y = self.outcome_tensor[:, regression_idx, 0]
+        for j in range(scalar_preds.shape[1]):
+            pred_col = scalar_preds[:, j]
+            if j < self.n_contrasts:
+                name = f"{cv}_contrast_{j}_correlation"
             else:
-                actual_y = np.nanmean(self.outcome_tensor[:, regression_idx, :], axis=1)
-
-            for j in range(scalar_preds.shape[1]):
-                pred_col = scalar_preds[:, j]
-                if j < self.n_contrasts:
-                    name = f"{cv}_contrast_{j}_correlation"
-                else:
-                    name = f"{cv}_voxelwisemodel_aggregate-prediction"
-                _scatter(pred_col, actual_y, name=name)
-            return
-
-        # dependent_variable_source == "design"
-        design_csv = os.path.join(self.out_dir, "design_matrix.csv")
-        if not os.path.exists(design_csv):
-            raise FileNotFoundError(
-                f"design_matrix.csv not found at {design_csv}. "
-                "To use dependent_variable_source='design', run via the 05b workflow (which writes design_matrix.csv)."
-            )
-        design_df = pd.read_csv(design_csv)
-        cols = list(design_df.columns) if dependent_cols is None else list(dependent_cols)
-        missing = [c for c in cols if c not in design_df.columns]
-        if missing:
-            raise ValueError(f"Missing dependent_cols in design_matrix.csv: {missing[:20]}")
-
-        # Force to a true 1D vector per column (n_obs,)
-        for dep_col in cols:
-            actual_y = pd.to_numeric(design_df[dep_col], errors="coerce").to_numpy()
-            if actual_y.shape[0] != scalar_preds.shape[0]:
-                raise ValueError(
-                    f"Dependent column '{dep_col}' length {actual_y.shape[0]} != n_obs {scalar_preds.shape[0]}"
-                )
-
-            # If constant, spearman/pearson are undefined; still write plot for visibility.
-            for j in range(scalar_preds.shape[1]):
-                pred_col = scalar_preds[:, j]
-                if j < self.n_contrasts:
-                    base = f"{cv}_contrast_{j}_correlation"
-                else:
-                    base = f"{cv}_voxelwisemodel_aggregate-prediction"
-                name = f"{base}__actual_design_{_safe_name(dep_col)}"
-                _scatter(pred_col, actual_y, name=name)
+                name = f"{cv}_voxelwisemodel_aggregate-prediction"
+            _scatter(pred_col, y_true, name=name)
 
     
     #### Public Code - Fitting ####
-    def run_cross_validation(self, *, dependent_variable_source="outcome", dependent_cols=None):
-        """Orchestrates cross-validated relation of t-maps and voxelwise predictions to dependent variables"""
-        n = self.n_obs
-        self._evaluate_map(
-            cv="loocv",
-            dependent_variable_source=dependent_variable_source,
-            dependent_cols=dependent_cols,
-        )
-        self._evaluate_map(
-            cv=2,
-            dependent_variable_source=dependent_variable_source,
-            dependent_cols=dependent_cols,
-        )
-        self._evaluate_map(
-            cv=5,
-            dependent_variable_source=dependent_variable_source,
-            dependent_cols=dependent_cols,
-        )
-        self._evaluate_map(
-            cv=10,
-            dependent_variable_source=dependent_variable_source,
-            dependent_cols=dependent_cols,
-        )
+    def run_cross_validation(self, *, y_true, subject_files, regression_idx=0):
+        """
+        Orchestrates cross-validated relation of t-maps and voxelwise predictions to dependent variables
         
+        Parameters
+        ----------
+        y_true : pd.Series
+            values of shape (n_obs, ) which individual correlations (n_obs, ) can be correlated to.
+        subject_files : pd.Series
+            values of shape (n_obs, ). Contains the files to import the subject files to evaluate.
+        regression_idx : int
+            integer corresponding to which regression to use. Generally default is 0. 
+        """
+        self._evaluate_map(cv="loocv", y_true=y_true, subject_files=subject_files, regression_idx=regression_idx)
+        self._evaluate_map(cv=2, y_true=y_true, subject_files=subject_files, regression_idx=regression_idx)
+        self._evaluate_map(cv=5, y_true=y_true, subject_files=subject_files, regression_idx=regression_idx)
+        self._evaluate_map(cv=10, y_true=y_true, subject_files=subject_files, regression_idx=regression_idx)
+
     def run_single_multiout_regression(self, permutation=False):
         """Runs regression across all outputs a single time and returns the associated arrays."""
         B_multi = np.zeros((self.n_contrasts, self.n_voxels, self.n_outputs))
@@ -926,7 +916,7 @@ class VoxelwiseRegression:
             self.B_multi, self.T_multi, self.R2_multi = B_multi, T_multi, R2_multi
         return B_multi, T_multi, R2_multi
 
-    def run_all_outputs(self):
+    def run_all_outputs(self, visualize=False):
         """
         Orchestrates full multi-output regression.
         For each output channel in outcome_tensor:
@@ -944,9 +934,9 @@ class VoxelwiseRegression:
             # Run one regression for this output
             self.BETA, self.T, self.R2 = self.voxelwise_regression(regression_idx=j)
             self.run_permutation(self.n_permutations)
-            self._save_result_maps()
+            self._save_result_maps(visualize=visualize)
 
-    def run(self):
+    def run(self, visualize=False):
         """
         Executes the voxelwise regression analysis and optional permutation testing.
         This method performs the following steps:
@@ -961,7 +951,7 @@ class VoxelwiseRegression:
         """
         self.BETA, self.T, self.R2 = self.voxelwise_regression()
         self.run_permutation(self.n_permutations)
-        self._save_result_maps()
+        self._save_result_maps(visualize=visualize)
 
 # -----------------------
 # batching / assembly

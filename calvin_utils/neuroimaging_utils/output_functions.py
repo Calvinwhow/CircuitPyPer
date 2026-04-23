@@ -1,12 +1,5 @@
 import os
-import json
-import glob
 import numpy as np
-import nibabel as nib
-
-from calvin_utils.neuroimaging_utils.nifti_utils.volume_io import NiftiIO
-from calvin_utils.neuroimaging_utils.surface_utils.surface_io import SurfaceIO
-from calvin_utils.neuroimaging_utils.tract_utils.fiber_io import FiberIO
 
 from calvin_utils.neuroimaging_utils.nifti_utils.volume_io import NiftiIO, VolumetricTimeSeriesIO
 from calvin_utils.neuroimaging_utils.surface_utils.surface_io import SurfaceIO
@@ -29,7 +22,7 @@ class NeuroimageFileOutporter:
         else:
             raise ValueError(f"Unknown output_ftype: {output_ftype}")
 
-    def save_map(self, map_data, file_name, out_dir):
+    def save_map(self, map_data, file_name, out_dir, visualize=False):
         """
         Save one statistical vector using the underlying I/O class.
         """
@@ -40,3 +33,6 @@ class NeuroimageFileOutporter:
             dry_run=False,
             file_suffix=""
         )
+        if visualize and hasattr(self.io, "_map_to_image") and hasattr(self.io, "_visualize_map"):
+            img = self.io._map_to_image(np.asarray(map_data))
+            self.io._visualize_map(img, title=os.path.basename(file_name))

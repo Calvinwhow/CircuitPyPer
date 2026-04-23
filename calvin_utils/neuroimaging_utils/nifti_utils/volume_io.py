@@ -1,13 +1,12 @@
 import os
 import numpy as np
 import nibabel as nib
-from nilearn import image
+from nilearn import image, plotting
 from tqdm import tqdm
 from calvin_utils.neuroimaging_utils.ccm_utils.bounding_box import NiftiBoundingBox
 from calvin_utils.neuroimaging_utils.nifti_utils.generate_nifti import view_and_save_nifti
 
 DEFAULT_MASK = "circuit_pyper/resources/MNI152_T1_2mm_brain_mask.nii"
-
 
 class NiftiIO:
     def __init__(self, mask_path='default', threshold=0):
@@ -39,6 +38,60 @@ class NiftiIO:
     @affines.setter
     def affines(self, value):
         self._affines.add(value)
+
+    def _visualize_map(self, img, title=None):
+        """
+        Open a NIfTI image in the browser via nilearn.
+
+        Parameters
+        ----------
+        img : nibabel.Nifti1Image
+            In-memory image to visualize.
+        title : str, optional
+            Viewer title.
+        """
+        try:
+            plotting.view_img(img, title=title).open_in_browser()
+        except Exception:
+            pass
+
+    def _map_to_image(self, map_data: np.ndarray, fill_value=0):
+        """
+        Convert a masked or full-length vector map into an in-memory NIfTI image.
+        """
+        data_vec = np.asarray(map_data)
+        if data_vec.ndim == 2:
+            if data_vec.shape[1] == 1:
+                data_vec = data_vec[:, 0]
+            elif data_vec.shape[0] == 1:
+                data_vec = data_vec[0, :]
+            else:
+                raise ValueError(f"Expected a single map, got shape {data_vec.shape}")
+        elif data_vec.ndim != 1:
+            raise ValueError(f"Expected 1D or single-map 2D array, got ndim={data_vec.ndim}")
+
+        mask_path = self.resolved_mask_path
+        if mask_path is None:
+            raise ValueError("Cannot build a volumetric NIfTI image without a mask_path.")
+
+        mask_img = nib.load(mask_path)
+        mask_data = mask_img.get_fdata()
+        mask_indices = mask_data.flatten() > self.threshold
+        full_size = int(mask_indices.shape[0])
+        n_masked = int(mask_indices.sum())
+
+        if data_vec.shape[0] == n_masked:
+            full_vec = np.full(full_size, fill_value, dtype=data_vec.dtype)
+            full_vec[mask_indices] = data_vec
+        elif data_vec.shape[0] == full_size:
+            full_vec = data_vec
+        else:
+            raise ValueError(
+                f"Map length {data_vec.shape[0]} does not match masked ({n_masked}) or full ({full_size}) voxel counts."
+            )
+
+        vol3d = full_vec.reshape(mask_img.shape).astype(np.float32)
+        return nib.Nifti1Image(vol3d, affine=mask_img.affine)
 
     def _load_single_nifti(self, file_path):
         nifti_img = image.load_img(file_path)
@@ -183,7 +236,7 @@ class NiftiIO:
                 os.makedirs(out_dir, exist_ok=True)
                 img = nib.Nifti1Image(vol3d, affine=mask_img.affine)
                 nib.save(img, out_path)
-                
+
 DEFAULT_MASK = "circuit_pyper/resources/MNI152_T1_2mm_brain_mask.nii"
 
 
