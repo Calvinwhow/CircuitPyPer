@@ -40,13 +40,14 @@ class ICCAnalysis:
         df_melted = df.melt(id_vars=['subject'], value_vars=['rating1', 'rating2'], var_name='rater', value_name='rating')
         return df_melted.dropna()
     
-    def calculate_icc(self, series1, series2):
+    def calculate_icc(self, series1, series2, icc):
         """
         Calculate the Intraclass Correlation Coefficient (ICC) between two series.
         
         Parameters:
         series1 (pd.Series): First series of ratings.
         series2 (pd.Series): Second series of ratings.
+        icc (str): which icc to use. 
         
         Returns:
         float: ICC value.
@@ -57,10 +58,10 @@ class ICCAnalysis:
         if df_melted.shape[0] < 5:
             return None, None, None, None
         icc_result = pg.intraclass_corr(data=df_melted, targets='subject', raters='rater', ratings='rating', nan_policy='omit')
-        icc_value = icc_result.set_index('Type').loc['ICC3k', 'ICC']
-        ci_lower = icc_result.set_index('Type').loc['ICC3k', 'CI95%'][0]
-        ci_upper = icc_result.set_index('Type').loc['ICC3k', 'CI95%'][1]
-        p_value = icc_result.set_index('Type').loc['ICC3k', 'pval']
+        icc_value = icc_result.set_index('Type').loc[icc, 'ICC']
+        ci_lower = icc_result.set_index('Type').loc[icc, 'CI95'][0]
+        ci_upper = icc_result.set_index('Type').loc[icc, 'CI95'][1]
+        p_value = icc_result.set_index('Type').loc[icc, 'pval']
         return icc_value, ci_lower, ci_upper, p_value
     
     def plot_icc_forest(self, icc_results, ax, title):
@@ -93,7 +94,7 @@ class ICCAnalysis:
         ax.grid(axis='x', linestyle='--')
         ax.legend(handles=legend_patches, frameon=False, loc='upper right')
     
-    def orchestrate_icc_analysis(self, df, category_col, columns_to_compare, outdir, filetype='svg'):
+    def orchestrate_icc_analysis(self, df, category_col, columns_to_compare, outdir, filetype='svg', icc="ICC(1,1)"):
         """
         Orchestrate ICC analysis for multiple pairwise comparisons and columns.
         
@@ -102,7 +103,33 @@ class ICCAnalysis:
         category_col (str): Column name containing categories to compare across.
         columns_to_compare (list): List of columns to compare in each subplot.
         outdir (str): Output directory for saving plots.
-        filetype (str): File type for saving plots (e.g., 'svg', 'png').
+        filetype (str): File type for saving plots (e.g., 'svg', 'png'). 
+        icc (string): which ICC to grab from pingouin. Options:  ICC(1,1) | ICC(A,1) | ICC(C,1) | ICC(1,k) | ICC(A,k) | ICC(C,k)
+
+            Liljequist et al. (2019) recommend computing all three single-score ICCs
+            together and comparing them, rather than selecting a single model upfront.s
+            *1. Detecting bias (systematic errors):*
+
+            Start by comparing ICC(1,1), ICC(A,1), and ICC(C,1). When they are
+            approximately equal, systematic bias between raters is likely negligible.
+            When ICC(C,1) is notably larger than ICC(A,1), non-negligible bias is
+            likely present. In that case, ICC(1,1) is invalid and should not be
+            reported. The F statistic and p-value in the output provide a formal test
+            of whether rater means differ significantly.
+
+            *2. Agreement vs. consistency:*
+
+            When bias is present, both ICC(A,1) and ICC(C,1) should be reported
+            together with their confidence intervals. ICC(A,1) reflects absolute
+            agreement (do raters assign the same values?), while ICC(C,1) reflects
+            consistency (do raters rank targets in the same order?).
+
+            *3. Single vs. average ratings:*
+
+            Use the single-score variants (ICC(1,1), ICC(A,1), ICC(C,1)) when
+            reporting the reliability of one rating. Use the average-score variants
+            (ICC(1,k), ICC(A,k), ICC(C,k)) when the final measurement will be the
+            mean of :math:`k` ratings.
         
         Returns:
         dict: Dictionary containing ICC results for each comparison and category.
@@ -127,14 +154,14 @@ class ICCAnalysis:
             df_cat2 = df[df[category_col] == cat2]
             
             for col in columns_to_compare:
-                icc_value, ci_lower, ci_upper, p_value = self.calculate_icc(df_cat1[col], df_cat2[col])
+                icc_value, ci_lower, ci_upper, p_value = self.calculate_icc(df_cat1[col], df_cat2[col], icc)
                 icc_results[col] = (icc_value, ci_lower, ci_upper, p_value)
             
             all_icc_results[(cat1, cat2)] = icc_results
             title = f'ICC Comparison: {cat1} vs {cat2}'
             self.plot_icc_forest(icc_results, axes[i], title)
         
-        combined_icc_results = self.calculate_combined_icc(df, category_col, columns_to_compare)
+        combined_icc_results = self.calculate_combined_icc(df, category_col, columns_to_compare, icc)
         self.plot_icc_forest(combined_icc_results, axes[-1], 'Combined ICC of All Raters')
         
         for j in range(i + 1, len(axes) - 1):
@@ -146,7 +173,7 @@ class ICCAnalysis:
         
         return all_icc_results
 
-    def calculate_combined_icc(self, df, category_col, columns_to_compare):
+    def calculate_combined_icc(self, df, category_col, columns_to_compare, icc):
         """
         Calculate the ICC of all raters combined for each column to compare.
         
@@ -176,10 +203,10 @@ class ICCAnalysis:
                 continue
             
             icc_result = pg.intraclass_corr(data=df_combined, targets='subject', raters='rater', ratings='rating', nan_policy='omit')
-            icc_value = icc_result.set_index('Type').loc['ICC3k', 'ICC']
-            ci_lower = icc_result.set_index('Type').loc['ICC3k', 'CI95%'][0]
-            ci_upper = icc_result.set_index('Type').loc['ICC3k', 'CI95%'][1]
-            p_value = icc_result.set_index('Type').loc['ICC3k', 'pval']
+            icc_value = icc_result.set_index('Type').loc[icc, 'ICC']
+            ci_lower = icc_result.set_index('Type').loc[icc, 'CI95'][0]
+            ci_upper = icc_result.set_index('Type').loc[icc, 'CI95'][1]
+            p_value = icc_result.set_index('Type').loc[icc, 'pval']
             combined_icc_results[col] = (icc_value, ci_lower, ci_upper, p_value)
         print('Combined ICC Results: \n ', combined_icc_results)
         return combined_icc_results

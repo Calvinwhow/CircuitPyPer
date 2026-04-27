@@ -793,7 +793,10 @@ class VoxelwiseRegression:
             os.makedirs(temp_dir, exist_ok=True)
             self.out_dir = temp_dir
 
-        splits = self._get_cv_splits(cv)
+        if cv == 'leave_all_in':
+            splits = [(np.arange(self.n_obs), np.arange(self.n_obs))]
+        else:
+            splits = self._get_cv_splits(cv)
 
         for fold_idx, (train_idx, test_idx) in enumerate(tqdm(splits, desc=f"{cv} predictions")):
             self.design_tensor = orig_design[train_idx, :, :]
@@ -868,7 +871,7 @@ class VoxelwiseRegression:
                 x_label="Predicted",
                 y_label="Actual",
                 extra_lines=[f"RMSE = {rmse:.3g}", f"MAE = {mae:.3g}"],
-                show=True,
+                show=False,
             )
             # Avoid accumulating open figures when evaluating many models/columns.
             try:
@@ -903,6 +906,7 @@ class VoxelwiseRegression:
         self._evaluate_map(cv=2, y_true=y_true, subject_files=subject_files, regression_idx=regression_idx)
         self._evaluate_map(cv=5, y_true=y_true, subject_files=subject_files, regression_idx=regression_idx)
         self._evaluate_map(cv=10, y_true=y_true, subject_files=subject_files, regression_idx=regression_idx)
+        self._evaluate_map(cv="leave_all_in", y_true=y_true, subject_files=subject_files, regression_idx=regression_idx)
 
     def run_single_multiout_regression(self, permutation=False):
         """Runs regression across all outputs a single time and returns the associated arrays."""

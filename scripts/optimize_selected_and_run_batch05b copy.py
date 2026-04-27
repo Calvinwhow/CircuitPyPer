@@ -24,18 +24,18 @@ import pandas as pd
 
 CONFIG: dict[str, Any] = {
     "master_csv": "/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/master_list_redo.csv",
-    "opt_dir": "/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/results/optimzation/totalbars",
+    "opt_dir": "/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/results/optimzation/AffectFailS",
     "mask_path": "/Users/cu135/Software_Local/calvin_utils_project/circuit_pyper/resources/MNI152_T1_2mm_brain_mask.nii",
     "subject_col": "subid",
     "session_col": "session",
     "paths_col": "onetouch_path",
     "selected_col": "selected",
-    "predictor_col": "TotalBarsScore",  #AffectFailS # TotalCCASRawScore
+    "predictor_col": "AffectFailS",  #AffectFailS # TotalCCASRawScore
     "passes": 15,
     "seed": 0,
     "cv": "loocv",
     "n_permutations": 0,
-    "drop_nans": ["TotalBarsScore"],
+    "drop_nans": ["AffectFailS"],
     "verbose": True,
 }
 
