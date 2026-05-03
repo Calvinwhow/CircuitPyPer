@@ -6,14 +6,14 @@ from calvin_utils.neuroimaging_utils.nifti_utils.matrix_utilities import thresho
 
 class ConjunctionMap:
     def __init__(self, nift_path_1, nift_path_2, threshold1, threshold2, direction1, direction2, mask_path=None, 
-                 output_dir='generated_nifti', output_name='conjunction_map.nii', method='unsigned'):
+                 output_dir='generated_nifti', output_name='conjunction_map.nii', method='signed'):
         """
         Initialize the class with two data frames, two threshold values, and two directions for thresholding.
 
         Parameters:
         nift_path_1, nift_path_2 : path
             Path to NIFTI files and rows represent voxels.
-        threshold1, threshold2 : float
+        threshold1, threshold2 : float or tuple (float, float) per entry
             Threshold values for the data frames.
         direction1, direction2 : str
             Directions for thresholding ('keep_above', 'keep_below', 'keep_between', or 'exclude_between').
@@ -27,8 +27,8 @@ class ConjunctionMap:
         method : str, optional
             If unsigned, returns regions meeting threshold and directional criteria. Map is [0,1]
             If signed, returns regions meeting threshold, direction criteria, and sharing signs. Map is [-1,0,1] 
-            If agreement, 
-            Defaults to unsigned
+            Defaults to signed. 
+            To run an 'agreement map' set threshold = (0,0) and run exclude_between. This will find areas of shared positives or negatives.
         """
         self.df1 = import_nifti_to_numpy_array(nift_path_1).flatten()
         self.df2 = import_nifti_to_numpy_array(nift_path_2).flatten()
