@@ -77,23 +77,17 @@ class ConjunctionMap:
         self.keep2 = self._thresh(self.df2, self.threshold2, self.direction2)
 
     def perform_conjunction(self):
-        base = self.keep1 & self.keep2
         if self.method=='unsigned':
-            self.keep_conj = base.astype(np.int8)
+            conj = self.keep1 & self.keep2
+            self.keep_conj = conj.astype(np.int8)
         elif self.method=='signed':
-            pos = base & (self.df1 > 0) & (self.df2 > 0)
-            neg = base & (self.df1 < 0) & (self.df2 < 0)
+            # Check thresholding conditions AND matching signs in original arrays
+            pos = self.keep1 & self.keep2 & (self.df1 > 0) & (self.df2 > 0)
+            neg = self.keep1 & self.keep2 & (self.df1 < 0) & (self.df2 < 0)
             conj = np.zeros_like(self.df1, dtype=np.int8)
             conj[pos] = 1
             conj[neg] = -1
             self.keep_conj = conj
-        elif self.method=='agreement':
-            pos = (self.df1 > 0) & (self.df2 > 0)
-            neg = (self.df1 < 0) & (self.df2 < 0)
-            conj = np.zeros_like(self.df1, dtype=np.int8)
-            conj[pos] = 1
-            conj[neg] = -1
-            self.keep_conj = conj 
         else:
             raise ValueError("Invalid method specified for conjunction analysis. Supported methods are 'unsigned', 'signed', and 'agreement'.")
         self.indices = np.where(self.keep_conj != 0)[0]
