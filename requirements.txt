@@ -11,6 +11,7 @@ matplotlib-venn
 forestplot
 tqdm
 tableone
+pingouin
 
 # Data Handling and Analysis
 numpy
