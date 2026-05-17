@@ -5,6 +5,7 @@
 # Plotting and Visualization
 seaborn==0.12.2
 plotly==5.15.0
+kaleido==0.2.1
 matplotlib==3.7.1
 matplotlib-inline
 matplotlib-venn

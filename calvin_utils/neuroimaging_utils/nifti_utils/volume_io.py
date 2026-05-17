@@ -6,7 +6,8 @@ from tqdm import tqdm
 from calvin_utils.neuroimaging_utils.ccm_utils.bounding_box import NiftiBoundingBox
 from calvin_utils.neuroimaging_utils.nifti_utils.generate_nifti import view_and_save_nifti
 
-DEFAULT_MASK = "circuit_pyper/resources/MNI152_T1_2mm_brain_mask.nii"
+PACKAGE_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+DEFAULT_MASK = os.path.join(PACKAGE_ROOT, "resources", "MNI152_T1_2mm_brain_mask.nii")
 
 class NiftiIO:
     def __init__(self, mask_path='default', threshold=0):
@@ -236,9 +237,6 @@ class NiftiIO:
                 os.makedirs(out_dir, exist_ok=True)
                 img = nib.Nifti1Image(vol3d, affine=mask_img.affine)
                 nib.save(img, out_path)
-
-DEFAULT_MASK = "circuit_pyper/resources/MNI152_T1_2mm_brain_mask.nii"
-
 
 class VolumetricTimeSeriesIO:
     def __init__(self, mask_path='default', threshold=0):

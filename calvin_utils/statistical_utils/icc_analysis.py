@@ -33,12 +33,34 @@ class ICCAnalysis:
         Returns:
         pd.DataFrame: Long-format DataFrame suitable for ICC calculation.
         """
+        series1, series2 = self.preprocess_equivalent_observations(series1, series2)
         df = pd.DataFrame()
         df['rating1'] = series1.values
         df['rating2'] = series2.values
         df['subject'] = df.index
         df_melted = df.melt(id_vars=['subject'], value_vars=['rating1', 'rating2'], var_name='rater', value_name='rating')
-        return df_melted.dropna()
+        return df_melted
+
+    def preprocess_equivalent_observations(self, *series_list):
+        """
+        Downsample each input series to the same number of non-missing observations.
+
+        ICC requires equivalent observations across raters. When one category has
+        more observations than another, keep the first n non-missing observations
+        from each category, where n is the smallest available count.
+        """
+        clean_series = [
+            pd.Series(series).dropna().reset_index(drop=True)
+            for series in series_list
+        ]
+        if not clean_series:
+            return []
+
+        n_observations = min(len(series) for series in clean_series)
+        return [
+            series.iloc[:n_observations].reset_index(drop=True)
+            for series in clean_series
+        ]
     
     def calculate_icc(self, series1, series2, icc):
         """
@@ -63,6 +85,25 @@ class ICCAnalysis:
         ci_upper = icc_result.set_index('Type').loc[icc, 'CI95'][1]
         p_value = icc_result.set_index('Type').loc[icc, 'pval']
         return icc_value, ci_lower, ci_upper, p_value
+
+    def _format_p_value(self, p_value):
+        if p_value is None or pd.isna(p_value):
+            return "nan"
+        return f"{p_value:.4f}"
+
+    def _get_ci_bounds(self, ci_lower, ci_upper):
+        """
+        Return sorted confidence interval bounds when both endpoints are finite.
+
+        ICC confidence intervals can occasionally be returned reversed, outside
+        the plotted range, or not bracketing the point estimate.
+        """
+        values = np.asarray([ci_lower, ci_upper], dtype=float)
+        if np.any(~np.isfinite(values)):
+            return None
+
+        lower, upper = sorted((ci_lower, ci_upper))
+        return lower, upper
     
     def plot_icc_forest(self, icc_results, ax, title):
         """
@@ -80,11 +121,19 @@ class ICCAnalysis:
         legend_patches = []
 
         for idx, (col, (icc_value, ci_lower, ci_upper, p_value)) in enumerate(icc_results.items()):
-            if icc_value is not None:
-                ax.errorbar(x=icc_value, y=idx, xerr=[[icc_value - ci_lower], [ci_upper - icc_value]], fmt='o', color=colors[idx], capsize=5)
-                legend_patches.append(mpatches.Patch(color=colors[idx], label=f'{col} (p={p_value:.4f})'))
+            if icc_value is None or pd.isna(icc_value):
+                continue
 
-        ax.set_xlim(0, 1)
+            ci_bounds = self._get_ci_bounds(ci_lower, ci_upper)
+            if ci_bounds is not None:
+                ci_low, ci_high = ci_bounds
+                ax.hlines(y=idx, xmin=ci_low, xmax=ci_high, color=colors[idx], linewidth=1.5)
+                ax.vlines([ci_low, ci_high], ymin=idx - 0.08, ymax=idx + 0.08, color=colors[idx], linewidth=1.5)
+
+            ax.plot(icc_value, idx, marker='o', color=colors[idx], linestyle='None')
+            legend_patches.append(mpatches.Patch(color=colors[idx], label=f'{col} (p={self._format_p_value(p_value)})'))
+
+        ax.set_xlim(*self.xlim)
         ax.set_ylim(-1, len(icc_results))
         ax.set_yticks(range(len(icc_results)))
         ax.set_yticklabels(list(icc_results.keys()))
@@ -143,10 +192,8 @@ class ICCAnalysis:
         rows = math.ceil((n + 1) / cols)
         
         fig, axes = plt.subplots(rows, cols, figsize=(cols * 5.5, rows * 5.1))
-        # Handle the case where there is only one plot
-        if n == 1:
-            axes = np.array([axes])
-        axes = axes.flatten()
+        # plt.subplots returns a bare Axes for a 1x1 layout.
+        axes = np.atleast_1d(axes).flatten()
 
         for i, (cat1, cat2) in enumerate(pairwise_comparisons):
             icc_results = {}
@@ -164,7 +211,7 @@ class ICCAnalysis:
         combined_icc_results = self.calculate_combined_icc(df, category_col, columns_to_compare, icc)
         self.plot_icc_forest(combined_icc_results, axes[-1], 'Combined ICC of All Raters')
         
-        for j in range(i + 1, len(axes) - 1):
+        for j in range(n, len(axes) - 1):
             fig.delaxes(axes[j])
 
         plt.tight_layout()
@@ -191,11 +238,17 @@ class ICCAnalysis:
             raters = []
             subjects = []
 
-            for category in df[category_col].unique():
-                series = df[df[category_col] == category][col]
+            categories = df[category_col].unique()
+            category_series = [
+                df[df[category_col] == category][col]
+                for category in categories
+            ]
+            matched_series = self.preprocess_equivalent_observations(*category_series)
+
+            for category, series in zip(categories, matched_series):
                 ratings.extend(series)
                 raters.extend([category] * len(series))
-                subjects.extend(range(len(series)))  # Subject IDs should be within the length of the series for each category
+                subjects.extend(range(len(series)))  # Subject IDs should be equivalent across categories
             
             df_combined = pd.DataFrame({'rating': ratings, 'rater': raters, 'subject': subjects}).dropna()
             if df_combined.shape[0] < 5:

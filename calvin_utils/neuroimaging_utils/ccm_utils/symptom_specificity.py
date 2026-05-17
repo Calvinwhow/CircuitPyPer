@@ -1,4 +1,5 @@
 import os
+import re
 import pandas as pd
 import numpy as np
 from tqdm import tqdm
@@ -358,7 +359,8 @@ class SpecificityAnalyzer:
             fig.tight_layout()
             if self.out_dir:
                 os.makedirs(self.out_dir, exist_ok=True)
-                fig.savefig(os.path.join(self.out_dir, f'specificity_{self.cols[iv+1]}.svg'), format='svg')
+                safe_col = re.sub(r"[^0-9A-Za-z._-]+", "_", str(self.cols[iv])).strip("_")
+                fig.savefig(os.path.join(self.out_dir, f'specificity_{safe_col}.svg'), format='svg')
             plt.show()
             plt.close(fig)
 

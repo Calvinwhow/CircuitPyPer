@@ -330,9 +330,16 @@ class VoxelwiseRegression:
         """
         C = self.contrast_matrix
         if XtX_inv.ndim == 2: # conventional 2d matrix
-            NUM = C @ BETA                              # (n_contrasts, ) <- (n_contrasts, n_preds) @ (n_preds, )
-            var_diag = np.diag(C @ XtX_inv @ C.T)       # (n_contrasts,n_contrasts) <- (n_contrasts, n_preds) @ (n_preds, n_preds) @ (n_preds, n_contrasts)
-            DEN = np.sqrt(var_diag * MSE)      
+            BETA = np.asarray(BETA)
+            if BETA.ndim == 1:
+                BETA = BETA[:, None]
+            NUM = C @ BETA                              # (n_contrasts, n_voxels)
+            var_diag = np.diag(C @ XtX_inv @ C.T)       # (n_contrasts,)
+            MSE = np.asarray(MSE)
+            if MSE.ndim == 0:
+                DEN = np.sqrt(np.maximum(var_diag[:, None] * MSE, 0))
+            else:
+                DEN = np.sqrt(np.maximum(var_diag[:, None] * MSE.reshape(1, -1), 0))
         else:                 # tensor multiplcation
             NUM = np.einsum("cp,pv->cv", C, BETA)        # (n_contrasts, n_voxels) <- (n_contrasts, n_preds) @ (n_preds, n_voxels)
             DEN = np.einsum("cp,pqv,cq->cv", C, XtX_inv, C, optimize=True) # (n_contrasts, voxels) <- 
@@ -500,7 +507,10 @@ class VoxelwiseRegression:
             for voxel_idx in range(self.n_voxels):
                 X, Y, W = self._prep_targets(regressor, regressand, weights, voxel_idx, regression_idx)
                 b, t, r2, xtx = self._linear_regression(X, Y, W)
-                B[:,voxel_idx] = b.flatten(); T[:,voxel_idx] = t.flatten(); R2[:,voxel_idx] = r2.flatten(); self.XTX_inv[:, :, voxel_idx] = xtx
+                B[:,voxel_idx] = b.flatten()
+                T[:,voxel_idx] = t.flatten()
+                R2[:,voxel_idx] = r2.flatten()
+                self.XTX_inv[:, :, voxel_idx] = xtx
         # Naive Bayes
         elif switch=='naive_bayes_voxelwise':                                                     # Naive bayes, voxelwise
             raise NotImplementedError("Voxelwise naive_bayes path removed; use non-voxelwise outcome or implement a fixed voxelwise path.")
@@ -540,14 +550,14 @@ class VoxelwiseRegression:
         else: 
             return np.nanmax(np.abs(arr), axis=1)  # Calculate along rows
 
-    def run_permutation(self, n_permutations):
+    def run_permutation(self, n_permutations, regression_idx=0):
         if n_permutations < 1:
             print("No permutations requested.")
             return
         Tp = np.zeros_like(self.T)        
         R2p = np.zeros_like(self.R2) 
         for i in tqdm(range(n_permutations), desc='running permutations'):
-            _, permT, permR2 = self.voxelwise_regression(permutation=True)
+            _, permT, permR2 = self.voxelwise_regression(permutation=True, regression_idx=regression_idx)
             max_statsT = self._get_max_stat(permT)
             max_statsR2 = self._get_max_stat(permR2)
             Tp += (max_statsT[:, None] > np.abs(self.T)).astype(int)  #max t is already absval. self.T must be set to absval for a 2-sample t test. 
@@ -937,7 +947,7 @@ class VoxelwiseRegression:
 
             # Run one regression for this output
             self.BETA, self.T, self.R2 = self.voxelwise_regression(regression_idx=j)
-            self.run_permutation(self.n_permutations)
+            self.run_permutation(self.n_permutations, regression_idx=j)
             self._save_result_maps(visualize=visualize)
 
     def run(self, visualize=False):

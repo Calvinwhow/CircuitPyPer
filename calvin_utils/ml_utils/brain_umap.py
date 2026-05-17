@@ -99,7 +99,7 @@ class BrainUmap:
     ...                         metric="correlation", cluster_voxels=True)
     >>> umap_runner.plot_embedding()
     """
-    def __init__(self, data, n_components=2, n_neighbors=15, min_dist=0.1, metric='correlation', projection="sphere", min_cluster_size=5, mask=None, verbose=True, cluster_voxels=False, visualize_failed_clusters=False):
+    def __init__(self, data, n_components=2, n_neighbors=15, min_dist=0.1, metric='correlation', projection="sphere", min_cluster_size=5, mask=None, verbose=True, cluster_voxels=False, visualize_failed_clusters=False, cols_to_flip=[]):
         """
         metric: 'euclidean', 'manhattan', 'cosine', 'correlation', 'haversine', etc. (see umap.UMAP docs)
         min_dist recommendation: 0.1 (low for tight clusters, higher for more spread out embedding)
@@ -110,6 +110,7 @@ class BrainUmap:
         self.projection = projection
         self.visualize_failed_clusters = visualize_failed_clusters
         arr, self.cols = self._get_arr(data)
+        arr = self._flip_selected_columns(arr, cols_to_flip)
         self.mask = self._get_mask(mask)
         self.brain_array = self._mask_arr(arr, cluster_voxels) # (N maps, N voxels)
         self.features = self._get_features()
@@ -127,6 +128,30 @@ class BrainUmap:
             arr = np.asarray(data)
             cols = None
         return arr.T, cols
+
+    def _flip_selected_columns(self, arr, cols_to_flip):
+        """Flip maps whose column names contain any requested string."""
+        self.cols_to_flip = list(cols_to_flip or [])
+        self.flipped_cols = []
+
+        if len(self.cols_to_flip) == 0:
+            return arr
+        if self.cols is None:
+            raise ValueError("cols_to_flip requires DataFrame input with column names.")
+
+        col_names = [str(col) for col in self.cols]
+        arr = arr.copy()
+        for pattern in self.cols_to_flip:
+            matches = [idx for idx, col in enumerate(col_names) if str(pattern) in col]
+            if len(matches) == 0 and self.verbose:
+                print(f"[BrainUmap] No columns matched cols_to_flip pattern: {pattern}")
+            for idx in matches:
+                arr[idx, :] *= -1
+                self.flipped_cols.append(self.cols[idx])
+
+        if self.verbose and self.flipped_cols:
+            print(f"[BrainUmap] Flipped {len(self.flipped_cols)} input map(s): {list(self.flipped_cols)}")
+        return arr
         
     def _get_mask(self, path):
         '''Imports a nifti mask'''
@@ -152,12 +177,12 @@ class BrainUmap:
     
     def _calculate_location_on_sphere(self, R=1):
         '''assumes the embeddings define the angles of a spherical surface'''
-        phi = np.mod(self.embedding[:,0], 2*np.pi)
-        theta = np.mod(self.embedding[:,1], np.pi)
+        phi = np.mod(self.embedding[:,0], 2*np.pi)    # azimuth
+        theta = np.mod(self.embedding[:,1], np.pi)    # polar angle
         
         x = R * np.cos(phi)*np.sin(theta)
         y = R * np.sin(phi)*np.sin(theta)
-        z = R * np.sin(phi)
+        z = R * np.cos(theta)
         return x, y, z
     
     def _calculate_location_on_torus(self, R=2, r=1):
@@ -301,28 +326,81 @@ class BrainUmap:
     
     def plot_embedding(self, *, point_size: int = 4, override_probabilities = None, outlines=True, verbose = True, continuous_colour=True):
         """Interactive scatter of the embedding using Plotly. Points coloured by cluster label, opacity by probability of belonging to a cluster."""
+        emb = self.embedding
         rgba_colors = self._get_opacity(override_probabilities)
         customdata = np.stack([self.cluster_labels, self.cluster_probabilities], axis=-1)
+        labels = self.cluster_labels
+        if not self.visualize_failed_clusters:
+            mask               = self.cluster_labels != -1
+            emb                = emb[mask]
+            rgba_colors        = [c for c, keep in zip(rgba_colors, mask) if keep]
+            customdata         = customdata[mask]
+            labels             = labels[mask]
+
         if continuous_colour:
             col = rgba_colors
         else:
-            col = self.cluster_labels
-        if not self.visualize_failed_clusters:
-            mask               = self.cluster_labels != -1
-            self.embedding     = self.embedding[mask]
-            rgba_colors        = [c for c, keep in zip(rgba_colors, mask) if keep]
-            customdata         = customdata[mask]
+            col = labels
         
-        if (self.embedding.shape[1] == 2) and (self.projection != "torus"):
-            fig = px.scatter(x=self.embedding[:, 0], y=self.embedding[:, 1], color=col,
-                             size=np.full(self.embedding.shape[0], point_size),
+        if (emb.shape[1] == 2) and (self.projection != "torus"):
+            fig = px.scatter(x=emb[:, 0], y=emb[:, 1], color=col,
+                             size=np.full(emb.shape[0], point_size),
                              labels={"x": "UMAP 1", "y": "UMAP 2"})
             fig.update_layout(scene=dict(xaxis_title="UMAP 1",
                                          yaxis_title="UMAP 2"))
             fig.update_yaxes(scaleanchor="x", scaleratio=1)
-        elif self.embedding.shape[1] == 3:
+        elif emb.shape[1] == 3:
+            zero = np.zeros(emb.shape[0])
+            dim_buttons = []
+            dim_options = [
+                ("UMAP 1+2+3", (0, 1, 2)),
+                ("UMAP 1+2", (0, 1)),
+                ("UMAP 1+3", (0, 2)),
+                ("UMAP 2+3", (1, 2)),
+                ("UMAP 1", (0,)),
+                ("UMAP 2", (1,)),
+                ("UMAP 3", (2,)),
+            ]
+            for label, dims in dim_options:
+                coords = [
+                    emb[:, axis] if axis in dims else zero
+                    for axis in range(3)
+                ]
+                dim_buttons.append(dict(
+                    label=label,
+                    method="update",
+                    args=[
+                        {"x": [coords[0]], "y": [coords[1]], "z": [coords[2]]},
+                        {
+                            "scene.xaxis.title.text": "UMAP 1" if 0 in dims else "",
+                            "scene.yaxis.title.text": "UMAP 2" if 1 in dims else "",
+                            "scene.zaxis.title.text": "UMAP 3" if 2 in dims else "",
+                        },
+                    ],
+                ))
+            axes_buttons = [
+                dict(
+                    label="Hide axes",
+                    method="relayout",
+                    args=[{
+                        "scene.xaxis.visible": False,
+                        "scene.yaxis.visible": False,
+                        "scene.zaxis.visible": False,
+                    }],
+                ),
+                dict(
+                    label="Show axes",
+                    method="relayout",
+                    args=[{
+                        "scene.xaxis.visible": True,
+                        "scene.yaxis.visible": True,
+                        "scene.zaxis.visible": True,
+                    }],
+                ),
+            ]
+
             fig = go.Figure(go.Scatter3d(
-                x=self.embedding[:, 0], y=self.embedding[:, 1], z=self.embedding[:, 2],
+                x=emb[:, 0], y=emb[:, 1], z=emb[:, 2],
                 mode='markers', 
                 marker=dict(size=point_size, color=col, line=dict(width=0.5 if outlines else 0, color='black')),
                 customdata=customdata,
@@ -339,21 +417,178 @@ class BrainUmap:
                                          yaxis_title="UMAP 2",
                                          zaxis_title="UMAP 3",
                                          aspectmode="cube"),
+                              updatemenus=[dict(
+                                  type="dropdown",
+                                  buttons=dim_buttons,
+                                  direction="down",
+                                  x=0.0,
+                                  xanchor="left",
+                                  y=1.08,
+                                  yanchor="top",
+                                  showactive=True,
+                              ), dict(
+                                  type="buttons",
+                                  buttons=axes_buttons,
+                                  direction="right",
+                                  x=0.36,
+                                  xanchor="left",
+                                  y=1.08,
+                                  yanchor="top",
+                                  showactive=True,
+                              )],
                               font=dict(family="Helvetica",
                                         color="black"))
         else:
             raise ValueError("Embedding must be 2D or 3D for plotting.")
 
-        fig.update_layout(title="Interactive UMAP Embedding", template="plotly_white", 
-                          scene=dict(
-                                xaxis=dict(visible=False),
-                                yaxis=dict(visible=False),
-                                zaxis=dict(visible=False) if self.embedding.shape[1] == 3 else None
-                            ))
+        if emb.shape[1] == 3:
+            axis_style = dict(
+                visible=False,
+                showbackground=False,
+                showgrid=False,
+                showline=True,
+                showticklabels=False,
+                zeroline=True,
+                ticks="",
+                linecolor="rgba(40,40,40,0.7)",
+                zerolinecolor="rgba(40,40,40,0.9)",
+            )
+            fig.update_layout(
+                title="Interactive UMAP Embedding",
+                template="plotly_white",
+                scene=dict(
+                    xaxis=dict(axis_style, title="UMAP 1"),
+                    yaxis=dict(axis_style, title="UMAP 2"),
+                    zaxis=dict(axis_style, title="UMAP 3"),
+                ),
+            )
+        else:
+            fig.update_layout(title="Interactive UMAP Embedding", template="plotly_white")
         if verbose: fig.show()
         return fig
 
-    def plot_embedding_matplotlib(self, *, point_size=100, outlines=True, dpi=300, out_path=None, elevation=60, azimuth=30):
+    def export_plotly_view(
+        self,
+        out_path,
+        *,
+        camera=None,
+        width=1600,
+        height=1600,
+        scale=2,
+        point_size=6,
+        outlines=False,
+        axes=False,
+        title=None,
+        show_controls=False,
+        transparent=False,
+        continuous_colour=True,
+        preserve_aspect=False,
+    ):
+        """
+        Export the interactive Plotly view to a static image.
+
+        Notes
+        -----
+        Requires the optional ``kaleido`` package. For a view you can reproduce,
+        pass a Plotly ``scene_camera`` dict.
+        """
+        fig = self.plot_embedding(
+            point_size=point_size,
+            outlines=outlines,
+            verbose=False,
+            continuous_colour=continuous_colour,
+        )
+        if camera is not None:
+            fig.update_layout(scene_camera=camera)
+        if not show_controls:
+            fig.layout.updatemenus = ()
+        fig.update_layout(
+            title=title,
+            width=width,
+            height=height,
+            margin=dict(l=0, r=0, t=40 if title else 0, b=0),
+            paper_bgcolor="rgba(0,0,0,0)" if transparent else "white",
+            plot_bgcolor="rgba(0,0,0,0)" if transparent else "white",
+        )
+        if self.embedding.shape[1] == 3:
+            data_min = self.embedding.min(axis=0)
+            data_max = self.embedding.max(axis=0)
+            data_range = data_max - data_min
+            data_range[data_range == 0] = 1
+            padding = data_range * 0.08
+            if preserve_aspect:
+                center = self.embedding.mean(axis=0)
+                radius = np.max(np.linalg.norm(self.embedding - center, axis=1))
+                if radius == 0:
+                    radius = 1
+                ranges = [
+                    [center[0] - radius, center[0] + radius],
+                    [center[1] - radius, center[1] + radius],
+                    [center[2] - radius, center[2] + radius],
+                ]
+                aspectmode = "cube"
+            else:
+                ranges = [
+                    [data_min[0] - padding[0], data_max[0] + padding[0]],
+                    [data_min[1] - padding[1], data_max[1] + padding[1]],
+                    [data_min[2] - padding[2], data_max[2] + padding[2]],
+                ]
+                aspectmode = "data"
+            fig.update_layout(scene=dict(
+                xaxis=dict(visible=axes, range=ranges[0]),
+                yaxis=dict(visible=axes, range=ranges[1]),
+                zaxis=dict(visible=axes, range=ranges[2]),
+                aspectmode=aspectmode,
+                domain=dict(x=[0, 1], y=[0, 1]),
+            ))
+        try:
+            fig.write_image(out_path, width=width, height=height, scale=scale)
+        except ValueError as exc:
+            raise RuntimeError(
+                "Static Plotly export requires kaleido. Install it with: pip install kaleido"
+            ) from exc
+        return out_path
+
+    def export_matplotlib_view(
+        self,
+        out_path,
+        *,
+        elevation=24,
+        azimuth=-55,
+        roll=0,
+        point_size=42,
+        outlines=False,
+        dpi=600,
+        figsize=(5.5, 5.5),
+        axes=True,
+        grid=True,
+        legend=False,
+        transparent=False,
+    ):
+        """Export a fixed-orientation Matplotlib figure for publication."""
+        fig = self.plot_embedding_matplotlib(
+            point_size=point_size,
+            outlines=outlines,
+            dpi=dpi,
+            elevation=elevation,
+            azimuth=azimuth,
+            roll=roll,
+            figsize=figsize,
+            axes=axes,
+            grid=grid,
+            legend=legend,
+        )
+        fig.savefig(
+            out_path,
+            dpi=dpi,
+            bbox_inches='tight',
+            transparent=transparent,
+            facecolor='none' if transparent else 'white',
+        )
+        plt.close(fig)
+        return out_path
+
+    def plot_embedding_matplotlib(self, *, point_size=100, outlines=True, dpi=300, out_path=None, elevation=60, azimuth=30, roll=0, figsize=(8, 8), axes=True, grid=False, legend=True):
         emb   = self.embedding.copy()
         labs  = self.cluster_labels.copy()
         probs = self.cluster_probabilities.copy()
@@ -368,7 +603,7 @@ class BrainUmap:
         palette = {lab: base[i % len(base)] for i, lab in enumerate(uniq)}
 
         if emb.shape[1] == 2:
-            fig, ax = plt.subplots(figsize=(8, 7), dpi=dpi)
+            fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
             for lab in uniq:
                 m = (labs == lab)
                 rgb = np.tile(palette[lab], (m.sum(), 1))                    # (n,3)
@@ -382,16 +617,20 @@ class BrainUmap:
                 )
             ax.set_xlabel("UMAP 1"); ax.set_ylabel("UMAP 2")
             ax.set_aspect('equal', adjustable='box')
-            ax.grid(False)
+            ax.grid(grid, color='0.88', linewidth=0.6)
+            if not axes:
+                ax.axis('off')
             # legend
             handles = [Line2D([0],[0], marker='o', linestyle='',
                             markerfacecolor=palette[lab], markeredgecolor='k' if outlines else palette[lab],
                             markersize=6) for lab in uniq]
-            ax.legend(handles, [f"Cluster {lab}" for lab in uniq], frameon=False, title="Cluster", loc='best')
+            if axes and legend:
+                ax.legend(handles, [f"Cluster {lab}" for lab in uniq], frameon=False, title="Cluster", loc='best')
 
         elif emb.shape[1] == 3:
-            fig = plt.figure(figsize=(8, 8), dpi=dpi)
+            fig = plt.figure(figsize=figsize, dpi=dpi)
             ax = fig.add_subplot(111, projection='3d')
+            ax.set_proj_type('ortho')
             for lab in uniq:
                 m = (labs == lab)
                 rgb = np.tile(palette[lab], (m.sum(), 1))
@@ -404,17 +643,35 @@ class BrainUmap:
                     edgecolors='k' if outlines else 'none',
                     linewidths=0.25 if outlines else 0
                 )
-            ax.set_xlabel("UMAP 1"); ax.set_ylabel("UMAP 2"); ax.set_zlabel("UMAP 3")
-            # cube-ish aspect
-            ranges = (emb.max(0) - emb.min(0))
-            maxr = ranges.max(); mins = emb.min(0)
-            ax.set_box_aspect((ranges / maxr))  # requires mpl>=3.3
-            ax.view_init(elev=elevation, azim=azimuth)
+            data_min = emb.min(axis=0)
+            data_max = emb.max(axis=0)
+            ranges = data_max - data_min
+            ranges[ranges == 0] = 1
+            pad = ranges * 0.08
+            ax.set_xlim(data_min[0] - pad[0], data_max[0] + pad[0])
+            ax.set_ylim(data_min[1] - pad[1], data_max[1] + pad[1])
+            ax.set_zlim(data_min[2] - pad[2], data_max[2] + pad[2])
+            ax.set_box_aspect(ranges / ranges.max())
+            ax.view_init(elev=elevation, azim=azimuth, roll=roll)
+            if axes:
+                ax.set_xlabel("UMAP 1", labelpad=8)
+                ax.set_ylabel("UMAP 2", labelpad=8)
+                ax.set_zlabel("UMAP 3", labelpad=8)
+                ax.tick_params(axis='both', which='major', labelsize=8, pad=2)
+                ax.grid(grid)
+                for axis in (ax.xaxis, ax.yaxis, ax.zaxis):
+                    axis.pane.fill = False
+                    axis.pane.set_edgecolor('0.90')
+                    axis._axinfo["grid"].update({"linewidth": 0.35, "color": (0.78, 0.78, 0.78, 0.55)})
+                    axis._axinfo["axisline"].update({"linewidth": 0.8, "color": (0.15, 0.15, 0.15, 1.0)})
+            else:
+                ax.set_axis_off()
             # legend (2D proxy)
             handles = [Line2D([0],[0], marker='o', linestyle='',
                             markerfacecolor=palette[lab], markeredgecolor='k' if outlines else palette[lab],
                             markersize=6) for lab in uniq]
-            ax.legend(handles, [f"Cluster {lab}" for lab in uniq], frameon=False, title="Cluster", loc='upper left', bbox_to_anchor=(0.0, 1.0))
+            if axes and legend:
+                ax.legend(handles, [f"Cluster {lab}" for lab in uniq], frameon=False, title="Cluster", loc='upper left', bbox_to_anchor=(0.0, 1.0))
 
         else:
             raise ValueError("Embedding must be 2D or 3D.")
@@ -433,4 +690,38 @@ class BrainUmap:
             os.makedirs(out_dir, exist_ok=True)
             self.export_cluster_report(os.path.join(out_dir, 'cluster_results.csv'))
             fig.write_html(os.path.join(out_dir, 'umap_embedding_full.html'))
-            # self.plot_embedding_matplotlib(out_path=os.path.join(out_dir, "umap_3d.svg"))
+            if self.embedding.shape[1] == 3:
+                views = {
+                    'three_quarter': dict(elevation=24, azimuth=-55, roll=0),
+                    'front_right': dict(elevation=15, azimuth=-25, roll=0),
+                    'front_left': dict(elevation=15, azimuth=-145, roll=0),
+                    'top_oblique': dict(elevation=58, azimuth=-45, roll=0),
+                }
+                for name, view in views.items():
+                    for ext in ('svg', 'png'):
+                        self.export_matplotlib_view(
+                            os.path.join(out_dir, f'umap_publication_matplotlib_{name}_axes.{ext}'),
+                            **view,
+                            point_size=34,
+                            outlines=False,
+                            dpi=600,
+                            figsize=(5.2, 5.2),
+                            axes=True,
+                            grid=True,
+                            legend=False,
+                            transparent=False,
+                        )
+            else:
+                for ext in ('svg', 'png'):
+                    self.export_matplotlib_view(
+                        os.path.join(out_dir, f'umap_publication_matplotlib_axes.{ext}'),
+                        point_size=34,
+                        outlines=False,
+                        dpi=600,
+                        figsize=(5.2, 5.2),
+                        axes=True,
+                        grid=True,
+                        legend=False,
+                        transparent=False,
+                    )
+        return fig
