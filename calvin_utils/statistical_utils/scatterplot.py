@@ -41,7 +41,7 @@ def simple_scatter(df, x_col, y_col, dataset_name, out_dir, y_label='y Axis', x_
 
     plot_df = pd.DataFrame({x_col: x_vals, y_col: y_vals})
 
-    scatter_kws = {'alpha': 0.98, 'color': '#8E8E8E', 's': 150, 'edgecolors': 'white', 'linewidth': 2, 'zorder': 3}
+    scatter_kws = {'alpha': 0.98, 'color': '#8E8E8E', 's': 150, 'edgecolors': 'white', 'linewidths': 2, 'zorder': 3}
     line_kws = {'color': '#8E8E8E', 'zorder': 2}
 
     if ax is None:

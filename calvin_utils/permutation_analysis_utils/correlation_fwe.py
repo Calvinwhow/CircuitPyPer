@@ -206,7 +206,7 @@ class CalvinFWEMap():
             print(mask_indices.shape, np.max(mask_indices))
         return mask_indices
     
-    def mask_dataframe(self, neuroimaging_df: pd.DataFrame):
+    def mask_dataframe(self, neuroimaging_df: pd.DataFrame, mask=False):
         """
         Apply a mask to the neuroimaging DataFrame based on nonzero voxels.
         
@@ -218,6 +218,27 @@ class CalvinFWEMap():
         pd.Series: Mask of nonzero voxels.
         pd.DataFrame: Masked neuroimaging DataFrame.
         """
+        if mask is False:                                                       ### DEPRECATING THIS FUNCTION. NEW IF STATEMENT TO PREVENT INITIAL MASKING STEP
+            if self.mask_path is None:
+                original_mask = neuroimaging_df.index
+                nonzero_mask = pd.Series(True, index=original_mask)
+                return original_mask, nonzero_mask, neuroimaging_df
+
+            mask_indices = nib.load(self.mask_path).get_fdata().flatten() > self.mask_threshold
+            full_index = pd.RangeIndex(mask_indices.shape[0])
+
+            if len(neuroimaging_df) == int(mask_indices.sum()):
+                nonzero_mask = pd.Series(mask_indices, index=full_index)
+                return full_index, nonzero_mask, neuroimaging_df
+
+            if len(neuroimaging_df) == mask_indices.shape[0]:
+                nonzero_mask = pd.Series(True, index=full_index)
+                return full_index, nonzero_mask, neuroimaging_df
+
+            raise ValueError(
+                "Length of neuroimaging dataframe does not match either the full mask "
+                f"({mask_indices.shape[0]}) or masked voxel count ({int(mask_indices.sum())})."
+            )
         # Now you can use the function to apply a threshold to patient_df and control_df
         mask = self.threshold_probabilities(neuroimaging_df)
         
@@ -440,7 +461,7 @@ class CalvinFWEMap():
     
     def pseudo_var_smooth(self, df):
         """Will take the 99.99th percentile of the permuted data as the 'maximum stat' as a fast proxy for variance smoothed max stat."""
-        return np.array([[np.percentile(np.abs(df), 99.99, axis=None)]])
+        return np.array([[np.percentile(np.abs(df), 95, axis=None)]])
     
     def raw_max_stat(self, df):
         """Will simply return the max statistic in the data"""

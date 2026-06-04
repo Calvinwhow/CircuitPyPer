@@ -13,6 +13,7 @@ from calvin_utils.statistical_utils.scatterplot import simple_scatter
 from calvin_utils.neuroimaging_utils.ccm_utils.npy_utils import DataLoader
 from calvin_utils.neuroimaging_utils.nifti_utils.damage_score_utils import DamageScorer
 from calvin_utils.neuroimaging_utils.output_functions import NeuroimageFileOutporter
+from calvin_utils.plotting_utils.html_viewer_selector import HTMLViewerSelector
 
 class VoxelwiseRegression:
     """
@@ -29,8 +30,6 @@ class VoxelwiseRegression:
         Path to the JSON configuration file.
     mask_path : str or None
         Path to the NIfTI mask file.
-    out_dir : str or None
-        Output directory for saving results.
     data_loader : DataLoader
         Loader for input data specified in the JSON file.
     design_tensor : np.ndarray
@@ -169,17 +168,21 @@ class VoxelwiseRegression:
         regressand = self.outcome_tensor
         weights = self.weight_vector
         if permutation:
-            if self.exchangeability_blocks is None:
-                resample_idx = np.random.permutation(regressand.shape[0])
-            else:
-                bl = self.exchangeability_blocks.ravel()
-                resample_idx = np.arange(regressand.shape[0])
-                for b in np.unique(bl):
-                    m = np.where(bl == b)[0]                     # rows in block b
-                    resample_idx[m] = np.random.permutation(m)   # permute only within b
+            resample_idx = self._get_permutation_index()
             regressand = regressand[resample_idx, :, :]
             weights = weights[resample_idx]
         return regressor, regressand, weights  
+
+    def _get_permutation_index(self):
+        if self.exchangeability_blocks is None:
+            return np.random.permutation(self.outcome_tensor.shape[0])
+
+        bl = self.exchangeability_blocks.ravel()
+        resample_idx = np.arange(self.outcome_tensor.shape[0])
+        for b in np.unique(bl):
+            m = np.where(bl == b)[0]
+            resample_idx[m] = np.random.permutation(m)
+        return resample_idx
     
     def _prep_targets(self, regressor, regressand, weights, voxel_idx="whole_brain", regression_idx=0):
         """
@@ -543,7 +546,7 @@ class VoxelwiseRegression:
         return B, T, R2
     
     ### P-VALUE METHODS ###
-    def _get_max_stat(self, arr, pseudo_var_smooth=False, t=99.99):
+    def _get_max_stat(self, arr, pseudo_var_smooth=True, t=90):
         """Return the 99.9th percentile of the absolute values in arr. Or just the raw maximum if pseudo_var_smooth is false (this is subject to chaotic noise)."""
         if pseudo_var_smooth:        
             return np.nanpercentile(np.abs(arr), t, axis=1)  # Calculate along rows, ignoring NaNs
@@ -613,6 +616,90 @@ class VoxelwiseRegression:
         if hasattr(self, 'PREDICTIONS'):
             for o in range(self.PREDICTIONS.shape[0]):
                 self.output_handler.save_map(self.PREDICTIONS[o, :], f"prediction_{o}", self.out_dir, visualize=False)
+
+    def _get_result_html_views(self):
+        """
+        Collect available result maps as named HTML viewer objects.
+        """
+        views = {}
+
+        if hasattr(self, 'B_multi'):
+            for j in range(self.n_outputs):
+                for i in range(self.n_contrasts):
+                    name = f"beta_predictor_{i}_output_{j}"
+                    views[name] = self.output_handler.view_map(self.B_multi[i, :, j], name)
+
+        if hasattr(self, 'T_multi'):
+            for j in range(self.n_outputs):
+                for i in range(self.n_contrasts):
+                    name = f"contrast_{i}_tval_output_{j}"
+                    views[name] = self.output_handler.view_map(self.T_multi[i, :, j], name)
+
+        if hasattr(self, 'R2_multi'):
+            for j in range(self.n_outputs):
+                name = f"R2_output_{j}"
+                views[name] = self.output_handler.view_map(self.R2_multi[0, :, j], name)
+
+        if hasattr(self, 'BETA'):
+            for i in range(self.n_preds):
+                name = f"beta_predictor_{i}"
+                views[name] = self.output_handler.view_map(self.BETA[i, :], name)
+
+        if hasattr(self, 'T'):
+            for c in range(self.n_contrasts):
+                name = f"contrast_tval_{c}"
+                views[name] = self.output_handler.view_map(self.T[c, :], name)
+
+        if hasattr(self, 'R2'):
+            name = "R2_vals"
+            views[name] = self.output_handler.view_map(self.R2, name)
+
+        if hasattr(self, 'LOG_PRIORS'):
+            name = "LOG_PRIORS"
+            views[name] = self.output_handler.view_map(self.LOG_PRIORS, name)
+
+        if hasattr(self, 'Tp'):
+            for c in range(self.n_contrasts):
+                sig_tvals = np.where(self.Tp[c, :] < 0.05, self.T[c, :], np.nan)
+                name = f"contrast_tval_FWE_{c}"
+                views[name] = self.output_handler.view_map(sig_tvals, name)
+                name = f"contrast_pval_FWE_{c}"
+                views[name] = self.output_handler.view_map(self.Tp[c, :], name)
+
+        if hasattr(self, 'R2p'):
+            sig_r2vals = np.where(self.R2p < 0.05, self.R2, np.nan)
+            name = "R2_FWE"
+            views[name] = self.output_handler.view_map(sig_r2vals, name)
+            name = "R2_pval_FWE"
+            views[name] = self.output_handler.view_map(self.R2p, name)
+
+        if hasattr(self, 'PREDICTIONS'):
+            for o in range(self.PREDICTIONS.shape[0]):
+                name = f"prediction_{o}"
+                views[name] = self.output_handler.view_map(self.PREDICTIONS[o, :], name)
+
+        return views
+
+    def _populate_viewer(self, views):
+        """
+        Populate the HTML viewer selector from named HTML viewer objects.
+        """
+        return HTMLViewerSelector(views)
+
+    def visualize_results(self, out_file=None, open_browser=False):
+        """
+        Return a standalone HTML selector for all available result maps.
+        """
+        views = self._get_result_html_views()
+        viewer = self._populate_viewer(views)
+        if open_browser:
+            if out_file is None:
+                out_dir = self.out_dir or os.getcwd()
+                out_file = os.path.join(out_dir, "voxelwise_results_viewer.html")
+            return viewer.open_in_browser(out_file)
+        if out_file is not None:
+            return viewer.save(out_file)
+        return viewer.to_html()
 
     #### Prediction Helpers #### ---TODO: MAKE NIFTI-AGNOSTIC.
     def _get_mask_indices(self):

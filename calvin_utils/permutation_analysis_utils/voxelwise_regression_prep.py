@@ -208,9 +208,11 @@ class RegressionPrep:
         rows = np.arange(subj, dtype=np.float32)[:, None]
         ranks[idx, np.arange(flat.shape[1])] = rows + 1
 
-        const_mask = flat.ptp(axis=0) == 0
+        ranks = ranks - ranks.mean(axis=0, keepdims=True)
+
+        const_mask = np.ptp(flat, axis=0) == 0
         if const_mask.any():
-            ranks[:, const_mask] = flat[:, const_mask]
+            ranks[:, const_mask] = 0
 
         return ranks.reshape(arr.shape)
 

@@ -182,6 +182,117 @@ class SpecificityAnalyzer:
             return np.abs(self._correlate(X,Y))
         else:
             return self._correlate(X,Y) # returns shape (Indepvars, Depvars)
+
+    def extract_r_values_long(self, CORR: np.ndarray = None) -> pd.DataFrame:
+        """
+        Return one row per observed X-to-Y correlation.
+
+        Columns
+        -------
+        measurement
+            Column name from X.
+        outcome
+            Column name from Y.
+        label
+            Category label for the Y/outcome column.
+        r
+            Correlation value. Honors ``self.absval`` when CORR is not provided.
+        """
+        if CORR is None:
+            CORR = self._run_correlation(resample=False)
+
+        rows = []
+        for iv, measurement in enumerate(self.cols):
+            for dep, outcome in enumerate(self.y_cols):
+                rows.append({
+                    "measurement": measurement,
+                    "outcome": outcome,
+                    "label": self.labels[dep],
+                    "r": float(CORR[iv, dep]),
+                })
+        return pd.DataFrame(rows)
+
+    def extract_group_comparison_r_values(
+        self,
+        target_labels,
+        other_labels=None,
+        *,
+        target_name: str = None,
+        other_name: str = "Other",
+        CORR: np.ndarray = None,
+        flatten_single_measurement: bool = True,
+    ) -> pd.DataFrame:
+        """
+        Build a wide dataframe for ``SimpleBoxPlotWrapper`` pairwise plots.
+
+        With multiple measurements, each measurement gets two tuple-named
+        columns: ``(measurement, target_name)`` and
+        ``(measurement, other_name)``. With one measurement, columns are
+        flattened to ``target_name`` and ``other_name`` by default.
+
+        Parameters
+        ----------
+        target_labels : str or list-like
+            Y-label category/categories to compare, e.g. ``"motor"``.
+        other_labels : str or list-like, optional
+            Categories to combine into the comparator. If omitted, all labels
+            not in ``target_labels`` are pooled.
+        target_name : str, optional
+            Display/column name for the target group. Defaults to joined
+            target label names.
+        other_name : str, optional
+            Display/column name for the pooled comparator.
+        CORR : np.ndarray, optional
+            Precomputed correlation array of shape ``(n_indep, n_dep)``.
+        flatten_single_measurement : bool, optional
+            If True and there is only one X/measurement column, return simple
+            columns instead of a single top-level measurement MultiIndex.
+        """
+        def _as_set(value):
+            if value is None:
+                return None
+            if isinstance(value, str):
+                return {value}
+            return set(value)
+
+        target_set = _as_set(target_labels)
+        other_set = _as_set(other_labels)
+        if target_name is None:
+            target_name = "+".join(str(label) for label in target_set)
+
+        r_long = self.extract_r_values_long(CORR=CORR)
+        known_labels = set(r_long["label"].unique())
+        missing_target = target_set - known_labels
+        if missing_target:
+            raise ValueError(f"target_labels not found in y_labels: {sorted(missing_target)}")
+        if other_set is not None:
+            missing_other = other_set - known_labels
+            if missing_other:
+                raise ValueError(f"other_labels not found in y_labels: {sorted(missing_other)}")
+        else:
+            other_set = known_labels - target_set
+
+        if not other_set:
+            raise ValueError("No labels available for the comparison group.")
+
+        out = {}
+        max_len = 0
+        flatten_columns = flatten_single_measurement and len(self.cols) == 1
+        for measurement in self.cols:
+            m = r_long["measurement"] == measurement
+            target_vals = r_long.loc[m & r_long["label"].isin(target_set), "r"].reset_index(drop=True)
+            other_vals = r_long.loc[m & r_long["label"].isin(other_set), "r"].reset_index(drop=True)
+            if flatten_columns:
+                out[target_name] = target_vals
+                out[other_name] = other_vals
+            else:
+                out[(measurement, target_name)] = target_vals
+                out[(measurement, other_name)] = other_vals
+            max_len = max(max_len, len(target_vals), len(other_vals))
+
+        for key, values in out.items():
+            out[key] = values.reindex(range(max_len))
+        return pd.DataFrame(out)
         
     def _run_loop(self, n_resamples):
         if n_resamples < 1:
@@ -205,13 +316,15 @@ class SpecificityAnalyzer:
                 out.insert(0, v)
         return np.array(out)
 
-    def _sort_corrs(self, arr: np.ndarray) -> np.ndarray:
+    def _sort_corrs(self, arr: np.ndarray, sort_within_labels: bool = True) -> np.ndarray:
         """
         Sort correlations to group by label (aligned via y_sort_idx),
         then radial sort within each label group.
         """
         arr = arr[self.y_sort_idx]                # group by label using aligned index
         L = np.array(self.labels)[self.y_sort_idx]
+        if not sort_within_labels:
+            return arr
         for label in self.unique_labels:
             subidx = (L == label)
             arr[subidx] = self._sort_arr(arr[subidx])
@@ -297,7 +410,33 @@ class SpecificityAnalyzer:
             path_effects=[pe.Stroke(linewidth=4.0, foreground='white', alpha=0.35), pe.Normal()]
         )
 
-    def _plot(self, CORR: np.ndarray, scale:float = 1):
+    def _draw_global_kde(
+        self, ax, r_vals, line_color, x_fine_global,
+        *, bw_scale=1.2
+    ):
+        """
+        Smooth one continuous curve across every bar using Gaussian kernel
+        regression on x-index.
+        """
+        self._draw_label_kde(
+            ax=ax,
+            start=0,
+            end=len(r_vals),
+            r_vals=r_vals,
+            line_color=line_color,
+            x_fine_global=x_fine_global,
+            bw_scale=bw_scale,
+            fill_alpha=0,
+        )
+
+    def _plot(
+        self,
+        CORR: np.ndarray,
+        scale: float = 1,
+        sort_within_labels: bool = True,
+        smooth_by_label: bool = True,
+        absval: bool = False
+    ):
         BLACK, GREY = '#211D1E', '#8E8E8E'
         sns.set_theme(style="white", context="talk")
 
@@ -312,21 +451,36 @@ class SpecificityAnalyzer:
         x_fine_global = np.linspace(-0.5, n_dep - 0.5, upsample * n_dep + 1)
 
         for iv in range(self.n_independent_vars):
-            r_vals = self._sort_corrs(CORR[iv, :].astype(float)).ravel()
+            if absval:
+                CORR = np.abs(CORR)
+            r_vals = self._sort_corrs(
+                CORR[iv, :].astype(float),
+                sort_within_labels=sort_within_labels,
+            ).ravel()
 
             # bars (lighter tints)
             bar_colors = [self._lighten(color_map[lab], factor=0.65) for lab in labels_sorted]
             fig, ax = plt.subplots(figsize=(12, 6))
             ax.bar(x_bars, r_vals, width=0.9, color=bar_colors, edgecolor="white", linewidth=1.3, zorder=2)
 
+            if not smooth_by_label:
+                self._draw_global_kde(
+                    ax,
+                    r_vals,
+                    line_color=BLACK,
+                    x_fine_global=x_fine_global,
+                    bw_scale=scale,
+                )
+
             # per-label KDE overlays (darker line)
             for lab, start, size in zip(group_order, group_starts, group_sizes):
                 if size <= 0: 
                     continue
                 end = start + size
-                line_color = self._darken(color_map[lab], factor=0.85)
-                self._draw_label_kde(ax, start, end, r_vals, line_color, x_fine_global,
-                                    bw_scale=scale, fill_alpha=0)
+                if smooth_by_label:
+                    line_color = self._darken(color_map[lab], factor=0.85)
+                    self._draw_label_kde(ax, start, end, r_vals, line_color, x_fine_global,
+                                        bw_scale=scale, fill_alpha=0)
 
                 # average R value for this category
                 avg_r = np.nanmean(r_vals[start:end])
@@ -365,13 +519,24 @@ class SpecificityAnalyzer:
             plt.close(fig)
 
     ### Orchestrator ### 
-    def run(self, n_resamples=1000, scale=0.85):
+    def run(
+        self,
+        n_resamples=1000,
+        scale=0.85,
+        sort_within_labels: bool = True,
+        smooth_by_label: bool = True,
+    ):
         
         CORR  = self._run_correlation()                 # 1 - get correlation of each col of X to every col of Y. Sum R values within the columns defined by y_labels. 
         AUC   = self._get_AUC(CORR)     
         AUC_p = self._run_loop(n_resamples)             # 2 - Repeat step 1 with bootstrapped or permuted data 1000 times. 
         p     = self._get_p_values(AUC, AUC_p)          # 3 - compare observed AUC and permuted AUC
-        self._plot(CORR, scale)                         # 4 - For each col of X, plot the R-values from step 1, but coloured/grouped by y_label and sorted in a gaussian fashion within each label group. 
+        self._plot(
+            CORR,
+            scale,
+            sort_within_labels=sort_within_labels,
+            smooth_by_label=smooth_by_label,
+        )                                               # 4 - For each col of X, plot the R-values from step 1, coloured/grouped by y_label. 
 
 
 def get_column_labels(df):

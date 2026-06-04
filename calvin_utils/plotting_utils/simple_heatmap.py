@@ -27,21 +27,45 @@ def simple_heatmap(
     fmt: str = ".2f",
     cbar: bool = True,
     square: bool = True,
+    figsize: tuple[float, float] | None = None,
+    cell_width: float | None = None,
+    cell_height: float | None = None,
     linewidths: float = 1.0,
     linecolor: str | None = None,
     cbar_kws: dict | None = None,
+    cbar_range: tuple[float, float] | None = None,
     vmin: float | None = None,
     vmax: float | None = None,
     title_fontsize: int = 20,
     label_fontsize: int = 20,
     tick_fontsize: int = 16,
+    annot_fontsize: int | None = None,
+    x_tick_rotation: int = 90,
+    y_tick_rotation: int = 0,
+    x_tick_ha: str = "center",
+    y_tick_va: str = "center",
     spine_width: int = 2,
     remove_diag: bool = False,
+    tight_layout: bool = True,
+    dpi: int = 300,
 ):
     """
     Simple heatmap with consistent styling and flexible colormap logic.
+
+    Use cbar_range=(vmin, vmax) to set the colorbar range in one argument.
+    For palette="similarity", cbar_range creates a zero-centered TwoSlopeNorm.
+    For other palettes, cbar_range is passed as seaborn/matplotlib vmin/vmax.
     """
     sns.set_style("white")
+
+    if cbar_range is not None:
+        if len(cbar_range) != 2:
+            raise ValueError("cbar_range must be a 2-value tuple: (vmin, vmax).")
+        if vmin is not None or vmax is not None:
+            raise ValueError("Provide either cbar_range or vmin/vmax, not both.")
+        vmin, vmax = cbar_range
+        if vmin >= vmax:
+            raise ValueError(f"cbar_range must be increasing; got {cbar_range}.")
 
     if isinstance(data, pd.DataFrame):
         matrix = data.copy()
@@ -61,11 +85,15 @@ def simple_heatmap(
             "RedBlackGreen",
             [(0, "red"), (0.5, "black"), (0.5, "black"), (1.0, "green")],
         )
-        if limit is None:
+        if cbar_range is not None:
+            norm = TwoSlopeNorm(vmin=vmin, vcenter=0, vmax=vmax)
+        elif limit is None:
             minimum = np.nanmin(np.abs(matrix.values))
             maximum = np.nanmax(np.abs(matrix.values))
             limit = np.max(np.array([minimum, maximum]))
-        norm = TwoSlopeNorm(vmin=-limit, vcenter=0, vmax=limit)
+            norm = TwoSlopeNorm(vmin=-limit, vcenter=0, vmax=limit)
+        else:
+            norm = TwoSlopeNorm(vmin=-limit, vcenter=0, vmax=limit)
     elif palette == "pvals":
         bounds = [0, 0.0001, 0.001, 0.01, 0.05, 1]
         cmap = cm.get_cmap("viridis", len(bounds) - 1)
@@ -77,11 +105,21 @@ def simple_heatmap(
     else:
         cmap = palette
 
+    if cbar_range is not None and norm is None:
+        norm = mcolors.Normalize(vmin=vmin, vmax=vmax)
+
     if vmin is None and vmax is None and norm is None and palette not in {"pvals", "similarity"}:
         vmin, vmax = np.nanmin(matrix.values), np.nanmax(matrix.values)
 
+    if figsize is None and (cell_width is not None or cell_height is not None):
+        width = matrix.shape[1] * (cell_width if cell_width is not None else 0.35)
+        height = matrix.shape[0] * (cell_height if cell_height is not None else 0.5)
+        figsize = (max(width, 6), max(height, 3))
+
     if ax is None:
-        _, ax = plt.subplots(figsize=(8, 6))
+        _, ax = plt.subplots(figsize=figsize or (14, 6))
+
+    annot_kws = {"fontsize": annot_fontsize} if annot_fontsize is not None else None
 
     sns.heatmap(
         matrix,
@@ -96,6 +134,7 @@ def simple_heatmap(
         cbar=cbar,
         annot=annot,
         fmt=fmt,
+        annot_kws=annot_kws,
         cbar_kws=cbar_kws,
     )
 
@@ -106,8 +145,10 @@ def simple_heatmap(
         x_labels = list(labels)
         y_labels = list(labels)
 
-    ax.set_xticklabels(x_labels, rotation=90)
-    ax.set_yticklabels(y_labels, rotation=0)
+    ax.set_xticks(np.arange(matrix.shape[1]) + 0.5)
+    ax.set_yticks(np.arange(matrix.shape[0]) + 0.5)
+    ax.set_xticklabels(x_labels, rotation=x_tick_rotation, ha=x_tick_ha)
+    ax.set_yticklabels(y_labels, rotation=y_tick_rotation, va=y_tick_va)
 
     ax.set_title(dataset_name, fontsize=title_fontsize)
     ax.set_xlabel(xlabel or "", fontsize=label_fontsize)
@@ -117,8 +158,11 @@ def simple_heatmap(
     for spine in ax.spines.values():
         spine.set_linewidth(spine_width)
 
+    if tight_layout:
+        ax.figure.tight_layout()
+
     if out_dir:
         os.makedirs(out_dir, exist_ok=True)
-        ax.figure.savefig(os.path.join(out_dir, output_name), bbox_inches="tight")
+        ax.figure.savefig(os.path.join(out_dir, output_name), bbox_inches="tight", dpi=dpi)
 
     return limit

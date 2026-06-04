@@ -68,8 +68,13 @@ class DamageScorer:
         return pd.DataFrame(index=self.dv_df.columns)
 
     @staticmethod
-    def _calculate_metrics(subject_array, roi_array, metrics):
+    def _calculate_metrics(subject_array, roi_array, metrics, score_nonzero_only=False):
         '''Gets metric of damage between each independent variable nifti and dependent variable nifti'''
+        subject_array = np.asarray(subject_array, dtype=float).copy()
+        roi_array = np.asarray(roi_array, dtype=float).copy()
+        if score_nonzero_only:
+            zero_mask = np.isfinite(subject_array) & (subject_array == 0)
+            roi_array[zero_mask] = 0
         subject_array = np.nan_to_num(subject_array, nan=0.0, posinf=np.nanmax(subject_array[np.isfinite(subject_array)]) if np.isfinite(subject_array).any() else 0, neginf=np.nanmin(subject_array[np.isfinite(subject_array)]) if np.isfinite(subject_array).any() else 0)
         roi_array = np.nan_to_num(roi_array, nan=0.0, posinf=np.nanmax(roi_array[np.isfinite(roi_array)]) if np.isfinite(roi_array).any() else 0, neginf=np.nanmin(roi_array[np.isfinite(roi_array)]) if np.isfinite(roi_array).any() else 0)
         
@@ -168,6 +173,7 @@ class DamageScorer:
         out_path: str | None = None,
         resample_interpolation: str = "nearest",
         target_threshold: float = 0.0,
+        score_nonzero_only: bool = False,
         verbose: bool = False,
         log_resample: bool = True,
     ) -> pd.DataFrame:
@@ -272,7 +278,12 @@ class DamageScorer:
         for subject in self.dv_df.columns:
             subject_array = self.dv_df[subject].values
             roi_array = self.roi_df[target_suffix].values
-            results = self._calculate_metrics(subject_array, roi_array, metrics)
+            results = self._calculate_metrics(
+                subject_array,
+                roi_array,
+                metrics,
+                score_nonzero_only=score_nonzero_only,
+            )
             for metric, value in results.items():
                 if metric == "spatial_correlation":
                     col_name = f"{target_suffix}_spatial_corr"
@@ -319,7 +330,7 @@ class DamageScorer:
         except:
             return df
     
-    def calculate_damage_scores(self, metrics=['spatial_correlation', 'cosine', 'sum', 'avg_in_target', 'avg_in_subject', 'num_in_roi'], trace=False):
+    def calculate_damage_scores(self, metrics=['spatial_correlation', 'cosine', 'sum', 'avg_in_target', 'avg_in_subject', 'num_in_roi', 'max_in_roi', 'min_in_roi'], trace=False, score_nonzero_only=False):
         """
         Calculate damage scores for dv_df and roi_df based on specified metrics.
         This function computes damage scores by iterating through regions of interest and subjects,
@@ -334,7 +345,12 @@ class DamageScorer:
             for sub_idx, subject in enumerate(self.dv_df.columns):  
                 subject_array = self.dv_df[subject].values
                 roi_array = self.roi_df[roi].values# iterate over each subject
-                results = self._calculate_metrics(subject_array, roi_array, metrics) if (not trace or roi_idx == sub_idx) else {}
+                results = self._calculate_metrics(
+                    subject_array,
+                    roi_array,
+                    metrics,
+                    score_nonzero_only=score_nonzero_only,
+                ) if (not trace or roi_idx == sub_idx) else {}
                 for metric, value in results.items():
                     self.damage_df.loc[subject, f"{roi}_{metric}"] = value
         if trace:

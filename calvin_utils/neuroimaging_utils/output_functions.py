@@ -1,5 +1,6 @@
 import os
 import numpy as np
+from nilearn import plotting
 
 from calvin_utils.neuroimaging_utils.nifti_utils.volume_io import NiftiIO, VolumetricTimeSeriesIO
 from calvin_utils.neuroimaging_utils.surface_utils.surface_io import SurfaceIO
@@ -36,3 +37,12 @@ class NeuroimageFileOutporter:
         if visualize and hasattr(self.io, "_map_to_image") and hasattr(self.io, "_visualize_map"):
             img = self.io._map_to_image(np.asarray(map_data))
             self.io._visualize_map(img, title=os.path.basename(file_name))
+
+    def view_map(self, map_data, file_name):
+        """
+        View one statistical vector using the underlying I/O class.
+        """
+        if hasattr(self.io, "_map_to_image"):
+            img = self.io._map_to_image(np.asarray(map_data))
+            return plotting.view_img(img, title=os.path.basename(file_name))
+        return None

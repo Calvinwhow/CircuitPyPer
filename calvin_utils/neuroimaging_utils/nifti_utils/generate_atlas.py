@@ -65,14 +65,26 @@ class AtlasAggregator:
         name_col: int = 1,
         has_header: bool = False,
     ) -> None:
-        self.labels_txt = pathlib.Path(labels_txt)
-        self.atlas_nii = pathlib.Path(atlas_nii)
-        self.output_dir = pathlib.Path(output_dir)
-        self.mask_path = pathlib.Path(mask_path) if mask_path else self.DEFAULT_MASK
+        self.labels_txt = self._coerce_path(labels_txt, "labels_txt")
+        self.atlas_nii = self._coerce_path(atlas_nii, "atlas_nii")
+        self.output_dir = self._coerce_path(output_dir, "output_dir")
+        self.mask_path = self._coerce_path(mask_path, "mask_path") if mask_path else self.DEFAULT_MASK
         self.index_base = index_base
         self.index_col = index_col
         self.name_col = name_col
         self.has_header = has_header
+
+    @staticmethod
+    def _coerce_path(value: str | pathlib.Path, parameter_name: str) -> pathlib.Path:
+        try:
+            return pathlib.Path(value)
+        except TypeError as exc:
+            raise TypeError(
+                f"{parameter_name} must be a path-like value, got "
+                f"{type(value).__name__}. If you are rerunning a notebook cell, "
+                "make sure the atlas NIfTI path variable was not overwritten by "
+                "an AtlasAggregator instance."
+            ) from exc
 
     def load_labels(self) -> list[dict]:
         labels = []
@@ -371,6 +383,263 @@ class AtlasAggregator:
 
     def _safe_name(self, name: str) -> str:
         return re.sub(r"[^0-9A-Za-z]+", "_", name).strip("_") or "roi"
+
+
+class CustomYabplotAtlasBuilder:
+    """
+    Build yabplot-compatible custom cortical and subcortical atlases from named
+    NIfTI parcel masks.
+
+    This is intended for directories that already contain one binary NIfTI per
+    parcel, with meaningful filenames. Region names are derived from filenames
+    after removing ``.nii`` / ``.nii.gz`` and trailing underscores.
+
+    Outputs
+    -------
+    ``out_dir/source_volumes``
+        Combined labeled NIfTI volumes and a Workbench-style label text file.
+    ``out_dir/cortical``
+        A custom cortical atlas for ``yabplot.plot_cortical``. Contains one
+        fsLR32k vertex-label CSV and one LUT text file.
+    ``out_dir/subcortical``
+        A custom subcortical atlas for ``yabplot.plot_subcortical``. Contains
+        one smoothed ``.vtk`` mesh per selected subcortical parcel plus
+        ``atlas_LUT.txt``.
+
+    Notes
+    -----
+    The cortical atlas path uses nearest-neighbor sampling from the combined
+    labeled NIfTI volume to yabplot's fsLR32k surface vertices. It does not use
+    Connectome Workbench ribbon-constrained projection. If Workbench is
+    available and you need a stricter cortical projection, use
+    ``yabplot.build_cortical_atlas`` with the generated
+    ``source_volumes/*_wb_labels.txt``.
+    """
+
+    DEFAULT_SUBCORTICAL_KEYWORDS = (
+        "Hippocampus",
+        "Amygdala",
+        "Caudate",
+        "Putamen",
+        "Pallidum",
+        "Thalamus",
+        "Thal",
+        "Cerebelum",
+        "Cerebellum",
+        "Vermis",
+        "N_Acc",
+        "VTA",
+        "SN",
+        "Red_N",
+        "LC",
+        "Raphe",
+    )
+
+    def __init__(
+        self,
+        parcel_dir: str | pathlib.Path,
+        out_dir: str | pathlib.Path,
+        atlas_name: str = "custom",
+        subcortical_keywords: tuple[str, ...] | list[str] | None = None,
+        smooth_i: int = 20,
+        smooth_f: float = 0.7,
+        bmesh: str = "midthickness",
+    ) -> None:
+        self.parcel_dir = pathlib.Path(parcel_dir).expanduser()
+        self.out_dir = pathlib.Path(out_dir).expanduser()
+        self.atlas_name = atlas_name
+        self.subcortical_keywords = tuple(
+            subcortical_keywords or self.DEFAULT_SUBCORTICAL_KEYWORDS
+        )
+        self.smooth_i = smooth_i
+        self.smooth_f = smooth_f
+        self.bmesh = bmesh
+
+        self.source_dir = self.out_dir / "source_volumes"
+        self.cortical_dir = self.out_dir / "cortical"
+        self.subcortical_dir = self.out_dir / "subcortical"
+        self.labels = {}
+        self.cortical_labels = {}
+        self.subcortical_labels = {}
+
+    def run(self) -> dict:
+        parcel_files = self._find_parcel_files()
+        self._make_dirs()
+        volumes = self._build_labeled_volumes(parcel_files)
+        self._build_cortical_atlas(volumes["cortical"])
+        self._build_subcortical_atlas(parcel_files)
+        return {
+            "out_dir": self.out_dir,
+            "source_dir": self.source_dir,
+            "cortical_dir": self.cortical_dir,
+            "subcortical_dir": self.subcortical_dir,
+            "n_parcels": len(parcel_files),
+            "n_cortical": len(self.cortical_labels),
+            "n_subcortical": len(self.subcortical_labels),
+        }
+
+    def _make_dirs(self) -> None:
+        for directory in (self.source_dir, self.cortical_dir, self.subcortical_dir):
+            directory.mkdir(parents=True, exist_ok=True)
+
+    def _find_parcel_files(self) -> list[pathlib.Path]:
+        files = sorted(
+            path
+            for path in self.parcel_dir.iterdir()
+            if path.name.endswith((".nii", ".nii.gz")) and not path.name.startswith("._")
+        )
+        if not files:
+            raise FileNotFoundError(f"No NIfTI parcel files found in {self.parcel_dir}")
+
+        by_name = {}
+        for path in files:
+            by_name[self._clean_region_name(path)] = path
+        return [by_name[name] for name in sorted(by_name)]
+
+    def _build_labeled_volumes(self, parcel_files: list[pathlib.Path]) -> dict[str, pathlib.Path]:
+        first = nib.load(str(parcel_files[0]))
+        shape = first.shape
+        affine = first.affine
+        header = first.header.copy()
+
+        full = np.zeros(shape, dtype=np.int16)
+        cortical = np.zeros(shape, dtype=np.int16)
+        subcortical = np.zeros(shape, dtype=np.int16)
+        overlap_counts = []
+
+        for rid, path in enumerate(parcel_files, start=1):
+            img = nib.load(str(path))
+            if img.shape != shape or not np.allclose(img.affine, affine):
+                raise ValueError(f"Parcel is not in the same image space: {path}")
+
+            name = self._clean_region_name(path)
+            mask = img.get_fdata() > 0
+            overlap_counts.append(int(np.count_nonzero((full > 0) & mask)))
+
+            self.labels[rid] = name
+            full[mask] = rid
+            if self._is_subcortical(name):
+                self.subcortical_labels[rid] = name
+                subcortical[mask] = rid
+            else:
+                self.cortical_labels[rid] = name
+                cortical[mask] = rid
+
+        paths = {
+            "full": self.source_dir / f"{self.atlas_name}_all_labels.nii.gz",
+            "cortical": self.source_dir / f"{self.atlas_name}_cortical_labels.nii.gz",
+            "subcortical": self.source_dir / f"{self.atlas_name}_subcortical_labels.nii.gz",
+        }
+        nib.save(nib.Nifti1Image(full, affine, header), paths["full"])
+        nib.save(nib.Nifti1Image(cortical, affine, header), paths["cortical"])
+        nib.save(nib.Nifti1Image(subcortical, affine, header), paths["subcortical"])
+        self._write_workbench_label_file()
+
+        total_overlap = sum(overlap_counts)
+        if total_overlap:
+            print(f"[warning] parcel masks overlap in {total_overlap} voxel assignments.")
+            print("[warning] combined label volumes keep the later parcel label at overlaps.")
+
+        return paths
+
+    def _build_cortical_atlas(self, cortical_volume: pathlib.Path) -> None:
+        import yabplot as yab
+
+        lh_data, rh_data = yab.project_vol2surf(
+            str(cortical_volume),
+            bmesh=self.bmesh,
+            mask_medial_wall=True,
+            interpolation="nearest",
+        )
+        labels = np.nan_to_num(
+            np.concatenate([lh_data, rh_data]),
+            nan=0.0,
+            posinf=0.0,
+            neginf=0.0,
+        ).astype(int)
+        survivors = set(np.unique(labels)) - {0}
+
+        csv_path = self.cortical_dir / f"{self.atlas_name}_conte69.csv"
+        lut_path = self.cortical_dir / f"{self.atlas_name}_LUT.txt"
+        np.savetxt(csv_path, labels, fmt="%i")
+
+        with open(lut_path, "w") as file:
+            for rid, name in self.cortical_labels.items():
+                if rid not in survivors:
+                    print(f"[warning] cortical parcel lost on surface: {name} ({rid})")
+                    continue
+                r, g, b = self._rgb_for_id(rid)
+                file.write(f"{rid}  {name}  {r}  {g}  {b}  0\n")
+
+    def _build_subcortical_atlas(self, parcel_files: list[pathlib.Path]) -> None:
+        import pyvista as pv
+        from skimage import measure
+
+        for old_mesh in self.subcortical_dir.glob("*.vtk"):
+            old_mesh.unlink()
+
+        written = []
+        rid_out = 1
+        for path in parcel_files:
+            name = self._clean_region_name(path)
+            if not self._is_subcortical(name):
+                continue
+
+            img = nib.load(str(path))
+            mask = (img.get_fdata() > 0).astype(np.uint8)
+            if mask.sum() == 0:
+                print(f"[warning] empty subcortical parcel skipped: {name}")
+                continue
+
+            try:
+                verts, faces, _, _ = measure.marching_cubes(mask, level=0.5)
+            except ValueError as exc:
+                print(f"[warning] subcortical parcel skipped: {name}: {exc}")
+                continue
+
+            verts_mni = nib.affines.apply_affine(img.affine, verts)
+            faces_pv = np.column_stack((np.full(len(faces), 3), faces)).astype(
+                np.int64
+            ).ravel()
+            mesh = pv.PolyData(verts_mni, faces_pv)
+            mesh = mesh.smooth(n_iter=self.smooth_i, relaxation_factor=self.smooth_f)
+            mesh.compute_normals(inplace=True)
+
+            if mesh.n_points < 4 or abs(mesh.volume) < 0.01:
+                print(f"[warning] tiny subcortical mesh skipped: {name}")
+                continue
+
+            mesh.save(self.subcortical_dir / f"{name}.vtk")
+            written.append((rid_out, name))
+            rid_out += 1
+
+        with open(self.subcortical_dir / "atlas_LUT.txt", "w") as file:
+            for rid, name in written:
+                file.write(f"{rid} {name}\n")
+
+    def _write_workbench_label_file(self) -> None:
+        path = self.source_dir / f"{self.atlas_name}_wb_labels.txt"
+        with open(path, "w") as file:
+            for rid, name in self.labels.items():
+                r, g, b = self._rgb_for_id(rid)
+                file.write(f"{name}\n{rid} {r} {g} {b} 255\n")
+
+    def _is_subcortical(self, name: str) -> bool:
+        return any(keyword in name for keyword in self.subcortical_keywords)
+
+    @staticmethod
+    def _clean_region_name(path: str | pathlib.Path) -> str:
+        name = pathlib.Path(path).name
+        for suffix in (".nii.gz", ".nii"):
+            if name.endswith(suffix):
+                name = name[: -len(suffix)]
+        name = re.sub(r"_+$", "", name)
+        return name.replace(" ", "_").replace("/", "-")
+
+    @staticmethod
+    def _rgb_for_id(rid: int) -> list[int]:
+        rng = np.random.default_rng(rid)
+        return rng.integers(50, 255, 3).tolist()
 
 
 if __name__ == "__main__":

@@ -105,6 +105,21 @@ class GiiNiiFileImport:
             names_list.append(new_name)
         return names_list
     
+    @staticmethod
+    def splice_colnames(df, pre, post):
+        names_list = []
+        for name in df.columns:
+            new_name = name
+            if pre not in (None, ""):
+                if pre in new_name:
+                    new_name = new_name.split(pre, 1)[1]
+            if post not in (None, ""):
+                if post in new_name:
+                    new_name = new_name.split(post, 1)[0]
+            names_list.append(new_name)
+        df = df.rename(columns=dict(zip(df.columns, names_list)))
+        return df
+    
     def _coerce_duplicate_names(self, names_list):
         for idx, name in enumerate(names_list):
             if names_list.count(name) > 1:
