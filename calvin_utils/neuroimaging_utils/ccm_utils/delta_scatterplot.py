@@ -120,4 +120,5 @@ class DeltaCorrelationScatter:
         if self.out_dir is not None:
             fname = f"delta_scatter_{self.label_1}_vs_{self.label_2}"
             fig.savefig(os.path.join(self.out_dir, fname + ".svg"))
-        plt.show()
+        if show:
+            plt.show()

@@ -46,27 +46,28 @@ MASK_PATH = "/Users/cu135/Software_Local/calvin_utils_project/circuit_pyper/reso
 
 # Model setup.
 
-var_list = [ 'MemoryTotal', 'ExecutiveTotal', 'LanguageTotal', 'VisualTotal' ]
-# var_list = ['Gait', 'HeelToShinTestLeft', 'HeelToShinTestRight', 'FingerToNoseTestLeft', 'FingerToNoseTestRight', 'LimbAtaxia', 'Speech', 'Oculomotor', 'TotalBarsScore',
+# var_list = [ 'SematicFluencyRawS', 'PhonemicFluencyRawS', 'CategorySwitchRawS', 'VerbalRegSum', 
+#             'DigitSpanForwardRawS', 'DigitSpanBackwardRawS', 'CubeDrawRawS', 'VerbalRecallRawS', 'SimiliarityRawS', 'GoNoGoRawS', ]
+var_list = ['Gait', 'HeelToShinTestLeft', 'HeelToShinTestRight', 'FingerToNoseTestLeft', 'FingerToNoseTestRight', 'LimbAtaxia', 'Speech', 'Oculomotor', 'TotalBarsScore',
  
-#  'SematicFluencyFailS', 'PhonemicFluencyFailS', 'CategorySwitchFailS', 'DigitSpanForwardFailS', 'DigitSpanBackwardFailS', 'CubeDrawFailS', 'VerbalRecallFailS', 'SimiliarityFailS', 'GoNoGoFailS', 'AffectFailS', 'TotalCCASFailScore', 
+ 'SematicFluencyFailS', 'PhonemicFluencyFailS', 'CategorySwitchFailS', 'DigitSpanForwardFailS', 'DigitSpanBackwardFailS', 'CubeDrawFailS', 'VerbalRecallFailS', 'SimiliarityFailS', 'GoNoGoFailS', 'AffectFailS', 'TotalCCASFailScore', 
 
 
-#  'Sec1ADifficultFocus', 'Sec1AEasilyDistracted', 'Sec1AOntheGo', 'Sec1AFeelsCompelled', 'Sec1AFeelsDriven', 'Sec1BWorries', 'Sec1BRepeats', 'Sec1BMentallyStuck', 
-#  'Sec1BCauseDistress', 'Sec2AActHastily', 'Sec2ARapidChanges', 'Sec2ACryingLaughing', 'Sec2AOverAnxious', 
-#  'Sec2BLackOfPleasure', 'Sec2BNegativeAttitude', 'Sec2BUneasyWithLife', 'Sec2BSadDepressed', 
-#  'Sec3ARepetitiveMovements', 'Sec3ASensoryExp', 'Sec3BSensitive', 'Sec3BOverwhelmed', 
-#  'Sec4ACommunicates', 'Sec4AConcerns', 'Sec4ASeesHearsThings', 
-#  'Sec4BTroubleUnderstand', 'Sec4BDistant', 'Sec4BIndifferent', 
-#  'Sec5AAngry', 'Sec5AUpset', 'Sec5AIntolerant', 'Sec5AArgumentative', 
-#  'Sec5Bimmature', 'Sec5BUnaware', 'Sec5BManner', 'Sec5BTrusting', 
-#  'ScoreCol1A', 'ScoreCol1B', 
-#  'ScoreCol2A', 'ScoreCol2B', 
-#  'ScoreCol3A', 'ScoreCol3B', 
-#  'ScoreCol4A', 'ScoreCol4B', 
-#  'ScoreCol5A', 'ScoreCol5B', 
-#  'TotalSection1Score', 'TotalSection2Score', 'TotalSection3Score', 'TotalSection4Score', 'TotalSection5Score', 'CNRSTotColAScore', 'CNRSTotColBScore', 'CNRSTotScore', 
-#  ]
+ 'Sec1ADifficultFocus', 'Sec1AEasilyDistracted', 'Sec1AOntheGo', 'Sec1AFeelsCompelled', 'Sec1AFeelsDriven', 'Sec1BWorries', 'Sec1BRepeats', 'Sec1BMentallyStuck', 
+ 'Sec1BCauseDistress', 'Sec2AActHastily', 'Sec2ARapidChanges', 'Sec2ACryingLaughing', 'Sec2AOverAnxious', 
+ 'Sec2BLackOfPleasure', 'Sec2BNegativeAttitude', 'Sec2BUneasyWithLife', 'Sec2BSadDepressed', 
+ 'Sec3ARepetitiveMovements', 'Sec3ASensoryExp', 'Sec3BSensitive', 'Sec3BOverwhelmed', 
+ 'Sec4ACommunicates', 'Sec4AConcerns', 'Sec4ASeesHearsThings', 
+ 'Sec4BTroubleUnderstand', 'Sec4BDistant', 'Sec4BIndifferent', 
+ 'Sec5AAngry', 'Sec5AUpset', 'Sec5AIntolerant', 'Sec5AArgumentative', 
+ 'Sec5Bimmature', 'Sec5BUnaware', 'Sec5BManner', 'Sec5BTrusting', 
+ 'ScoreCol1A', 'ScoreCol1B', 
+ 'ScoreCol2A', 'ScoreCol2B', 
+ 'ScoreCol3A', 'ScoreCol3B', 
+ 'ScoreCol4A', 'ScoreCol4B', 
+ 'ScoreCol5A', 'ScoreCol5B', 
+ 'TotalSection1Score', 'TotalSection2Score', 'TotalSection3Score', 'TotalSection4Score', 'TotalSection5Score', 'CNRSTotColAScore', 'CNRSTotColBScore', 'CNRSTotScore', 
+ ]
 regressand_list = var_list              # On left hand=side of the equation. Often is the outcome variable.         Will run an analysis for each value.
 regressor_list = ["Nifti_File_Path"]    # On right hand-side of the equation. Often is the neuroimaging variable.   Will run an analysis for each value. 
 VOXELWISE_VARS = ["Nifti_File_Path"]    # Name the variables that are stored in neuroimaging files
@@ -80,7 +81,7 @@ ONE_HOT = None                          # columns to one-hot encode
 EXCHANGEABILITY_COL = None              # Exchangeability blocks to restrict permutations within
 WEIGHTS_COL = None                      # Weights for weighted regression. Defaults to equal. 
 DATA_TRANSFORM_METHOD = "standardize"   # Generally default to standardize with no intercept. Options: 'standardize' | 'rank' | None
-INVERT_REGRESSAND = True                # Multiply regressand by -1. Default: False
+INVERT_REGRESSAND = False                # Multiply regressand by -1. Default: False
 
 # Leave empty to use the default basic contrast matrix.
 CONTRAST_MATRIX = None                  # Example: [[ 0, 1], [-1, 1]]
