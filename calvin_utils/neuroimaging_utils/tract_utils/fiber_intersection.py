@@ -1,10 +1,31 @@
 import os
 import json
 import numpy as np
+if not hasattr(np, "sctypes"):
+    np.sctypes = {
+        "int": [np.int8, np.int16, np.int32, np.int64],
+        "uint": [np.uint8, np.uint16, np.uint32, np.uint64],
+        "float": [np.float16, np.float32, np.float64],
+        "complex": [np.complex64, np.complex128],
+        "others": [np.bool_, np.bytes_, np.str_, np.object_],
+    }
+if not hasattr(np, "maximum_sctype"):
+    def _maximum_sctype(t):
+        dtype = np.dtype(t)
+        if np.issubdtype(dtype, np.complexfloating):
+            return np.complex128
+        if np.issubdtype(dtype, np.floating):
+            return np.float64
+        if np.issubdtype(dtype, np.unsignedinteger):
+            return np.uint64
+        if np.issubdtype(dtype, np.integer):
+            return np.int64
+        return dtype.type
+
+    np.maximum_sctype = _maximum_sctype
 import nibabel as nib
 from pathlib import Path
 from tqdm import tqdm
-from nilearn import image
 
 
 class FiberVoxelIndexer:
@@ -51,6 +72,108 @@ class FiberVoxelIndexer:
 
         return 'unknown'
 
+    @staticmethod
+    def _parse_tck_header(path):
+        header = {}
+        with open(path, "rb") as f:
+            while True:
+                line = f.readline()
+                if line == b"":
+                    raise ValueError(f"TCK header ended before END marker: {path}")
+                text = line.decode("utf-8", errors="replace").strip()
+                if text == "END":
+                    break
+                if ":" in text:
+                    key, value = text.split(":", 1)
+                    header[key.strip().lower()] = value.strip()
+
+        file_field = header.get("file", "")
+        parts = file_field.split()
+        if len(parts) != 2 or parts[0] != ".":
+            raise ValueError(f"Only inline TCK data are supported, got file field: {file_field}")
+        header["data_offset"] = int(parts[1])
+        return header
+
+    @classmethod
+    def _load_tck_tolerant(cls, path):
+        """
+        Load MRtrix TCK streamlines while tolerating files that omit the final
+        ``inf inf inf`` marker. DSI Studio can write TCK-like files with valid
+        NaN streamline delimiters but without nibabel's expected EOF row.
+        """
+        header = cls._parse_tck_header(path)
+        datatype = header.get("datatype", "Float32LE").lower()
+        dtype_map = {
+            "float32le": "<f4",
+            "float32be": ">f4",
+            "float64le": "<f8",
+            "float64be": ">f8",
+        }
+        if datatype not in dtype_map:
+            raise ValueError(f"Unsupported TCK datatype '{header.get('datatype')}' in {path}")
+
+        raw = np.fromfile(path, dtype=np.dtype(dtype_map[datatype]), offset=header["data_offset"])
+        n_values = (raw.size // 3) * 3
+        if n_values == 0:
+            return []
+        if n_values != raw.size:
+            raw = raw[:n_values]
+        points = raw.reshape(-1, 3)
+
+        separators = np.where(~np.isfinite(points).all(axis=1))[0]
+        fibers = []
+        start = 0
+        for stop in separators:
+            row = points[stop]
+            if np.isinf(row).all():
+                break
+            if stop > start:
+                fibers.append(points[start:stop].astype(np.float32, copy=True))
+            start = stop + 1
+
+        if start < points.shape[0]:
+            tail = points[start:]
+            tail = tail[np.isfinite(tail).all(axis=1)]
+            if tail.shape[0] > 0:
+                fibers.append(tail.astype(np.float32, copy=True))
+
+        fibers = cls._maybe_apply_known_dsi_tck_transform(fibers, header)
+        return fibers
+
+    @staticmethod
+    def _maybe_apply_known_dsi_tck_transform(fibers, header):
+        if not fibers:
+            return fibers
+
+        dim_text = header.get("dim", "")
+        try:
+            dim = tuple(int(part.strip()) for part in dim_text.split(","))
+        except ValueError:
+            return fibers
+
+        if dim != (157, 189, 136):
+            return fibers
+
+        sample = np.concatenate([fiber[: min(10, len(fiber)), :3] for fiber in fibers[: min(100, len(fibers))]])
+        if sample.size == 0:
+            return fibers
+
+        lower_ok = np.nanmin(sample, axis=0) >= -1.0
+        upper_ok = np.nanmax(sample, axis=0) <= (np.asarray(dim, dtype=np.float32) + 1.0)
+        if not (np.all(lower_ok) and np.all(upper_ok)):
+            return fibers
+
+        affine = np.asarray(
+            [
+                [-1.0, 0.0, 0.0, 78.0],
+                [0.0, -1.0, 0.0, 76.0],
+                [0.0, 0.0, 1.0, -50.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ],
+            dtype=np.float32,
+        )
+        return [nib.affines.apply_affine(affine, fiber[:, :3]).astype(np.float32) for fiber in fibers]
+
     @classmethod
     def from_fiber_file(cls, fiber_file_path, reference_nifti_path, fiber_mask=None, step_size_vox=0.5):
         obj = cls(
@@ -69,9 +192,16 @@ class FiberVoxelIndexer:
         """
         ftype = self._identify_fiber_file_type(fiber_file_path)
 
-        if ftype in {'trk', 'tck', 'trx'}:
+        if ftype in {'trk', 'trx'}:
             tractogram = nib.streamlines.load(fiber_file_path).tractogram
             fibers = [np.asarray(sl, dtype=np.float32) for sl in tractogram.streamlines]
+
+        elif ftype == 'tck':
+            try:
+                tractogram = nib.streamlines.load(fiber_file_path).tractogram
+                fibers = [np.asarray(sl, dtype=np.float32) for sl in tractogram.streamlines]
+            except Exception:
+                fibers = self._load_tck_tolerant(fiber_file_path)
 
         elif ftype == 'npy':
             obj = np.load(fiber_file_path, allow_pickle=True)

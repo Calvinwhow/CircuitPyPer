@@ -9,7 +9,7 @@ from matplotlib.colors import ListedColormap
 
 from calvin_utils.file_utils.import_functions import GiiNiiFileImport
 from calvin_utils.neuroimaging_utils.output_functions import NeuroimageFileOutporter
-from calvin_utils.plotting_utils.mricrogl_colormaps import resolve_mricrogl_or_matplotlib_cmap
+from calvin_utils.plotting_utils.colormaps import resolve_cmap
 
 
 PathLike = Union[str, os.PathLike]
@@ -189,7 +189,7 @@ class SUITCerebellumPlotter:
         Plot data on the SUITPy flatmap and optionally save the figure.
         """
         suit = self._require_suitpy()
-        cmap = resolve_mricrogl_or_matplotlib_cmap(cmap)
+        cmap = resolve_cmap(cmap)
         if data is None:
             data = self.vol_to_surface(nifti_path=nifti_path, column=column, space=space)
         data = np.asarray(data).squeeze()

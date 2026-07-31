@@ -865,7 +865,7 @@ class ParcelwisePlot:
         from matplotlib import colormaps
         from pyvista.plotting.colors import get_cmap_safe
 
-        from calvin_utils.plotting_utils.mricrogl_colormaps import (
+        from circuit_pyper.calvin_utils.plotting_utils.colormaps import (
             resolve_mricrogl_or_matplotlib_cmap,
         )
 
@@ -885,7 +885,7 @@ class ParcelwisePlot:
     def _format_invalid_cmap_error(cmap: str, parameter_name: str = "cmap") -> str:
         from matplotlib import colormaps
 
-        from calvin_utils.plotting_utils.mricrogl_colormaps import (
+        from circuit_pyper.calvin_utils.plotting_utils.colormaps import (
             DEFAULT_CLUT_DIR,
             MICROGL_LUT_SUFFIXES,
         )

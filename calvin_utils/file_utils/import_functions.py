@@ -4,13 +4,32 @@ warnings.filterwarnings('ignore')
 import os 
 import re
 import numpy as np
+if not hasattr(np, "sctypes"):
+    np.sctypes = {
+        "int": [np.int8, np.int16, np.int32, np.int64],
+        "uint": [np.uint8, np.uint16, np.uint32, np.uint64],
+        "float": [np.float16, np.float32, np.float64],
+        "complex": [np.complex64, np.complex128],
+        "others": [np.bool_, np.bytes_, np.str_, np.object_],
+    }
+if not hasattr(np, "maximum_sctype"):
+    def _maximum_sctype(t):
+        dtype = np.dtype(t)
+        if np.issubdtype(dtype, np.complexfloating):
+            return np.complex128
+        if np.issubdtype(dtype, np.floating):
+            return np.float64
+        if np.issubdtype(dtype, np.unsignedinteger):
+            return np.uint64
+        if np.issubdtype(dtype, np.integer):
+            return np.int64
+        return dtype.type
+
+    np.maximum_sctype = _maximum_sctype
 import pandas as pd
 import nibabel as nib
 from glob import glob
 from tqdm import tqdm
-from nilearn import image
-from calvin_utils.neuroimaging_utils.ccm_utils.bounding_box import NiftiBoundingBox
-from calvin_utils.neuroimaging_utils.nifti_utils.generate_nifti import view_and_save_nifti
 from pathlib import Path
 from tqdm import tqdm
 import random
@@ -131,7 +150,7 @@ class GiiNiiFileImport:
         """Switching function for different ways of getting colnames from filenames"""
         ftype = self._import_type_switch(file_paths)
 
-        if ftype == 'npy':
+        if len(set(file_paths[0]))==0:  # used when a single npy file contains all data.
             data = np.load(file_paths[0]).T
             names_list = [f"sub_{i}" for i in range(data.shape[1])]
         elif self.subject_pattern is not None:
@@ -234,10 +253,7 @@ class GiiNiiFileImport:
 
     def import_npy_to_numpy_array(self, file_paths):
         '''Loads a numpy array from a single .npy file. Calvin formats these as (subjects, voxels), which are the entire dataframe.'''
-        if len(file_paths) != 1:
-            raise ValueError(f"NPY import expects a single file, but received {len(file_paths)}.")
-        data = np.load(file_paths[0])
-        return data.T  # Transpose to (voxels, observations)
+        return np.load(file_paths[0]).T     # Transpose to (voxels, observations)
 
     def import_nifti_to_numpy_array(self, file_path):
         """Loads niftis"""

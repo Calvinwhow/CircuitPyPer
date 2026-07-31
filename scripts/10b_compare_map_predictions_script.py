@@ -7,61 +7,38 @@ run this file directly.
 """
 
 from __future__ import annotations
-
 import os
 import re
 import sys
+from dataclasses import dataclass
 from pathlib import Path
-from itertools import product
-
-TMPDIR = Path(os.environ.get("TMPDIR", "/tmp"))
-os.environ.setdefault("MPLCONFIGDIR", str(TMPDIR / "matplotlib"))
-os.environ.setdefault("XDG_CACHE_HOME", str(TMPDIR / "xdg_cache"))
-
 import numpy as np
 import pandas as pd
 import matplotlib
-matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from scipy.stats import rankdata
 from scipy.stats import pearsonr, spearmanr, ttest_ind
 from tqdm import tqdm
-
-if not hasattr(np, "sctypes"):
-    np.sctypes = {
-        "int": [np.int8, np.int16, np.int32, np.int64],
-        "uint": [np.uint8, np.uint16, np.uint32, np.uint64],
-        "float": [np.float16, np.float32, np.float64],
-        "complex": [np.complex64, np.complex128],
-        "others": [np.bool_, np.bytes_, np.str_, np.object_],
-    }
-if not hasattr(np, "maximum_sctype"):
-    def _maximum_sctype(t):
-        dtype = np.dtype(t)
-        if np.issubdtype(dtype, np.complexfloating):
-            return np.complex128
-        if np.issubdtype(dtype, np.floating):
-            return np.float64
-        if np.issubdtype(dtype, np.unsignedinteger):
-            return np.uint64
-        if np.issubdtype(dtype, np.integer):
-            return np.int64
-        return dtype.type
-
-    np.maximum_sctype = _maximum_sctype
-
 import nibabel as nib
-
-CIRCUIT_PYPER_DIR = Path(__file__).resolve().parents[1]
-if str(CIRCUIT_PYPER_DIR) not in sys.path:
-    sys.path.insert(0, str(CIRCUIT_PYPER_DIR))
-
 from calvin_utils.permutation_analysis_utils.statsmodels_palm import CalvinStatsmodelsPalm
 from calvin_utils.neuroimaging_utils.ccm_utils.stat_utils import CorrelationCalculator
 from calvin_utils.neuroimaging_utils.ccm_utils.convergent_loocv import LOOCVAnalyzer
 from calvin_utils.neuroimaging_utils.ccm_utils.delta_scatterplot import DeltaCorrelationScatter
 from calvin_utils.plotting_utils.pair_superiority_plot import PairSuperiorityPlot
 from calvin_utils.plotting_utils.simple_box_plot import SimpleBoxPlotWrapper
+from calvin_utils.statistical_utils.scatterplot import SimpleScatterPlotWrapper
+
+# Redirect outputs to tmpdir
+TMPDIR = Path(os.environ.get("TMPDIR", "/tmp"))
+os.environ.setdefault("MPLCONFIGDIR", str(TMPDIR / "matplotlib"))
+os.environ.setdefault("XDG_CACHE_HOME", str(TMPDIR / "xdg_cache"))
+matplotlib.use("Agg")
+
+# Ensure script is seen on Python path
+CIRCUIT_PYPER_DIR = Path(__file__).resolve().parents[1]
+if str(CIRCUIT_PYPER_DIR) not in sys.path:
+    sys.path.insert(0, str(CIRCUIT_PYPER_DIR))
+
 
 
 # =============================================================================
@@ -70,63 +47,36 @@ from calvin_utils.plotting_utils.simple_box_plot import SimpleBoxPlotWrapper
 
 
 # Input/output paths.
-INPUT_PATH = "/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/results/optimzation/optimized_master_list.csv" # Form: "/path/to/input.csv" or "/path/to/input.xlsx"
+INPUT_PATH = "/Volumes/HowExp/datasets/02a_Corbetta_Stroke_Lesion/Study_Metadata/3month_arm_1clean.csv" # Form: "/path/to/input.csv" or "/path/to/input.xlsx"
 SHEET = None                            # Specify sheet if using excel (i.e. "Sheet1")
-OUT_DIR = "/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/results/optimzation/comparisons" # Form: "/path/to/output_dir"
-WHOLE_BRAIN_MASK_PATH = "/Users/cu135/Software_Local/calvin_utils_project/circuit_pyper/resources/MNI152_T1_2mm_brain_mask.nii"
-CEREBELLUM_MASK_PATH = "/Volumes/HowExp2/resources/atlases/atlases/Diedrichsen_2009/atl-Anatom_space-SUIT_dseg_coverage.nii.gz"
-CEREBELLUM_ONLY = False                 # True masks patient images and compared maps to cerebellum and appends -cerebellumOnly to OUT_DIR.
-MASK_PATH = CEREBELLUM_MASK_PATH if CEREBELLUM_ONLY else WHOLE_BRAIN_MASK_PATH
-if CEREBELLUM_ONLY and not OUT_DIR.endswith("-cerebellumOnly"):
-    OUT_DIR = f"{OUT_DIR}-cerebellumOnly"
+OUT_DIR = "/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/results/optimzation/comparisons/corbetta_3mo/gdss_10-cerebellumOnly" # Form: "/path/to/output_dir"
+MASK_PATH = "/Users/cu135/Software_Local/calvin_utils_project/circuit_pyper/resources/MNI152_T1_2mm_brain_mask.nii"
 
-# Model setup.
-OUTCOME_LIST = []                       # Used only for flat NEW_MAPS_LIST. Nested NEW_MAPS_LIST below is preferred for batching.
-NIFTI_COL = "Nifti_File_Path"           # Column containing patient neuroimaging files.
-Y_LABEL = None                          # Defaults to each outcome name. Example: "Memory Outcome"
+# Symptom setup.
+SYMPTOM_COLUMN = "gdss_10"       # Spreadsheet column to analyze. Run one symptom at a time.
+NIFTI_COL = "roi_path"           # Column containing patient neuroimaging files.
+Y_LABEL = None                          # Defaults to SYMPTOM_COLUMN. Example: "Memory Outcome"
 PATH_REPLACEMENTS = []                  # Example: [("/Volumes/HowExp/", "/Volumes/HowExp2/")]
 
-# Maps to compare. Preferred form is {"DV_COLUMN": {"Map Name": "/path/to/map.nii.gz"}}.
+# Maps to compare.
+# Candidate maps are the maps being evaluated for SYMPTOM_COLUMN.
+# Comparator maps are the reference/prior maps every candidate is tested against.
 CONTROL_MAPS_DIR = "/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/results/optimzation/comparisons/control_maps"
-TOTALBARS_MAPS = {
-    "TotalBarsScore_New_Localization": "/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/results/optimzation/symptom_on_lhs/totalbars/standardized-perm1000/regression_0/contrast_tval_0.nii.gz",
-    "TotalBarsScore_New_Localization-FWE": "/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/results/optimzation/symptom_on_lhs/totalbars/standardized-perm1000/regression_0/contrast_tval_FWE_0.nii.gz",
-    "TotalBarsScore_Diedrichsen_Wholebrain": "/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/results/optimzation/symptom_on_lhs/proper_regressions/TotalBarsScore-on-Nifti_File_Path/parcellated_files/contrast_tval_0_diedrichsen-wholebrain.nii.gz",
-    "TotalBarsScore_Diedrichsen_Wholebrain-FWE": "/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/results/optimzation/symptom_on_lhs/proper_regressions/TotalBarsScore-on-Nifti_File_Path/parcellated_files/contrast_tval_FWE_0_diedrichsen-wholebrain.nii.gz",
+CANDIDATE_MAPS = {
+    "CNRSTotScore": '/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/results/optimzation/symptom_on_lhs/proper_regressions/CNRSTotScore-on-Nifti_File_Path/regression/contrast_tval_0.nii.gz',
+    "ScoreCol2B": '/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/results/optimzation/symptom_on_lhs/proper_regressions/ScoreCol2B-on-Nifti_File_Path/regression/contrast_tval_0.nii.gz',
+    "CNRS_Fibers": "/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/results/optimzation/symptom_on_lhs/standardized-perm1000-fibfilt/CNRSTotScore/regression_0/contrast_tval_0.nii.gz",
 }
-CNRS_MAPS = {
-    "CNRS_New_Localization": "/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/results/optimzation/symptom_on_lhs/cnrs/standardized-perm1000/regression_0/contrast_tval_0.nii.gz",
-    "CNRS_New_Localization-FWE": "/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/results/optimzation/symptom_on_lhs/cnrs/standardized-perm1000/regression_0/contrast_tval_FWE_0.nii.gz",
-    "CNRS_Diedrichsen_Wholebrain": "/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/results/optimzation/symptom_on_lhs/proper_regressions/CNRSTotScore-on-Nifti_File_Path/parcellated_files/contrast_tval_0_diedrichsen-wholebrain.nii.gz",
-    "CNRS_Diedrichsen_Wholebrain-FWE": "/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/results/optimzation/symptom_on_lhs/proper_regressions/CNRSTotScore-on-Nifti_File_Path/parcellated_files/contrast_tval_FWE_0_diedrichsen-wholebrain.nii.gz",
-}
-CCAS_MAPS = {
-    "CCAS_New_Localization": "/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/results/optimzation/symptom_on_lhs/ccas/standardized-perm1000/regression_0/contrast_tval_0.nii.gz",
-    "CCAS_New_Localization-FWE": "/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/results/optimzation/symptom_on_lhs/ccas/standardized-perm1000/regression_0/contrast_tval_FWE_0.nii.gz",
-    "CCAS_Diedrichsen_Wholebrain": "/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/results/optimzation/symptom_on_lhs/proper_regressions/TotalCCASFailScore-on-Nifti_File_Path/parcellated_files/contrast_tval_0_diedrichsen-wholebrain.nii.gz",
-    "CCAS_Diedrichsen_Wholebrain-FWE": "/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/results/optimzation/symptom_on_lhs/proper_regressions/TotalCCASFailScore-on-Nifti_File_Path/parcellated_files/contrast_tval_FWE_0_diedrichsen-wholebrain.nii.gz",
-}
-NEW_MAPS_LIST = {
-    "TotalBarsScore": TOTALBARS_MAPS,
-    "CNRSTotScore": CNRS_MAPS,
-    "TotalCCASFailScore": CCAS_MAPS,
-}
-EXPAND_OUTCOME_GROUPS = False           # True for batches like Corbetta with many GDSS/NIH7 columns.
-OUTCOME_GROUP_MAPS = {                  # Used only when EXPAND_OUTCOME_GROUPS=True.
-    "gdss": CCAS_MAPS,                  # Any column starting with "gdss".
-    "nih7": TOTALBARS_MAPS,             # Any column starting with "nih7".
-    "animal_raw_acute": CNRS_MAPS,      # Exact column name.
-}
-OLD_MAPS_LIST = {
-    path.name.replace(".nii.gz", "_nii_gz").replace(".nii", "_nii"): str(path)
-    for path in sorted(Path(CONTROL_MAPS_DIR).glob("*"))
-    if path.name.endswith((".nii", ".nii.gz"))
-}
-NEW_MAP_NAMES = None                    # Optional list matching NEW_MAPS_LIST if NEW_MAPS_LIST is not a dict.
-OLD_MAP_NAMES = None                    # Optional list matching OLD_MAPS_LIST if OLD_MAPS_LIST is not a dict.
+COMPARATOR_MAPS = [
+    '/Users/cu135/Partners HealthCare Dropbox/Calvin Howard/studies/raynor_network_mapping/data/mikes_maps/emotion_regulation.nii',
+    '/Users/cu135/Partners HealthCare Dropbox/Calvin Howard/studies/raynor_network_mapping/data/nettekoven_maps/rois/resampled_cerebellum_roi_1-4_to_17-20_bilateral.nii.gz',
+    '/Users/cu135/Partners HealthCare Dropbox/Calvin Howard/studies/raynor_network_mapping/data/nettekoven_maps/rois/resampled_cerebellum_roi_5-7_to_21-23_bilateral.nii.gz',
+    '/Users/cu135/Partners HealthCare Dropbox/Calvin Howard/studies/raynor_network_mapping/data/nettekoven_maps/rois/resampled_cerebellum_roi_8-11_to_24-27_bilateral.nii.gz',
+    '/Users/cu135/Partners HealthCare Dropbox/Calvin Howard/studies/raynor_network_mapping/data/nettekoven_maps/rois/resampled_cerebellum_roi_12-16_to_28-32_bilateral.nii.gz'
+]
 
 # Optional preprocessing.
-DROP_ROWS = []                          # Conditions for dropping rows. Example: [("group", "equal", "control"), ("age", "below", 18)]
+DROP_ROWS = [("focal_cerebellum", "equal", 0)]                          # Conditions for dropping rows. Example: [("group", "equal", "control"), ("age", "below", 18)]
 KEEP_ROWS = []                          # Conditions for keeping rows. Example: [("focal_cerebellum", 1)]
 COVARIATES_LIST = []                    # Loaded for compatibility with the CCM data API, but the ROI comparison does not use covariates.
 DATA_TRANSFORM_METHOD = "standardize"   # Options: 'standardize' | 'rank' | None
@@ -141,7 +91,7 @@ SEED = 42
 DELTA_R2 = True                         # Compare explained variance instead of raw r.
 SKIP_EXISTING = False                   # Skip comparison folders that already exist.
 DRAW_INDIVIDUAL_PLOTS = True            # Pair-superiority and scatter plots for every map-vs-map comparison.
-DRAW_AGGREGATE_PLOTS = True             # Aggregate boxplots/distribution plots for each new map.
+DRAW_AGGREGATE_PLOTS = True             # Aggregate boxplots/distribution plots for each candidate map.
 
 
 class SpreadsheetDataLoader:
@@ -254,104 +204,213 @@ class SpreadsheetDataLoader:
         return tuple(processed)
 
 
-def read_spreadsheet(out_dir):
-    """Read the input spreadsheet using the same CalvinStatsmodelsPalm importer pattern as 05b."""
-    os.makedirs(out_dir, exist_ok=True)
-    cal_palm = CalvinStatsmodelsPalm(input_csv_path=INPUT_PATH, output_dir=out_dir, sheet=SHEET)
-    return cal_palm, cal_palm.read_and_display_data()
+@dataclass(frozen=True)
+class StatsReadyMapPredictionData:
+    """Minimal prepared payload consumed by the map-comparison statistics."""
+
+    outcome: str
+    outcome_dir: str
+    data_loader: SpreadsheetDataLoader
+    corr_map_dict: dict
 
 
-def prepare_data(cal_palm, data_df, outcome):
-    """Apply the configured spreadsheet-level preprocessing."""
-    data_df = data_df.copy()
-    for old, new in PATH_REPLACEMENTS:
-        data_df[NIFTI_COL] = data_df[NIFTI_COL].astype(str).str.replace(old, new, regex=False)
+@dataclass(frozen=True)
+class MapComparisonStats:
+    """Stats output for one candidate-vs-comparator map comparison."""
 
-    for column, value in KEEP_ROWS:
-        before = len(data_df)
-        data_df = data_df[data_df[column] == value].copy()
-        print(f"Keeping {column} == {value}: {len(data_df)} of {before} rows")
+    outcome: str
+    candidate_name: str
+    comparator_name: str
+    comparison_out_dir: str
+    summary_df: pd.DataFrame
+    resample_df: pd.DataFrame
+    observed_x1: np.ndarray
+    observed_x2: np.ndarray
+    observed_y: np.ndarray
+    r_values: dict
+    observed_r_values: dict
 
-    if INVERT_OUTCOME:
-        print(f"INVERT_OUTCOME=True, MULTIPLYING {outcome} BY -1")
-        data_df[outcome] = data_df[outcome] * -1
 
-    cal_palm.df = data_df
-    drop_nan_list = [outcome, NIFTI_COL] + list(COVARIATES_LIST)
-    data_df = cal_palm.drop_nans_from_columns(columns_to_drop_from=drop_nan_list)
+@dataclass(frozen=True)
+class CandidateMapStats:
+    """Combined stats output for one candidate map against all comparators."""
 
-    if DROP_ROWS:
-        for column, condition, value in DROP_ROWS:
+    candidate_name: str
+    candidate_out_dir: str
+    comparisons: tuple[MapComparisonStats, ...]
+    summary_df: pd.DataFrame
+    resample_df: pd.DataFrame
+
+
+@dataclass(frozen=True)
+class MapPredictionStatsResults:
+    """All map-comparison statistics generated from one prepared dataset."""
+
+    outcome: str
+    candidate_results: tuple[CandidateMapStats, ...]
+
+
+class MapPredictionDataPreparer:
+    """
+    Owns spreadsheet intake, row filtering, validation, and stats-loader creation.
+
+    Downstream comparison code should not know how rows were filtered or how the
+    spreadsheet was turned into the CCM data API. It receives only the small
+    StatsReadyMapPredictionData payload needed to run statistics.
+    """
+
+    def __init__(
+        self,
+        input_path,
+        sheet,
+        out_dir,
+        outcome_col,
+        nifti_col,
+        mask_path,
+        path_replacements=None,
+        keep_rows=None,
+        drop_rows=None,
+        covariates_list=None,
+        data_transform_method="standardize",
+        invert_outcome=False,
+        correlation="spearman",
+        similarity="cosine",
+    ):
+        self.input_path = input_path
+        self.sheet = sheet
+        self.out_dir = out_dir
+        self.outcome_col = str(outcome_col)
+        self.nifti_col = nifti_col
+        self.mask_path = mask_path
+        self.path_replacements = list(path_replacements or [])
+        self.keep_rows = list(keep_rows or [])
+        self.drop_rows = list(drop_rows or [])
+        self.covariates_list = list(covariates_list or [])
+        self.data_transform_method = data_transform_method
+        self.invert_outcome = invert_outcome
+        self.correlation = correlation
+        self.similarity = similarity
+        self.skipped_rows = []
+
+    def prepare(self):
+        """Return stats-ready data, or None when the configured outcome is unusable."""
+        os.makedirs(self.out_dir, exist_ok=True)
+        outcome_dir = os.path.join(self.out_dir, safe_name(self.outcome_col))
+        os.makedirs(outcome_dir, exist_ok=True)
+
+        cal_palm, raw_df = self._read_spreadsheet()
+        data_df = self._prepare_spreadsheet_rows(cal_palm, raw_df)
+        if not self._has_enough_data(data_df):
+            self._record_skip(data_df)
+            print(f"Skipping {self.outcome_col}: fewer than 3 usable rows or no outcome variation after filtering.")
+            return None
+
+        data_loader = SpreadsheetDataLoader(
+            data_df=data_df,
+            outcome_col=self.outcome_col,
+            nifti_col=self.nifti_col,
+            mask_path=self.mask_path,
+            covariates_list=self.covariates_list,
+            data_transform_method=self.data_transform_method,
+            dataset_name=self.outcome_col,
+        )
+        corr_map_dict = self._build_correlation_maps(data_loader)
+        return StatsReadyMapPredictionData(
+            outcome=self.outcome_col,
+            outcome_dir=outcome_dir,
+            data_loader=data_loader,
+            corr_map_dict=corr_map_dict,
+        )
+
+    def write_skips(self):
+        """Persist skip records collected during preparation."""
+        if self.skipped_rows:
+            pd.DataFrame(self.skipped_rows).to_csv(os.path.join(self.out_dir, "skipped_outcomes.csv"), index=False)
+
+    def _read_spreadsheet(self):
+        cal_palm = CalvinStatsmodelsPalm(input_csv_path=self.input_path, output_dir=self.out_dir, sheet=self.sheet)
+        return cal_palm, cal_palm.read_and_display_data()
+
+    def _prepare_spreadsheet_rows(self, cal_palm, data_df):
+        data_df = data_df.copy()
+        self._apply_path_replacements(data_df)
+        data_df = self._apply_keep_rows(data_df)
+        data_df = self._apply_outcome_inversion(data_df)
+
+        cal_palm.df = data_df
+        drop_nan_list = [self.outcome_col, self.nifti_col] + self.covariates_list
+        data_df = cal_palm.drop_nans_from_columns(columns_to_drop_from=drop_nan_list)
+
+        for column, condition, value in self.drop_rows:
             data_df, _ = cal_palm.drop_rows_based_on_value(column, condition, value)
+        return data_df
 
-    return data_df
+    def _apply_path_replacements(self, data_df):
+        for old, new in self.path_replacements:
+            data_df[self.nifti_col] = data_df[self.nifti_col].astype(str).str.replace(old, new, regex=False)
+
+    def _apply_keep_rows(self, data_df):
+        for column, value in self.keep_rows:
+            before = len(data_df)
+            data_df = data_df[data_df[column] == value].copy()
+            print(f"Keeping {column} == {value}: {len(data_df)} of {before} rows")
+        return data_df
+
+    def _apply_outcome_inversion(self, data_df):
+        if self.invert_outcome:
+            print(f"INVERT_OUTCOME=True, MULTIPLYING {self.outcome_col} BY -1")
+            data_df[self.outcome_col] = data_df[self.outcome_col] * -1
+        return data_df
+
+    def _has_enough_data(self, data_df):
+        if len(data_df) < 3:
+            return False
+        values = pd.to_numeric(data_df[self.outcome_col], errors="coerce")
+        return values.notna().sum() >= 3 and values.nunique(dropna=True) > 1
+
+    def _record_skip(self, data_df):
+        usable_values = pd.to_numeric(data_df[self.outcome_col], errors="coerce")
+        self.skipped_rows.append(
+            {
+                "outcome": self.outcome_col,
+                "rows_after_filter": len(data_df),
+                "non_null_outcome_rows": int(usable_values.notna().sum()),
+                "unique_outcome_values": int(usable_values.nunique(dropna=True)),
+                "reason": "fewer than 3 usable rows or no outcome variation after filtering",
+            }
+        )
+
+    def _build_correlation_maps(self, data_loader):
+        if self.similarity == "cosine":
+            return {self.outcome_col: np.array([0.0])}
+        correlation_calculator = CorrelationCalculator(method=self.correlation, verbose=False)
+        return correlation_calculator.generate_correlation_maps(data_loader)
 
 
-def has_enough_data(data_df, outcome):
-    """Return True when an outcome has enough rows and variation to analyze."""
-    if len(data_df) < 3:
-        return False
-    values = pd.to_numeric(data_df[outcome], errors="coerce")
-    return values.notna().sum() >= 3 and values.nunique(dropna=True) > 1
+def map_items(map_dict, label):
+    """Return explicit (name, path) map tuples from one config dictionary."""
+    if not isinstance(map_dict, dict):
+        raise TypeError(f"{label} must be a dictionary: {{'Map Name': '/path/to/map.nii.gz'}}")
+    if not map_dict:
+        raise ValueError(f"{label} is empty.")
+    return [(str(name), str(path)) for name, path in map_dict.items()]
 
 
-def normalize_maps(map_list, name_list=None):
-    """Return a list of (name, path) tuples from dict or list config."""
-    if isinstance(map_list, dict):
-        return [(str(name), str(path)) for name, path in map_list.items()]
-
-    if name_list is not None and len(name_list) != len(map_list):
-        raise ValueError("Name list must match map list length.")
-
-    normalized = []
-    for i, path in enumerate(map_list):
-        name = str(name_list[i]) if name_list is not None else Path(str(path)).name.split(".nii")[0]
-        normalized.append((name, str(path)))
-    return normalized
-
-
-def normalize_new_maps_by_outcome():
-    """Return [(outcome, [(map_name, map_path), ...]), ...] from flat or nested config."""
-    if EXPAND_OUTCOME_GROUPS:
-        return [(str(outcome), normalize_maps(maps)) for outcome, maps in build_expanded_outcome_maps().items()]
-
-    if isinstance(NEW_MAPS_LIST, dict):
-        if all(isinstance(value, dict) for value in NEW_MAPS_LIST.values()):
-            return [(str(outcome), normalize_maps(maps)) for outcome, maps in NEW_MAPS_LIST.items()]
-        if not OUTCOME_LIST:
-            raise ValueError("Flat NEW_MAPS_LIST requires OUTCOME_LIST. Prefer {'DV': {'Map Name': '/path'}}.")
-        return [(str(outcome), normalize_maps(NEW_MAPS_LIST, NEW_MAP_NAMES)) for outcome in OUTCOME_LIST]
-
-    if not OUTCOME_LIST:
-        raise ValueError("List NEW_MAPS_LIST requires OUTCOME_LIST. Prefer {'DV': {'Map Name': '/path'}}.")
-    return [(str(outcome), normalize_maps(NEW_MAPS_LIST, NEW_MAP_NAMES)) for outcome in OUTCOME_LIST]
-
-
-def build_expanded_outcome_maps():
-    """Build outcome-to-map config from spreadsheet columns and OUTCOME_GROUP_MAPS."""
-    columns = pd.read_csv(INPUT_PATH, nrows=0).columns
-    expanded = {}
-    for pattern, maps in OUTCOME_GROUP_MAPS.items():
-        matched_columns = [
-            col for col in columns
-            if col == pattern or col.lower().startswith(f"{str(pattern).lower()}_")
-        ]
-        for col in matched_columns:
-            expanded[col] = maps
-    if not expanded:
-        raise ValueError("EXPAND_OUTCOME_GROUPS=True, but no spreadsheet columns matched OUTCOME_GROUP_MAPS.")
-    return expanded
+def comparator_items(map_paths):
+    """Return (derived_name, path) tuples from a simple list of comparator paths."""
+    if not isinstance(map_paths, list):
+        raise TypeError("COMPARATOR_MAPS must be a list: ['/path/to/map1.nii.gz', '/path/to/map2.nii.gz']")
+    if not map_paths:
+        raise ValueError("COMPARATOR_MAPS is empty.")
+    return [
+        (Path(str(path)).name.replace(".nii.gz", "_nii_gz").replace(".nii", "_nii"), str(path))
+        for path in map_paths
+    ]
 
 
 def safe_name(value):
     """Make a readable string safe for output paths."""
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value)).strip("_")
-
-
-def build_correlation_maps(data_loader):
-    """Generate the CCM correlation-map dictionary from spreadsheet-loaded data."""
-    correlation_calculator = CorrelationCalculator(method=CORRELATION, verbose=False)
-    return correlation_calculator.generate_correlation_maps(data_loader)
 
 
 def load_masked_map(map_path, mask_path):
@@ -370,7 +429,7 @@ def cosine_similarity_matrix(niftis, roi_map):
     return numerator / (denominator + 1e-8)
 
 
-def correlate_vectors(x, y):
+def correlate_vectors(x, y, correlation):
     """Correlate vectors using the configured outcome-correlation method."""
     x = np.asarray(x, dtype=float)
     y = np.asarray(y, dtype=float)
@@ -381,9 +440,9 @@ def correlate_vectors(x, y):
     y = y[mask]
     if np.nanstd(x) == 0 or np.nanstd(y) == 0:
         return 0.0
-    if CORRELATION == "pearson":
+    if correlation == "pearson":
         return pearsonr(x, y)[0]
-    if CORRELATION == "spearman":
+    if correlation == "spearman":
         return spearmanr(x, y, nan_policy="omit")[0]
     raise ValueError("CORRELATION must be 'pearson' or 'spearman' for map comparisons.")
 
@@ -401,10 +460,10 @@ def shuffle_for_comparison(sim1, sim2, y, method):
     raise ValueError("RESAMPLE_METHOD must be 'bootstrap' or 'permutation'.")
 
 
-def compute_comparison_stats(sim1, sim2, y, method, n_iter, delta_r2):
+def compute_comparison_stats(sim1, sim2, y, method, n_iter, delta_r2, correlation):
     """Compute observed and resampled map-prediction statistics from precomputed similarities."""
-    observed_stat1 = correlate_vectors(sim1, y)
-    observed_stat2 = correlate_vectors(sim2, y)
+    observed_stat1 = correlate_vectors(sim1, y, correlation)
+    observed_stat2 = correlate_vectors(sim2, y, correlation)
     if delta_r2:
         observed_stat1 = observed_stat1 ** 2
         observed_stat2 = observed_stat2 ** 2
@@ -415,8 +474,8 @@ def compute_comparison_stats(sim1, sim2, y, method, n_iter, delta_r2):
     with tqdm(total=n_iter) as pbar:
         while iter_count < n_iter:
             sub_sim1, sub_sim2, sub_y = shuffle_for_comparison(sim1, sim2, y, method)
-            stat1 = correlate_vectors(sub_sim1, sub_y)
-            stat2 = correlate_vectors(sub_sim2, sub_y)
+            stat1 = correlate_vectors(sub_sim1, sub_y, correlation)
+            stat2 = correlate_vectors(sub_sim2, sub_y, correlation)
             if np.isnan(stat1) or np.isnan(stat2):
                 continue
             if delta_r2:
@@ -442,153 +501,239 @@ def is_variable_vector(arr):
     return arr.size >= 3 and np.nanstd(arr) > 0
 
 
-def run_fast_cosine_comparison(outcome, data_loader, map1_name, map_one, map2_name, map_two):
-    """Run the cosine comparison without recomputing voxelwise similarities per resample."""
-    data = data_loader.load_dataset(data_loader.dataset_names_list[0])
-    niftis = CorrelationCalculator._check_for_nans(data["niftis"], nanpolicy="remove", verbose=False)
-    y = CorrelationCalculator._check_for_nans(data["indep_var"], nanpolicy="remove", verbose=False).flatten()
-    roi1_map = CorrelationCalculator._check_for_nans(load_masked_map(map_one, MASK_PATH), nanpolicy="remove", verbose=False)
-    roi2_map = CorrelationCalculator._check_for_nans(load_masked_map(map_two, MASK_PATH), nanpolicy="remove", verbose=False)
+class MapPredictionStatsRunner:
+    """Runs map-prediction statistics and returns only stats artifacts."""
 
-    sim1 = cosine_similarity_matrix(niftis, roi1_map)
-    sim2 = cosine_similarity_matrix(niftis, roi2_map)
-    stats = compute_comparison_stats(sim1, sim2, y, RESAMPLE_METHOD, N_ITER, DELTA_R2)
-    return sim1, sim2, y, stats
+    def __init__(
+        self,
+        candidate_maps,
+        comparator_maps,
+        *,
+        mask_path,
+        similarity,
+        correlation,
+        resample_method,
+        n_iter,
+        seed,
+        delta_r2,
+        skip_existing,
+        y_label=None,
+    ):
+        self.candidate_maps = tuple(candidate_maps)
+        self.comparator_maps = tuple(comparator_maps)
+        self.mask_path = mask_path
+        self.similarity = similarity
+        self.correlation = correlation
+        self.resample_method = resample_method
+        self.n_iter = n_iter
+        self.seed = seed
+        self.delta_r2 = delta_r2
+        self.skip_existing = skip_existing
+        self.y_label = y_label
 
+    def run_stats(self, prepared_data):
+        if prepared_data is None:
+            return MapPredictionStatsResults(outcome="", candidate_results=())
 
-def run_single_comparison(outcome, data_loader, corr_map_dict, map1_name, map_one, map2_name, map_two, map_out_dir):
-    """Run the resampling comparison and save individual visualizations."""
-    comparison_name = f"{safe_name(outcome)}__{safe_name(map1_name)}-vs-{safe_name(map2_name)}"
-    comparison_out_dir = os.path.join(map_out_dir, comparison_name)
-    if SKIP_EXISTING and os.path.isdir(comparison_out_dir):
-        print(f"Skipping existing comparison: {comparison_out_dir}")
-        return None
+        candidate_results = []
+        for candidate_name, candidate_path in self.candidate_maps:
+            candidate_out_dir = os.path.join(prepared_data.outcome_dir, safe_name(candidate_name))
+            os.makedirs(candidate_out_dir, exist_ok=True)
+            comparisons = []
 
-    os.makedirs(comparison_out_dir, exist_ok=True)
-    np.random.seed(SEED)
+            for comparator_name, comparator_path in self.comparator_maps:
+                print("Comparing maps: ", candidate_name, " vs ", comparator_name)
+                comparison = self._run_single_comparison(
+                    prepared_data,
+                    candidate_name,
+                    candidate_path,
+                    comparator_name,
+                    comparator_path,
+                    candidate_out_dir,
+                )
+                if comparison is not None:
+                    comparisons.append(comparison)
 
-    if SIMILARITY == "cosine":
-        observed_x1, observed_x2, observed_y, stats = run_fast_cosine_comparison(outcome, data_loader, map1_name, map_one, map2_name, map_two)
-        r_values = {"roi1": stats["stat1_values"], "roi2": stats["stat2_values"]}
-        observed_r_values = {"roi1": [stats["observed_stat1"]], "roi2": [stats["observed_stat2"]]}
-    else:
+            if comparisons:
+                candidate_results.append(
+                    CandidateMapStats(
+                        candidate_name=candidate_name,
+                        candidate_out_dir=candidate_out_dir,
+                        comparisons=tuple(comparisons),
+                        summary_df=pd.concat([item.summary_df for item in comparisons], ignore_index=True),
+                        resample_df=pd.concat([item.resample_df for item in comparisons], ignore_index=True),
+                    )
+                )
+
+        return MapPredictionStatsResults(
+            outcome=prepared_data.outcome,
+            candidate_results=tuple(candidate_results),
+        )
+
+    def _run_single_comparison(self, prepared_data, candidate_name, candidate_path, comparator_name, comparator_path, candidate_out_dir):
+        comparison_name = f"{safe_name(prepared_data.outcome)}__{safe_name(candidate_name)}-vs-{safe_name(comparator_name)}"
+        comparison_out_dir = os.path.join(candidate_out_dir, comparison_name)
+        if self.skip_existing and os.path.isdir(comparison_out_dir):
+            print(f"Skipping existing comparison: {comparison_out_dir}")
+            return None
+
+        os.makedirs(comparison_out_dir, exist_ok=True)
+        np.random.seed(self.seed)
+
+        if self.similarity == "cosine":
+            observed_x1, observed_x2, observed_y, stats = self._run_fast_cosine_comparison(
+                prepared_data.data_loader,
+                candidate_path,
+                comparator_path,
+            )
+            r_values = {"roi1": stats["stat1_values"], "roi2": stats["stat2_values"]}
+            observed_r_values = {"roi1": [stats["observed_stat1"]], "roi2": [stats["observed_stat2"]]}
+        else:
+            observed_x1, observed_x2, observed_y, r_values, observed_r_values = self._run_loocv_comparison(
+                prepared_data,
+                candidate_path,
+                comparator_path,
+                comparison_out_dir,
+            )
+
+        summary_df, resample_df = self._build_result_tables(
+            prepared_data.outcome,
+            prepared_data.data_loader,
+            candidate_name,
+            comparator_name,
+            comparison_out_dir,
+            r_values,
+            observed_r_values,
+        )
+        summary_df.to_csv(os.path.join(comparison_out_dir, "observed_comparison_values.csv"), index=False)
+        resample_df.to_csv(os.path.join(comparison_out_dir, "resampled_comparison_values.csv"), index=False)
+
+        return MapComparisonStats(
+            outcome=prepared_data.outcome,
+            candidate_name=candidate_name,
+            comparator_name=comparator_name,
+            comparison_out_dir=comparison_out_dir,
+            summary_df=summary_df,
+            resample_df=resample_df,
+            observed_x1=np.asarray(observed_x1, dtype=float),
+            observed_x2=np.asarray(observed_x2, dtype=float),
+            observed_y=np.asarray(observed_y, dtype=float),
+            r_values=r_values,
+            observed_r_values=observed_r_values,
+        )
+
+    def _run_fast_cosine_comparison(self, data_loader, candidate_path, comparator_path):
+        data = data_loader.load_dataset(data_loader.dataset_names_list[0])
+        niftis = CorrelationCalculator._check_for_nans(data["niftis"], nanpolicy="remove", verbose=False)
+        y = CorrelationCalculator._check_for_nans(data["indep_var"], nanpolicy="remove", verbose=False).flatten()
+        roi1_map = CorrelationCalculator._check_for_nans(load_masked_map(candidate_path, self.mask_path), nanpolicy="remove", verbose=False)
+        roi2_map = CorrelationCalculator._check_for_nans(load_masked_map(comparator_path, self.mask_path), nanpolicy="remove", verbose=False)
+
+        sim1 = cosine_similarity_matrix(niftis, roi1_map)
+        sim2 = cosine_similarity_matrix(niftis, roi2_map)
+        stats = compute_comparison_stats(
+            sim1,
+            sim2,
+            y,
+            self.resample_method,
+            self.n_iter,
+            self.delta_r2,
+            self.correlation,
+        )
+        return sim1, sim2, y, stats
+
+    def _run_loocv_comparison(self, prepared_data, candidate_path, comparator_path, comparison_out_dir):
         loocv_analyzer = LOOCVAnalyzer(
-            corr_map_dict,
-            data_loader,
-            similarity=SIMILARITY,
-            method=CORRELATION,
+            prepared_data.corr_map_dict,
+            prepared_data.data_loader,
+            similarity=self.similarity,
+            method=self.correlation,
             out_dir=comparison_out_dir,
-            mask_path=MASK_PATH,
+            mask_path=self.mask_path,
             roi_path=None,
-            ylabel=Y_LABEL or outcome,
+            ylabel=self.y_label or prepared_data.outcome,
         )
         loocv_analyzer.compare_roi_correlations(
-            roi1=map_one,
-            roi2=map_two,
-            method=RESAMPLE_METHOD,
-            n_iter=N_ITER,
-            seed=SEED,
-            delta_r2=DELTA_R2,
+            roi1=candidate_path,
+            roi2=comparator_path,
+            method=self.resample_method,
+            n_iter=self.n_iter,
+            seed=self.seed,
+            delta_r2=self.delta_r2,
         )
-        observed_x1 = loocv_analyzer.observed_x1
-        observed_x2 = loocv_analyzer.observed_x2
-        observed_y = loocv_analyzer.observed_y
-        r_values = loocv_analyzer.r_values
-        observed_r_values = loocv_analyzer.observed_r_values
-
-    if DRAW_INDIVIDUAL_PLOTS:
-        visualizer = PairSuperiorityPlot(
-            stat_array_1=np.array(r_values["roi1"]),
-            stat_array_2=np.array(r_values["roi2"]),
-            model1_name=map1_name,
-            model2_name=map2_name,
-            out_dir=comparison_out_dir,
-            observed_stat_array=[
-                np.array(observed_r_values["roi1"]),
-                np.array(observed_r_values["roi2"]),
-            ],
-            method=RESAMPLE_METHOD,
+        return (
+            loocv_analyzer.observed_x1,
+            loocv_analyzer.observed_x2,
+            loocv_analyzer.observed_y,
+            loocv_analyzer.r_values,
+            loocv_analyzer.observed_r_values,
         )
-        visualizer.draw(verbose=False)
-        plt.close("all")
 
-        if is_variable_vector(observed_x1) and is_variable_vector(observed_x2) and is_variable_vector(observed_y):
-            vis = DeltaCorrelationScatter(
-                x_array_1=observed_x1,
-                x_array_2=observed_x2,
-                y_array=observed_y,
-                y_label=Y_LABEL or outcome,
-                label_1=map1_name,
-                label_2=map2_name,
-                stat_label="r",
-                out_dir=comparison_out_dir,
-                method=CORRELATION,
-            )
-            vis.draw(show=False)
-            plt.close("all")
-        else:
-            skip_reason = (
-                "Skipped DeltaCorrelationScatter because at least one observed "
-                "similarity/outcome vector was constant or had fewer than 3 finite values.\n"
-            )
-            with open(os.path.join(comparison_out_dir, "delta_scatterplot_skipped.txt"), "w") as f:
-                f.write(skip_reason)
-            print(skip_reason.strip())
+    @staticmethod
+    def _build_result_tables(outcome, data_loader, candidate_name, comparator_name, comparison_out_dir, r_values, observed_r_values):
+        new_observed = np.asarray(observed_r_values["roi1"], dtype=float)
+        old_observed = np.asarray(observed_r_values["roi2"], dtype=float)
+        new_resampled = np.asarray(r_values["roi1"], dtype=float)
+        old_resampled = np.asarray(r_values["roi2"], dtype=float)
 
-    new_observed = np.asarray(observed_r_values["roi1"], dtype=float)
-    old_observed = np.asarray(observed_r_values["roi2"], dtype=float)
-    new_resampled = np.asarray(r_values["roi1"], dtype=float)
-    old_resampled = np.asarray(r_values["roi2"], dtype=float)
+        summary_rows = []
+        for dataset_idx, dataset_name in enumerate(data_loader.dataset_names_list):
+            if dataset_idx < len(new_observed) and dataset_idx < len(old_observed):
+                summary_rows.append(
+                    {
+                        "outcome": outcome,
+                        "dataset": dataset_name,
+                        "new_map": candidate_name,
+                        "old_map": comparator_name,
+                        "new_observed_stat": new_observed[dataset_idx],
+                        "old_observed_stat": old_observed[dataset_idx],
+                        "delta_observed_stat": new_observed[dataset_idx] - old_observed[dataset_idx],
+                        "comparison_out_dir": comparison_out_dir,
+                    }
+                )
 
-    summary_rows = []
-    for dataset_idx, dataset_name in enumerate(data_loader.dataset_names_list):
-        if dataset_idx < len(new_observed) and dataset_idx < len(old_observed):
-            summary_rows.append(
-                {
-                    "outcome": outcome,
-                    "dataset": dataset_name,
-                    "new_map": map1_name,
-                    "old_map": map2_name,
-                    "new_observed_stat": new_observed[dataset_idx],
-                    "old_observed_stat": old_observed[dataset_idx],
-                    "delta_observed_stat": new_observed[dataset_idx] - old_observed[dataset_idx],
-                    "comparison_out_dir": comparison_out_dir,
-                }
-            )
-
-    resample_df = pd.DataFrame(
-        {
-            "outcome": outcome,
-            "new_map": map1_name,
-            "old_map": map2_name,
-            "new_resampled_stat": new_resampled,
-            "old_resampled_stat": old_resampled,
-            "delta_resampled_stat": new_resampled - old_resampled,
-        }
-    )
-    resample_df.to_csv(os.path.join(comparison_out_dir, "resampled_comparison_values.csv"), index=False)
-
-    summary_df = pd.DataFrame(summary_rows)
-    summary_df.to_csv(os.path.join(comparison_out_dir, "observed_comparison_values.csv"), index=False)
-    return summary_df, resample_df
+        summary_df = pd.DataFrame(summary_rows)
+        resample_df = pd.DataFrame(
+            {
+                "outcome": outcome,
+                "new_map": candidate_name,
+                "old_map": comparator_name,
+                "new_resampled_stat": new_resampled,
+                "old_resampled_stat": old_resampled,
+                "delta_resampled_stat": new_resampled - old_resampled,
+            }
+        )
+        return summary_df, resample_df
 
 
 def plot_bootstrapped_performance_distribution(resample_df, aggregate_dir):
-    """Plot one bootstrap R/R2 distribution for each tested map."""
+    """Plot per-map bootstrap distributions and return pooled candidate/comparator values."""
     if resample_df.empty:
-        return
+        return np.array([], dtype=float), np.array([], dtype=float)
 
-    rows = []
     first_old_map = resample_df["old_map"].iloc[0]
     new_map_name = resample_df["new_map"].iloc[0]
-    new_values = resample_df.loc[resample_df["old_map"] == first_old_map, "new_resampled_stat"].dropna()
-    rows += [{"map": new_map_name, "type": "new", "value": value} for value in new_values]
+    candidate_values = (
+        pd.to_numeric(
+            resample_df.loc[resample_df["old_map"] == first_old_map, "new_resampled_stat"],
+            errors="coerce",
+        )
+        .dropna()
+        .to_numpy(dtype=float)
+    )
+    rows = [{"map": new_map_name, "type": "new", "value": value} for value in candidate_values]
     for old_map, old_df in resample_df.groupby("old_map", sort=False):
-        rows += [{"map": old_map, "type": "prior", "value": value} for value in old_df["old_resampled_stat"].dropna()]
+        old_values = pd.to_numeric(old_df["old_resampled_stat"], errors="coerce").dropna()
+        rows += [{"map": old_map, "type": "prior", "value": value} for value in old_values]
 
+    pooled_comparator_values = (
+        pd.to_numeric(resample_df["old_resampled_stat"], errors="coerce")
+        .dropna()
+        .to_numpy(dtype=float)
+    )
     plot_df = pd.DataFrame(rows)
     if plot_df.empty:
-        return
+        return candidate_values, pooled_comparator_values
 
     means = plot_df.groupby("map")["value"].mean()
     old_order = [map_name for map_name in means.sort_values(ascending=False).index if map_name != new_map_name]
@@ -614,14 +759,12 @@ def plot_bootstrapped_performance_distribution(resample_df, aggregate_dir):
         patch.set_edgecolor(color)
         patch.set_alpha(0.9)
 
-    prior_values = plot_df.loc[plot_df["type"] == "prior", "value"].to_numpy(dtype=float)
-    new_values = plot_df.loc[plot_df["type"] == "new", "value"].to_numpy(dtype=float)
-    t_stat, p_val = ttest_ind(new_values, prior_values, equal_var=False)
-    delta = float(np.mean(new_values) - np.mean(prior_values))
+    t_stat, p_val = ttest_ind(candidate_values, pooled_comparator_values, equal_var=False)
+    delta = float(np.mean(candidate_values) - np.mean(pooled_comparator_values))
     ax.text(
         0.98,
         0.04,
-        f"New vs pooled priors\nMean delta = {delta:.4f}\nt = {t_stat:.2f}, p = {p_val:.2e}",
+        f"Candidate vs pooled comparators\nMean delta = {delta:.4f}\nt = {t_stat:.2f}, p = {p_val:.2e}",
         transform=ax.transAxes,
         ha="right",
         va="bottom",
@@ -638,45 +781,160 @@ def plot_bootstrapped_performance_distribution(resample_df, aggregate_dir):
     fig.tight_layout()
     fig.savefig(os.path.join(aggregate_dir, "overall_resampled_performance_distribution.svg"), bbox_inches="tight")
     plt.close(fig)
+    return candidate_values, pooled_comparator_values
 
 
 def plot_overall_results(summary_df, resample_df, map_out_dir):
-    """Plot the aggregate new-map vs old-map performance across all comparisons."""
+    """Plot the aggregate candidate-map vs comparator-map performance."""
     aggregate_dir = os.path.join(map_out_dir, "aggregate")
     os.makedirs(aggregate_dir, exist_ok=True)
 
     summary_df.to_csv(os.path.join(aggregate_dir, "observed_comparison_summary.csv"), index=False)
     resample_df.to_csv(os.path.join(aggregate_dir, "resampled_comparison_summary.csv"), index=False)
+    candidate_values, pooled_comparator_values = plot_bootstrapped_performance_distribution(resample_df, aggregate_dir)
 
-    plotter = SimpleBoxPlotWrapper(summary_df)
-    plotter.plot(
-        columns=["delta_observed_stat"],
-        dataset_name="New Map Minus Prior Maps",
-        group_labels=["Delta"],
-        out_dir=os.path.join(aggregate_dir, "overall_observed_delta_boxplot.svg"),
-        ylabel="Delta R2" if DELTA_R2 else "Delta r",
+    pooled_distribution_df = pd.DataFrame(
+        {
+            "candidate_map": pd.Series(candidate_values, dtype=float),
+            "comparator_maps": pd.Series(pooled_comparator_values, dtype=float),
+        }
     )
-
-    plotter = SimpleBoxPlotWrapper(summary_df)
+    pooled_distribution_df.to_csv(os.path.join(aggregate_dir, "pooled_bootstrap_distributions.csv"), index=False)
+    plotter = SimpleBoxPlotWrapper(pooled_distribution_df)
     plotter.plot(
-        columns=[("new_observed_stat", "old_observed_stat")],
-        dataset_name="New Map vs Prior Maps",
-        group_labels=["Observed"],
-        pair_names=["New map", "Prior maps"],
-        out_dir=os.path.join(aggregate_dir, "overall_observed_pair_boxplot.svg"),
+        columns=[("candidate_map", "comparator_maps")],
+        dataset_name="Candidate Map vs Pooled Comparator Maps",
+        group_labels=["Bootstrap"],
+        pair_names=["Candidate map", "Comparator maps"],
+        out_dir=os.path.join(aggregate_dir, "new_vs_other_map_boxplot.svg"),
         ylabel="R2" if DELTA_R2 else "r",
     )
 
-    plot_bootstrapped_performance_distribution(resample_df, aggregate_dir)
 
-    plotter = SimpleBoxPlotWrapper(resample_df)
-    plotter.plot(
-        columns=["delta_resampled_stat"],
-        dataset_name="Resampled New Map Minus Prior Maps",
-        group_labels=["Delta"],
-        out_dir=os.path.join(aggregate_dir, "overall_resampled_delta_boxplot.svg"),
-        ylabel="Delta R2" if DELTA_R2 else "Delta r",
-    )
+class MapPredictionFigurePlotter:
+    """Draws figures and top-level reports from already-computed stats."""
+
+    def __init__(
+        self,
+        *,
+        out_dir,
+        correlation,
+        resample_method,
+        delta_r2,
+        n_iter,
+        y_label=None,
+        draw_individual=True,
+        draw_aggregate=True,
+    ):
+        self.out_dir = out_dir
+        self.correlation = correlation
+        self.resample_method = resample_method
+        self.delta_r2 = delta_r2
+        self.n_iter = n_iter
+        self.y_label = y_label
+        self.draw_individual = draw_individual
+        self.draw_aggregate = draw_aggregate
+
+    def plot_figures(self, stats_results):
+        for candidate_result in stats_results.candidate_results:
+            self._plot_candidate_scatter(candidate_result)
+            if self.draw_individual:
+                for comparison in candidate_result.comparisons:
+                    self._plot_individual_comparison(comparison)
+            self._plot_candidate_aggregate(candidate_result)
+        write_outperformance_reports(self.out_dir)
+
+    def _plot_candidate_scatter(self, candidate_result):
+        if not candidate_result.comparisons:
+            return
+
+        comparison = candidate_result.comparisons[0]
+        scatter_dir = os.path.join(candidate_result.candidate_out_dir, "candidate_scatter")
+        os.makedirs(scatter_dir, exist_ok=True)
+
+        if not (is_variable_vector(comparison.observed_x1) and is_variable_vector(comparison.observed_y)):
+            skip_reason = (
+                "Skipped SimpleScatterPlot because the candidate prediction or outcome "
+                "vector was constant or had fewer than 3 finite values.\n"
+            )
+            with open(os.path.join(scatter_dir, "simple_scatterplot_skipped.txt"), "w") as f:
+                f.write(skip_reason)
+            print(skip_reason.strip())
+            return
+
+        scatter_df = pd.DataFrame(
+            {
+                "candidate_prediction": comparison.observed_x1,
+                "outcome": comparison.observed_y,
+            }
+        )
+        scatter_df.to_csv(os.path.join(scatter_dir, "candidate_prediction_vs_outcome.csv"), index=False)
+
+        plotter = SimpleScatterPlotWrapper(scatter_df)
+        plotter.plot(
+            x_col="candidate_prediction",
+            y_col="outcome",
+            dataset_name=f"{safe_name(candidate_result.candidate_name)}_prediction_vs_{safe_name(comparison.outcome)}",
+            out_dir=scatter_dir,
+            x_label=f"{candidate_result.candidate_name} prediction",
+            y_label=self.y_label or comparison.outcome,
+            show=False,
+        )
+        plt.close("all")
+
+    def _plot_individual_comparison(self, comparison):
+        visualizer = PairSuperiorityPlot(
+            stat_array_1=np.array(comparison.r_values["roi1"]),
+            stat_array_2=np.array(comparison.r_values["roi2"]),
+            model1_name=comparison.candidate_name,
+            model2_name=comparison.comparator_name,
+            out_dir=comparison.comparison_out_dir,
+            observed_stat_array=[
+                np.array(comparison.observed_r_values["roi1"]),
+                np.array(comparison.observed_r_values["roi2"]),
+            ],
+            method=self.resample_method,
+        )
+        visualizer.draw(verbose=False)
+        plt.close("all")
+
+        if (
+            is_variable_vector(comparison.observed_x1)
+            and is_variable_vector(comparison.observed_x2)
+            and is_variable_vector(comparison.observed_y)
+        ):
+            vis = DeltaCorrelationScatter(
+                x_array_1=comparison.observed_x1,
+                x_array_2=comparison.observed_x2,
+                y_array=comparison.observed_y,
+                y_label=self.y_label or comparison.outcome,
+                label_1=comparison.candidate_name,
+                label_2=comparison.comparator_name,
+                stat_label="r",
+                out_dir=comparison.comparison_out_dir,
+                method=self.correlation,
+            )
+            vis.draw(show=False)
+            plt.close("all")
+            return
+
+        skip_reason = (
+            "Skipped DeltaCorrelationScatter because at least one observed "
+            "similarity/outcome vector was constant or had fewer than 3 finite values.\n"
+        )
+        with open(os.path.join(comparison.comparison_out_dir, "delta_scatterplot_skipped.txt"), "w") as f:
+            f.write(skip_reason)
+        print(skip_reason.strip())
+
+    def _plot_candidate_aggregate(self, candidate_result):
+        if self.draw_aggregate:
+            plot_overall_results(candidate_result.summary_df, candidate_result.resample_df, candidate_result.candidate_out_dir)
+            return
+
+        aggregate_dir = os.path.join(candidate_result.candidate_out_dir, "aggregate")
+        os.makedirs(aggregate_dir, exist_ok=True)
+        candidate_result.summary_df.to_csv(os.path.join(aggregate_dir, "observed_comparison_summary.csv"), index=False)
+        candidate_result.resample_df.to_csv(os.path.join(aggregate_dir, "resampled_comparison_summary.csv"), index=False)
 
 
 def summarize_distribution(values, prefix):
@@ -839,83 +1097,67 @@ def write_outperformance_reports(out_dir):
     print(f"Wrote top-level reports to {out_dir}")
 
 
-def main():
-    analyses = normalize_new_maps_by_outcome()
-    old_maps = normalize_maps(OLD_MAPS_LIST, OLD_MAP_NAMES)
-    if not analyses:
-        raise ValueError("NEW_MAPS_LIST is empty. Add at least one DV-specific new localization map.")
-    if not old_maps:
-        raise ValueError("OLD_MAPS_LIST is empty. Add at least one prior-work map.")
+class MapPredictionAnalysis:
+    """Top-level workflow: prep data, run stats, then plot figures."""
 
-    cal_palm, raw_df = read_spreadsheet(OUT_DIR)
-    skipped_rows = []
-
-    for outcome, new_maps in analyses:
-        print("Running outcome: ", outcome)
-        outcome_dir = os.path.join(OUT_DIR, safe_name(outcome))
-        os.makedirs(outcome_dir, exist_ok=True)
-        if not new_maps:
-            print(f"No new maps configured for {outcome}. Skipping.")
-            continue
-
-        data_df = prepare_data(cal_palm, raw_df, outcome)
-        if not has_enough_data(data_df, outcome):
-            usable_values = pd.to_numeric(data_df[outcome], errors="coerce")
-            skipped_rows.append(
-                {
-                    "outcome": outcome,
-                    "rows_after_filter": len(data_df),
-                    "non_null_outcome_rows": int(usable_values.notna().sum()),
-                    "unique_outcome_values": int(usable_values.nunique(dropna=True)),
-                    "reason": "fewer than 3 usable rows or no outcome variation after filtering",
-                }
-            )
-            print(f"Skipping {outcome}: fewer than 3 usable rows or no outcome variation after filtering.")
-            continue
-
-        data_loader = SpreadsheetDataLoader(
-            data_df=data_df,
-            outcome_col=outcome,
+    def __init__(self):
+        self.preparer = MapPredictionDataPreparer(
+            input_path=INPUT_PATH,
+            sheet=SHEET,
+            out_dir=OUT_DIR,
+            outcome_col=SYMPTOM_COLUMN,
             nifti_col=NIFTI_COL,
             mask_path=MASK_PATH,
+            path_replacements=PATH_REPLACEMENTS,
+            keep_rows=KEEP_ROWS,
+            drop_rows=DROP_ROWS,
             covariates_list=COVARIATES_LIST,
             data_transform_method=DATA_TRANSFORM_METHOD,
-            dataset_name=outcome,
+            invert_outcome=INVERT_OUTCOME,
+            correlation=CORRELATION,
+            similarity=SIMILARITY,
         )
-        if SIMILARITY == "cosine":
-            corr_map_dict = {outcome: np.array([0.0])}
-        else:
-            corr_map_dict = build_correlation_maps(data_loader)
+        self.stats_runner = MapPredictionStatsRunner(
+            map_items(CANDIDATE_MAPS, "CANDIDATE_MAPS"),
+            comparator_items(COMPARATOR_MAPS),
+            mask_path=MASK_PATH,
+            similarity=SIMILARITY,
+            correlation=CORRELATION,
+            resample_method=RESAMPLE_METHOD,
+            n_iter=N_ITER,
+            seed=SEED,
+            delta_r2=DELTA_R2,
+            skip_existing=SKIP_EXISTING,
+            y_label=Y_LABEL,
+        )
+        self.figure_plotter = MapPredictionFigurePlotter(
+            out_dir=OUT_DIR,
+            correlation=CORRELATION,
+            resample_method=RESAMPLE_METHOD,
+            delta_r2=DELTA_R2,
+            n_iter=N_ITER,
+            y_label=Y_LABEL,
+            draw_individual=DRAW_INDIVIDUAL_PLOTS,
+            draw_aggregate=DRAW_AGGREGATE_PLOTS,
+        )
 
-        for map1_name, map_one in new_maps:
-            map_out_dir = os.path.join(outcome_dir, safe_name(map1_name))
-            os.makedirs(map_out_dir, exist_ok=True)
-            map_summary_dfs = []
-            map_resample_dfs = []
+    def prep_data(self):
+        print("Running symptom: ", self.preparer.outcome_col)
+        return self.preparer.prepare()
 
-            for map2_name, map_two in old_maps:
-                print("Comparing maps: ", map1_name, " vs ", map2_name)
-                result = run_single_comparison(outcome, data_loader, corr_map_dict, map1_name, map_one, map2_name, map_two, map_out_dir)
-                if result is None:
-                    continue
-                summary_df, resample_df = result
-                map_summary_dfs.append(summary_df)
-                map_resample_dfs.append(resample_df)
+    def run_stats(self, prepared_data):
+        return self.stats_runner.run_stats(prepared_data)
 
-            if map_summary_dfs and map_resample_dfs:
-                map_summary_df = pd.concat(map_summary_dfs, ignore_index=True)
-                map_resample_df = pd.concat(map_resample_dfs, ignore_index=True)
-                if DRAW_AGGREGATE_PLOTS:
-                    plot_overall_results(map_summary_df, map_resample_df, map_out_dir)
-                else:
-                    aggregate_dir = os.path.join(map_out_dir, "aggregate")
-                    os.makedirs(aggregate_dir, exist_ok=True)
-                    map_summary_df.to_csv(os.path.join(aggregate_dir, "observed_comparison_summary.csv"), index=False)
-                    map_resample_df.to_csv(os.path.join(aggregate_dir, "resampled_comparison_summary.csv"), index=False)
+    def plot_figures(self, stats_results):
+        self.preparer.write_skips()
+        self.figure_plotter.plot_figures(stats_results)
 
-    if skipped_rows:
-        pd.DataFrame(skipped_rows).to_csv(os.path.join(OUT_DIR, "skipped_outcomes.csv"), index=False)
-    write_outperformance_reports(OUT_DIR)
+
+def main():
+    analysis = MapPredictionAnalysis()
+    prepared_data = analysis.prep_data()
+    stats_results = analysis.run_stats(prepared_data)
+    analysis.plot_figures(stats_results)
 
 
 if __name__ == "__main__":

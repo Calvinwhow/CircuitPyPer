@@ -1,18 +1,39 @@
 import os
 import json
 import numpy as np
+if not hasattr(np, "sctypes"):
+    np.sctypes = {
+        "int": [np.int8, np.int16, np.int32, np.int64],
+        "uint": [np.uint8, np.uint16, np.uint32, np.uint64],
+        "float": [np.float16, np.float32, np.float64],
+        "complex": [np.complex64, np.complex128],
+        "others": [np.bool_, np.bytes_, np.str_, np.object_],
+    }
+if not hasattr(np, "maximum_sctype"):
+    def _maximum_sctype(t):
+        dtype = np.dtype(t)
+        if np.issubdtype(dtype, np.complexfloating):
+            return np.complex128
+        if np.issubdtype(dtype, np.floating):
+            return np.float64
+        if np.issubdtype(dtype, np.unsignedinteger):
+            return np.uint64
+        if np.issubdtype(dtype, np.integer):
+            return np.int64
+        return dtype.type
+
+    np.maximum_sctype = _maximum_sctype
 import pandas as pd
-import matplotlib.pyplot as plt
 from tqdm import tqdm
 import nibabel as nib
 from scipy.stats import t
 import statsmodels.api as sm
 from scipy.special import expit
 from calvin_utils.file_utils.import_functions import GiiNiiFileImport
-from calvin_utils.statistical_utils.scatterplot import simple_scatter
 from calvin_utils.neuroimaging_utils.ccm_utils.npy_utils import DataLoader
 from calvin_utils.neuroimaging_utils.nifti_utils.damage_score_utils import DamageScorer
 from calvin_utils.neuroimaging_utils.output_functions import NeuroimageFileOutporter
+from calvin_utils.neuroimaging_utils.tract_utils.fiber_io import DEFAULT_MNI_MASK
 from calvin_utils.plotting_utils.html_viewer_selector import HTMLViewerSelector
 
 class VoxelwiseRegression:
@@ -597,7 +618,10 @@ class VoxelwiseRegression:
                 self.output_handler.save_map(self.T[c, :], f"contrast_tval_{c}", self.out_dir, visualize=visualize)
 
         if hasattr(self, 'R2'):
-            self.output_handler.save_map(self.R2, "R2_vals", self.out_dir, visualize=visualize)
+            try:
+                self.output_handler.save_map(self.R2, "R2_vals", self.out_dir, visualize=visualize)
+            except Exception as e:
+                print("Error in R2 save: ", e)
 
         if hasattr(self, 'LOG_PRIORS'):
             self.output_handler.save_map(self.LOG_PRIORS, "LOG_PRIORS", self.out_dir, visualize=visualize)
@@ -609,13 +633,19 @@ class VoxelwiseRegression:
                 self.output_handler.save_map(self.Tp[c, :], f"contrast_pval_FWE_{c}", self.out_dir, visualize=False)
 
         if hasattr(self, 'R2p'):
-            sig_r2vals = np.where(self.R2p < 0.05, self.R2, np.nan)
-            self.output_handler.save_map(sig_r2vals, "R2_FWE", self.out_dir, visualize=False)
-            self.output_handler.save_map(self.R2p, "R2_pval_FWE", self.out_dir, visualize=False)
+            try:
+                sig_r2vals = np.where(self.R2p < 0.05, self.R2, np.nan)
+                self.output_handler.save_map(sig_r2vals, "R2_FWE", self.out_dir, visualize=False)
+                self.output_handler.save_map(self.R2p, "R2_pval_FWE", self.out_dir, visualize=False)
+            except Exception as e:
+                print("Error in R2p save: ", e)
 
         if hasattr(self, 'PREDICTIONS'):
-            for o in range(self.PREDICTIONS.shape[0]):
-                self.output_handler.save_map(self.PREDICTIONS[o, :], f"prediction_{o}", self.out_dir, visualize=False)
+            try:
+                for o in range(self.PREDICTIONS.shape[0]):
+                    self.output_handler.save_map(self.PREDICTIONS[o, :], f"prediction_{o}", self.out_dir, visualize=False)
+            except Exception as e:
+                print("Error in PREDICTIONS save: ", e)
 
     def _get_result_html_views(self):
         """
@@ -623,62 +653,225 @@ class VoxelwiseRegression:
         """
         views = {}
 
+        def add_view(name, arr):
+            view = self._view_result_map(arr, name)
+            if view is not None:
+                views[name] = view
+
         if hasattr(self, 'B_multi'):
             for j in range(self.n_outputs):
                 for i in range(self.n_contrasts):
                     name = f"beta_predictor_{i}_output_{j}"
-                    views[name] = self.output_handler.view_map(self.B_multi[i, :, j], name)
+                    add_view(name, self.B_multi[i, :, j])
 
         if hasattr(self, 'T_multi'):
             for j in range(self.n_outputs):
                 for i in range(self.n_contrasts):
                     name = f"contrast_{i}_tval_output_{j}"
-                    views[name] = self.output_handler.view_map(self.T_multi[i, :, j], name)
+                    add_view(name, self.T_multi[i, :, j])
 
         if hasattr(self, 'R2_multi'):
             for j in range(self.n_outputs):
                 name = f"R2_output_{j}"
-                views[name] = self.output_handler.view_map(self.R2_multi[0, :, j], name)
+                add_view(name, self.R2_multi[0, :, j])
 
         if hasattr(self, 'BETA'):
             for i in range(self.n_preds):
                 name = f"beta_predictor_{i}"
-                views[name] = self.output_handler.view_map(self.BETA[i, :], name)
+                add_view(name, self.BETA[i, :])
 
         if hasattr(self, 'T'):
             for c in range(self.n_contrasts):
                 name = f"contrast_tval_{c}"
-                views[name] = self.output_handler.view_map(self.T[c, :], name)
+                add_view(name, self.T[c, :])
 
         if hasattr(self, 'R2'):
             name = "R2_vals"
-            views[name] = self.output_handler.view_map(self.R2, name)
+            try:
+                add_view(name, self.R2)
+            except Exception as e:
+                print("Error adding R2_vals: ", e)
 
         if hasattr(self, 'LOG_PRIORS'):
             name = "LOG_PRIORS"
-            views[name] = self.output_handler.view_map(self.LOG_PRIORS, name)
+            add_view(name, self.LOG_PRIORS)
 
         if hasattr(self, 'Tp'):
             for c in range(self.n_contrasts):
                 sig_tvals = np.where(self.Tp[c, :] < 0.05, self.T[c, :], np.nan)
                 name = f"contrast_tval_FWE_{c}"
-                views[name] = self.output_handler.view_map(sig_tvals, name)
+                add_view(name, sig_tvals)
                 name = f"contrast_pval_FWE_{c}"
-                views[name] = self.output_handler.view_map(self.Tp[c, :], name)
+                add_view(name, self.Tp[c, :])
 
         if hasattr(self, 'R2p'):
-            sig_r2vals = np.where(self.R2p < 0.05, self.R2, np.nan)
-            name = "R2_FWE"
-            views[name] = self.output_handler.view_map(sig_r2vals, name)
-            name = "R2_pval_FWE"
-            views[name] = self.output_handler.view_map(self.R2p, name)
+            try:
+                sig_r2vals = np.where(self.R2p < 0.05, self.R2, np.nan)
+                name = "R2_FWE"
+                add_view(name, sig_r2vals)
+                name = "R2_pval_FWE"
+                add_view(name, self.R2p)
+            except Exception as e:
+                print("Error adding R2_FWE: ", e)
 
         if hasattr(self, 'PREDICTIONS'):
             for o in range(self.PREDICTIONS.shape[0]):
                 name = f"prediction_{o}"
-                views[name] = self.output_handler.view_map(self.PREDICTIONS[o, :], name)
+                add_view(name, self.PREDICTIONS[o, :])
 
         return views
+
+    def _is_fiber_output(self):
+        return self.output_ftype == "fiber"
+
+    @staticmethod
+    def _strip_fiber_suffix(path):
+        path = str(path)
+        return path[:-8] if path.endswith(".fib.npy") else os.path.splitext(path)[0]
+
+    def _fiber_density_path(self, file_name, out_dir=None):
+        out_dir = self.out_dir if out_dir is None else out_dir
+        return os.path.join(out_dir, f"{file_name}.nii.gz")
+
+    def _ensure_fiber_density_map(self, map_data, file_name, out_dir=None):
+        out_dir = self.out_dir if out_dir is None else out_dir
+        if out_dir is None:
+            raise ValueError("out_dir is required to materialize fiber density maps.")
+        os.makedirs(out_dir, exist_ok=True)
+        density_path = self._fiber_density_path(file_name, out_dir=out_dir)
+        if not os.path.exists(density_path):
+            self.output_handler.save_map(np.asarray(map_data), file_name, out_dir, visualize=False)
+        return density_path
+
+    def _view_result_map(self, map_data, file_name):
+        if not self._is_fiber_output():
+            return self.output_handler.view_map(map_data, file_name)
+
+        density_path = self._ensure_fiber_density_map(map_data, file_name)
+        from nilearn import plotting
+
+        return plotting.view_img(density_path, title=os.path.basename(file_name))
+
+    def _fiber_density_vector(self, map_data, file_name, out_dir):
+        return self._fiber_values_to_density_vector(map_data)
+
+    def _get_fiber_density_projector(self):
+        cache = getattr(self, "_fiber_density_projector_cache", None)
+        if cache is not None and cache.get("fiber_atlas_path") == self.mask_path:
+            return cache
+
+        if self.mask_path is None:
+            raise ValueError("Fiber output requires mask_path to point to the internal .npz fiber atlas.")
+
+        atlas = np.load(self.mask_path, allow_pickle=True)
+        if "fibers" not in atlas:
+            raise ValueError(f"Fiber atlas is missing 'fibers' key: {self.mask_path}")
+
+        fibers = [np.asarray(fiber, dtype=np.float32)[:, :3] for fiber in atlas["fibers"].tolist()]
+        mask_img = nib.load(DEFAULT_MNI_MASK)
+        mask_data = mask_img.get_fdata().reshape(-1) > 0
+        mask_shape = mask_img.shape[:3]
+        inv_affine = np.linalg.inv(mask_img.affine)
+
+        full_to_mask = np.full(mask_data.shape[0], -1, dtype=np.int64)
+        full_to_mask[mask_data] = np.arange(int(mask_data.sum()), dtype=np.int64)
+
+        voxel_chunks = []
+        fiber_chunks = []
+        for fiber_idx, fiber in enumerate(tqdm(fibers, desc="Building fiber density projector", unit="fiber")):
+            for xyz in (fiber, self._mirror_fiber_xyz(fiber)):
+                ijk = self._world_to_ijk_for_density(xyz, inv_affine)
+                in_bounds = (
+                    (ijk[:, 0] >= 0) & (ijk[:, 0] < mask_shape[0])
+                    & (ijk[:, 1] >= 0) & (ijk[:, 1] < mask_shape[1])
+                    & (ijk[:, 2] >= 0) & (ijk[:, 2] < mask_shape[2])
+                )
+                ijk = ijk[in_bounds]
+                if ijk.shape[0] == 0:
+                    continue
+                full_idx = np.ravel_multi_index((ijk[:, 0], ijk[:, 1], ijk[:, 2]), mask_shape)
+                mask_idx = full_to_mask[full_idx]
+                mask_idx = mask_idx[mask_idx >= 0]
+                if mask_idx.shape[0] == 0:
+                    continue
+                voxel_chunks.append(mask_idx.astype(np.int64, copy=False))
+                fiber_chunks.append(np.full(mask_idx.shape[0], fiber_idx, dtype=np.int64))
+
+        if voxel_chunks:
+            voxel_indices = np.concatenate(voxel_chunks)
+            fiber_indices = np.concatenate(fiber_chunks)
+        else:
+            voxel_indices = np.empty(0, dtype=np.int64)
+            fiber_indices = np.empty(0, dtype=np.int64)
+
+        cache = {
+            "fiber_atlas_path": self.mask_path,
+            "n_fibers": len(fibers),
+            "n_mask_voxels": int(mask_data.sum()),
+            "voxel_indices": voxel_indices,
+            "fiber_indices": fiber_indices,
+        }
+        self._fiber_density_projector_cache = cache
+        return cache
+
+    def _fiber_values_to_density_vector(self, values):
+        projector = self._get_fiber_density_projector()
+        values = np.asarray(values, dtype=np.float32).flatten()
+        if values.shape[0] != projector["n_fibers"]:
+            raise ValueError(
+                f"Fiber value length {values.shape[0]} does not match atlas fiber count {projector['n_fibers']}."
+            )
+
+        weights = values[projector["fiber_indices"]]
+        density = np.bincount(
+            projector["voxel_indices"],
+            weights=weights,
+            minlength=projector["n_mask_voxels"],
+        )
+        return density.astype(np.float32, copy=False)
+
+    @staticmethod
+    def _world_to_ijk_for_density(xyz, inv_affine):
+        xyz = np.asarray(xyz, dtype=np.float32)
+        hom = np.c_[xyz, np.ones(xyz.shape[0], dtype=np.float32)]
+        ijk_float = hom @ inv_affine.T
+        return np.rint(ijk_float[:, :3]).astype(np.int64)
+
+    @staticmethod
+    def _mirror_fiber_xyz(fiber):
+        mirrored = np.asarray(fiber, dtype=np.float32).copy()
+        mirrored[:, 0] = -mirrored[:, 0]
+        return mirrored
+
+    def _resolve_fiber_subject_files_for_cv(self, subject_files):
+        resolved = []
+        for file_path in list(subject_files):
+            file_path = str(file_path)
+            if not file_path.endswith(".fib.npy"):
+                resolved.append(file_path)
+                continue
+
+            density_path = f"{self._strip_fiber_suffix(file_path)}.nii.gz"
+            if not os.path.exists(density_path):
+                arr = np.load(file_path, allow_pickle=True)
+                if arr.ndim != 1:
+                    raise ValueError(
+                        f"Expected subject fiber file to contain a 1D vector for density conversion: {file_path}"
+                    )
+                out_dir = os.path.dirname(file_path)
+                file_name = os.path.basename(self._strip_fiber_suffix(file_path))
+                self.output_handler.save_map(arr, file_name, out_dir, visualize=False)
+            resolved.append(density_path)
+        return resolved
+
+    def _fiber_subject_array_for_cv(self, subject_files):
+        rows = []
+        for file_path in list(subject_files):
+            arr = np.load(file_path, allow_pickle=True)
+            if arr.ndim != 1:
+                raise ValueError(f"Expected 1D fiber profile for CV subject file: {file_path}")
+            rows.append(self._fiber_values_to_density_vector(arr))
+        return np.vstack(rows)
 
     def _populate_viewer(self, views):
         """
@@ -802,7 +995,7 @@ class VoxelwiseRegression:
             return self._run_linear_prediction(X, B)
         raise NotImplementedError(f"Prediction for regression_type='{self.regression_type}' is not yet implemented.")
     
-    def _get_scalar_predictions(self, temp_dir, subject_arr, prediction_arr, *, T_all=None):
+    def _get_scalar_predictions(self, temp_dir, subject_arr, prediction_arr, *, T_all=None, map_prefix=None, T_all_is_density=False):
         """
         Takes voxelwise prediction arrays (or t-maps) and extracts an average value from them
         Returns array with all t-value predictions in the first rows, then the overall prediction in the last row.
@@ -814,12 +1007,22 @@ class VoxelwiseRegression:
             (T_all,) = self._load_prediction_params(temp_dir, ["contrast_tval_*"])  # (n_vox, n_contrasts)
         
         # Get cosine similarity of subject's map with the T-map
+        density_dir = None
+        if self._is_fiber_output():
+            density_dir = os.path.join(self.out_dir or "/tmp", "cross_validations", "fiber_density_maps")
+            os.makedirs(density_dir, exist_ok=True)
+            map_prefix = "cv_map" if map_prefix is None else map_prefix
+
         for i in range(self.n_contrasts):
             T = T_all[:, i]
+            if self._is_fiber_output() and not T_all_is_density:
+                T = self._fiber_density_vector(T, f"{map_prefix}_contrast_tval_{i}", density_dir)
             dmg_value_dict = DamageScorer._calculate_metrics(subject_arr, T, ["cosine"])
             preds[0, i] = dmg_value_dict["cosine"]
         
         # Get cosine similarity of subject's map with their prediction map
+        if self._is_fiber_output():
+            prediction_arr = self._fiber_density_vector(prediction_arr, f"{map_prefix}_prediction", density_dir)
         dmg_value_dict = DamageScorer._calculate_metrics(subject_arr, prediction_arr, ["cosine"])
         preds[0, -1]    = dmg_value_dict["cosine"]
         return preds
@@ -914,12 +1117,25 @@ class VoxelwiseRegression:
             if save_fold_params:
                 self._save_result_maps()
 
+            T_for_scalar = self.T.T
+            T_for_scalar_is_density = False
+            if self._is_fiber_output():
+                density_dir = os.path.join(self.out_dir or "/tmp", "cross_validations", "fiber_density_maps")
+                os.makedirs(density_dir, exist_ok=True)
+                T_for_scalar = np.column_stack([
+                    self._fiber_density_vector(self.T[c, :], f"{cv}_fold_{fold_idx}_contrast_tval_{c}", density_dir)
+                    for c in range(self.n_contrasts)
+                ])
+                T_for_scalar_is_density = True
+
             for local_i, global_i in enumerate(test_idx):
                 scalar_preds[global_i, :] = self._get_scalar_predictions(
                     temp_dir,
                     subject_arr[global_i, :],
                     prediction_arr[local_i, :],
-                    T_all=self.T.T,
+                    T_all=T_for_scalar,
+                    map_prefix=f"{cv}_fold_{fold_idx}_subject_{global_i}",
+                    T_all_is_density=T_for_scalar_is_density,
                 )
 
         self.design_tensor = orig_design
@@ -951,11 +1167,22 @@ class VoxelwiseRegression:
         if not self.out_dir:
             raise ValueError("out_dir must be set for cross-validation plotting.")
         
-        importer = GiiNiiFileImport(import_path=subject_files, mask_path=self.mask_path, transpose=True)
-        subject_arr = importer.run().values
+        if self._is_fiber_output():
+            subject_file_list = [str(path) for path in list(subject_files)]
+            if all(path.endswith(".fib.npy") for path in subject_file_list):
+                subject_arr = self._fiber_subject_array_for_cv(subject_file_list)
+            else:
+                importer = GiiNiiFileImport(import_path=pd.Series(subject_file_list), mask_path=DEFAULT_MNI_MASK, transpose=True)
+                subject_arr = importer.run().values
+        else:
+            importer = GiiNiiFileImport(import_path=subject_files, mask_path=self.mask_path, transpose=True)
+            subject_arr = importer.run().values
         scalar_preds = self.run_prediction_cv(subject_arr=subject_arr, regression_idx=regression_idx, cv=cv)
 
         def _scatter(pred_col, y_true, *, name: str):
+            import matplotlib.pyplot as plt
+            from calvin_utils.statistical_utils.scatterplot import simple_scatter
+
             rmse = float(np.sqrt(np.mean((pred_col - y_true) ** 2)))
             mae = float(np.mean(np.abs(pred_col - y_true)))
             df = pd.DataFrame({"pred": pred_col, "actual": y_true})
@@ -983,10 +1210,11 @@ class VoxelwiseRegression:
             else:
                 name = f"{cv}_voxelwisemodel_aggregate-prediction"
             _scatter(pred_col, y_true, name=name)
+        return scalar_preds
 
     
     #### Public Code - Fitting ####
-    def run_cross_validation(self, *, y_true, subject_files, regression_idx=0):
+    def run_cross_validation(self, *, y_true, subject_files, regression_idx=0, cv=("loocv", 2, 5, 10, "leave_all_in")):
         """
         Orchestrates cross-validated relation of t-maps and voxelwise predictions to dependent variables
         
@@ -998,12 +1226,23 @@ class VoxelwiseRegression:
             values of shape (n_obs, ). Contains the files to import the subject files to evaluate.
         regression_idx : int
             integer corresponding to which regression to use. Generally default is 0. 
+        cv : str, int, or iterable
+            Cross-validation scheme(s) to run. Default preserves historical
+            behavior by running ``("loocv", 2, 5, 10, "leave_all_in")``.
+            For faster fiber workflows, pass a single value such as
+            ``cv="loocv"`` or ``cv=5``.
         """
-        self._evaluate_map(cv="loocv", y_true=y_true, subject_files=subject_files, regression_idx=regression_idx)
-        self._evaluate_map(cv=2, y_true=y_true, subject_files=subject_files, regression_idx=regression_idx)
-        self._evaluate_map(cv=5, y_true=y_true, subject_files=subject_files, regression_idx=regression_idx)
-        self._evaluate_map(cv=10, y_true=y_true, subject_files=subject_files, regression_idx=regression_idx)
-        self._evaluate_map(cv="leave_all_in", y_true=y_true, subject_files=subject_files, regression_idx=regression_idx)
+        if isinstance(cv, (str, int)):
+            cv = [cv]
+        results = {}
+        for cv_scheme in cv:
+            results[str(cv_scheme)] = self._evaluate_map(
+                cv=cv_scheme,
+                y_true=y_true,
+                subject_files=subject_files,
+                regression_idx=regression_idx,
+            )
+        return results
 
     def run_single_multiout_regression(self, permutation=False):
         """Runs regression across all outputs a single time and returns the associated arrays."""

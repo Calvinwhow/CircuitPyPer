@@ -72,12 +72,12 @@ class SimpleDamagePlotter:
             )
             sns.scatterplot(
                 data=plot_df, x="x", y="y", hue="color", ax=ax,
-                s=150, edgecolor="white", linewidth=2, alpha=0.98, zorder=3
+                s=150, edgecolor="white", linewidths=2, alpha=0.98, zorder=3
             )
         else:
             sns.regplot(
                 data=plot_df, x="x", y="y", ax=ax,
-                scatter_kws={'alpha': 0.98, 'color': '#8E8E8E', 's': 150, 'edgecolors': 'white', 'linewidth': 2, 'zorder': 3},
+                scatter_kws={'alpha': 0.98, 'color': '#8E8E8E', 's': 150, 'edgecolors': 'white', 'linewidths': 2, 'zorder': 3},
                 line_kws={'color': '#8E8E8E', 'zorder': 2}
             )
 

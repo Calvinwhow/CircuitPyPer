@@ -137,11 +137,11 @@ class LOOCVAnalyzer(ConvergentMapGenerator):
         plt.figure(figsize=(6, 6))
         if self.flip_axes:
             sns.lmplot(data=df, x="Outcome", y="Similarity", height=6, aspect=1, 
-               scatter_kws={'alpha': 0.98, 'color': '#8E8E8E', 's': 150, 'edgecolors': 'white', 'linewidth': 2, 'zorder': 3}, 
+               scatter_kws={'alpha': 0.98, 'color': '#8E8E8E', 's': 150, 'edgecolors': 'white', 'linewidths': 2, 'zorder': 3}, 
                line_kws={'color': '#8E8E8E', 'zorder': 2})
         else:
             sns.lmplot(data=df, x="Similarity", y="Outcome", height=6, aspect=1, 
-               scatter_kws={'alpha': 0.98, 'color': '#8E8E8E', 's': 150, 'edgecolors': 'white', 'linewidth': 2, 'zorder': 3}, 
+               scatter_kws={'alpha': 0.98, 'color': '#8E8E8E', 's': 150, 'edgecolors': 'white', 'linewidths': 2, 'zorder': 3}, 
                line_kws={'color': '#8E8E8E', 'zorder': 2})
 
         # Labels

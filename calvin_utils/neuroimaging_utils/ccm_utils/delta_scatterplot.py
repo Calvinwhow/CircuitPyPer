@@ -76,7 +76,7 @@ class DeltaCorrelationScatter:
         sns.despine(ax=ax)
 
     def plot_scatter(self, ax, x, y, color, label, alpha):
-        ax.scatter(x, y, s=60, color=color, alpha=alpha, edgecolors=self.WHITE, linewidth=1.2, label=label, zorder=3)
+        ax.scatter(x, y, s=60, color=color, alpha=alpha, edgecolors=self.WHITE, linewidths=1.2, label=label, zorder=3)
 
     def plot_regression_with_ci(self, ax, x, y, color):
         x_grid = np.linspace(min(x), max(x), 300)

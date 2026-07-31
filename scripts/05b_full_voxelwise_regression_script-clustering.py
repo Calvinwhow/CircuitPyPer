@@ -39,45 +39,23 @@ from calvin_utils.permutation_analysis_utils import ParcelwiseDamageMap
 
 
 # Input/output paths.
-INPUT_PATH = "/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/results/optimzation/optimized_master_list.csv" # Form: "/path/to/input.csv"
+INPUT_PATH = "/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/results/optimzation/symptom_on_lhs/proper_regressions_clusters/cluster_results.csv" # Form: "/path/to/input.csv"
 SHEET = None # Specify sheet if using excel (i.e. "Sheet1")
-OUT_DIR = "/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/results/optimzation/symptom_on_lhs/proper_regressions" # Form: "/path/to/output_dir"
+OUT_DIR = "/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/results/optimzation/symptom_on_lhs/proper_regressions_clusters" # Form: "/path/to/output_dir"
 MASK_PATH = "/Users/cu135/Software_Local/calvin_utils_project/circuit_pyper/resources/MNI152_T1_2mm_brain_mask.nii"
 
 # Model setup.
 
-# var_list = [ 'SematicFluencyRawS', 'PhonemicFluencyRawS', 'CategorySwitchRawS', 'VerbalRegSum', 
-#             'DigitSpanForwardRawS', 'DigitSpanBackwardRawS', 'CubeDrawRawS', 'VerbalRecallRawS', 'SimiliarityRawS', 'GoNoGoRawS', ]
-var_list = [
-    # 'Gait', 'HeelToShinTestLeft', 'HeelToShinTestRight', 'FingerToNoseTestLeft', 'FingerToNoseTestRight', 'LimbAtaxia', 'Speech', 'Oculomotor', 'TotalBarsScore',
- 
-#  'SematicFluencyFailS', 'PhonemicFluencyFailS', 'CategorySwitchFailS', 'DigitSpanForwardFailS', 'DigitSpanBackwardFailS', 'CubeDrawFailS', 'VerbalRecallFailS', 'SimiliarityFailS', 'GoNoGoFailS', 'AffectFailS', 'TotalCCASFailScore', 
-
-
-#  'Sec1ADifficultFocus', 'Sec1AEasilyDistracted', 'Sec1AOntheGo', 'Sec1AFeelsCompelled', 'Sec1AFeelsDriven', 'Sec1BWorries', 'Sec1BRepeats', 'Sec1BMentallyStuck', 
-#  'Sec1BCauseDistress', 'Sec2AActHastily', 'Sec2ARapidChanges', 'Sec2ACryingLaughing', 'Sec2AOverAnxious', 
-#  'Sec2BLackOfPleasure', 'Sec2BNegativeAttitude', 'Sec2BUneasyWithLife', 'Sec2BSadDepressed', 
-#  'Sec3ARepetitiveMovements', 'Sec3ASensoryExp', 'Sec3BSensitive', 'Sec3BOverwhelmed', 
-#  'Sec4ACommunicates', 'Sec4AConcerns', 'Sec4ASeesHearsThings', 
-#  'Sec4BTroubleUnderstand', 'Sec4BDistant', 'Sec4BIndifferent', 
-#  'Sec5AAngry', 'Sec5AUpset', 'Sec5AIntolerant', 'Sec5AArgumentative', 
-#  'Sec5Bimmature', 'Sec5BUnaware', 'Sec5BManner', 'Sec5BTrusting', 
-#  'ScoreCol1A', 'ScoreCol1B', 
-#  'ScoreCol2A', 'ScoreCol2B', 
-#  'ScoreCol3A', 'ScoreCol3B', 
- 'ScoreCol4A', 'ScoreCol4B', 
-#  'ScoreCol5A', 'ScoreCol5B', 
-#  'TotalSection1Score', 'TotalSection2Score', 'TotalSection3Score', 'TotalSection4Score', 'TotalSection5Score', 'CNRSTotColAScore', 'CNRSTotColBScore', 'CNRSTotScore', 
- ]
+var_list = [ "cluster_0", "cluster_1", "cluster_2"]
 regressand_list = var_list              # On left hand=side of the equation. Often is the outcome variable.         Will run an analysis for each value.
-regressor_list = ["Nifti_File_Path"]    # On right hand-side of the equation. Often is the neuroimaging variable.   Will run an analysis for each value. 
-VOXELWISE_VARS = ["Nifti_File_Path"]    # Name the variables that are stored in neuroimaging files
+regressor_list = ["image_path"]    # On right hand-side of the equation. Often is the neuroimaging variable.   Will run an analysis for each value. 
+VOXELWISE_VARS = ["image_path"]    # Name the variables that are stored in neuroimaging files
 VOXELWISE_INTERACTIONS = []             # If you want interactions, specify them. 
 COVARIATES_LIST = []                    # List of all nuisance variables to adjust for. If you want interactions, make them in your spreadsheet and add them here. Will NOT trigger a new analysis for each value, but will be present in every analysis.
 ADD_INTERCEPT = False                   # Not needed if DATA_TRANSFORM_METHOD = "standardize"
 
 # Optional preprocessing.
-DROP_ROWS = [("selected", "equal", 0)]                        # Conditions for droppping some rows. Example: DROP_ROWS = [("group", "equal", "control"), ("age", "below", 18)]
+DROP_ROWS = []                        # Conditions for droppping some rows. Example: DROP_ROWS = [("group", "equal", "control"), ("age", "below", 18)]
 ONE_HOT = None                          # columns to one-hot encode
 EXCHANGEABILITY_COL = None              # Exchangeability blocks to restrict permutations within
 WEIGHTS_COL = None                      # Weights for weighted regression. Defaults to equal. 
@@ -90,13 +68,13 @@ CONTRAST_MATRIX = None                  # Example: [[ 0, 1], [-1, 1]]
 # Regression settings.
 REGRESSION_TYPE = "linear"              # Default linear
 N_PERMUTATIONS = 1000                   # Default 1000
-CV = "loocv"                            # Default loocv
+CV = None                               # Default loocv
 CV_DEPENDENT_VAR = None                 # Must specify. This is your outcome variable that ana anlysis should be related to. i.e. gait outcomes. 
 CV_INDEPENDENT_VAR = "Nifti_File_Path"  # Must specify. This is your neuroimaging variable. For example, if you made a regresison relating gait to connectivity, this should be the connectivity column. 
 
 # Plot Options
 PLOT_CMAP = "Blues"                      # Matplotlib cmaps
-PLOT_CSCALE = [[1,-1/2,-1/2],[-1/2,1,-1/2],[-1/2,-1/2,1]]                     # Defines the bounds of the cmap
+PLOT_CSCALE = [0,1]                     # Defines the bounds of the cmap
 ATLAS_THRESHOLD = 0                     # NaN threshold applied before automatic parcel/tract scoring calls ``DamageScorer._calculate_metrics``  threshold : float | tuple[float, float] | None | Optional.  
 CEREBELLUM_ATLAS = "SUIT"
 CORTEX_ATLAS = "aal3"                   # Defined within yabplot documentation. 

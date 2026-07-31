@@ -665,7 +665,7 @@ class DiceVTATargetOverlap:
             x=x_vals,
             y=y_vals,
             ax=ax,
-            scatter_kws={"alpha": 0.98, "color": "#8E8E8E", "s": 80, "edgecolors": "white", "linewidth": 1.5},
+            scatter_kws={"alpha": 0.98, "color": "#8E8E8E", "s": 80, "edgecolors": "white", "linewidths": 1.5},
             line_kws={"color": "#8E8E8E"},
         )
         ax.set_title(title, fontsize=18)

@@ -1,10 +1,31 @@
 import os
 import numpy as np
+if not hasattr(np, "sctypes"):
+    np.sctypes = {
+        "int": [np.int8, np.int16, np.int32, np.int64],
+        "uint": [np.uint8, np.uint16, np.uint32, np.uint64],
+        "float": [np.float16, np.float32, np.float64],
+        "complex": [np.complex64, np.complex128],
+        "others": [np.bool_, np.bytes_, np.str_, np.object_],
+    }
+if not hasattr(np, "maximum_sctype"):
+    def _maximum_sctype(t):
+        dtype = np.dtype(t)
+        if np.issubdtype(dtype, np.complexfloating):
+            return np.complex128
+        if np.issubdtype(dtype, np.floating):
+            return np.float64
+        if np.issubdtype(dtype, np.unsignedinteger):
+            return np.uint64
+        if np.issubdtype(dtype, np.integer):
+            return np.int64
+        return dtype.type
+
+    np.maximum_sctype = _maximum_sctype
 import nibabel as nib
-from nilearn import image, plotting
+from nilearn import image
 from tqdm import tqdm
 from calvin_utils.neuroimaging_utils.ccm_utils.bounding_box import NiftiBoundingBox
-from calvin_utils.neuroimaging_utils.nifti_utils.generate_nifti import view_and_save_nifti
 
 PACKAGE_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 DEFAULT_MASK = os.path.join(PACKAGE_ROOT, "resources", "MNI152_T1_2mm_brain_mask.nii")
@@ -52,6 +73,8 @@ class NiftiIO:
             Viewer title.
         """
         try:
+            from nilearn import plotting
+
             plotting.view_img(img, title=title).open_in_browser()
         except Exception:
             pass
@@ -215,6 +238,8 @@ class NiftiIO:
                 if dry_run:
                     print(f"Saving to: {out_path}")
                 else:
+                    from calvin_utils.neuroimaging_utils.nifti_utils.generate_nifti import view_and_save_nifti
+
                     os.makedirs(out_dir, exist_ok=True)
                     view_and_save_nifti(data_vec, out_dir=out_dir, output_name=out_name, silent=True)
                 continue

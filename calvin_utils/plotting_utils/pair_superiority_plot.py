@@ -116,7 +116,7 @@ class PairSuperiorityPlot:
 
     def plot_resample_dots(self, ax, y_vals, x_coord, color, size=150, edgecolor='white', alpha=0.9, linewidth=1.2, zorder=3):
         ax.scatter(np.full(len(y_vals), x_coord), y_vals, color=color,
-                   edgecolors=edgecolor, linewidth=linewidth, alpha=alpha, s=size, marker='o', zorder=zorder)
+                   edgecolors=edgecolor, linewidths=linewidth, alpha=alpha, s=size, marker='o', zorder=zorder)
 
     def setup_slope_subplot(self, ax):
         ax.set_xticks([0, 1])

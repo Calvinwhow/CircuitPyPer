@@ -150,8 +150,14 @@ def load_mricrogl_cmap(
         register=register,
     )
 
-
-def resolve_mricrogl_or_matplotlib_cmap(cmap):
+def hex_intensity_cmap(hex_color, low="#ffffff", name=None, n=256):
+    return LinearSegmentedColormap.from_list(
+        name or f"{hex_color}_intensity",
+        [low, hex_color],
+        N=n
+    )
+    
+def resolve_cmap(cmap):
     """
     Resolve a colormap for plotting.
 
@@ -169,6 +175,10 @@ def resolve_mricrogl_or_matplotlib_cmap(cmap):
         if not cmap_path.exists():
             raise FileNotFoundError(f"Colormap LUT path does not exist: {cmap_path}")
         return mricrogl_clut_to_cmap(cmap_path, register=True)
+
+    if "#" in cmap:
+        print(f"Hexcode cmap detected for {cmap}. Generating linear cmap from white to hexcode target.")
+        return hex_intensity_cmap(cmap)
 
     if cmap in colormaps:
         return cmap

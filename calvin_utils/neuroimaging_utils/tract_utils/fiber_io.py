@@ -4,9 +4,11 @@ import numpy as np
 from pathlib import Path
 from tqdm import tqdm
 from calvin_utils.neuroimaging_utils.tract_utils.fiber_converter import FiberFormatConverter
-
+from calvin_utils.neuroimaging_utils.tract_utils.fiber_result_visualizer import FiberResultVisualizer
+from calvin_utils.neuroimaging_utils.tract_utils.tract_density import TractDensity
+PACKAGE_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 DEFAULT_FIBER_MASK = None
-
+DEFAULT_MNI_MASK = os.path.join(PACKAGE_ROOT, "resources", "MNI152_T1_2mm_brain_mask.nii")
 
 class FiberIO:
     """
@@ -311,7 +313,7 @@ class FiberIO:
         return out_fibers
     
     ### Writing ###
-    def save_files(self, arr, file_paths, dry_run=True, file_suffix=None, mask=None, fill_value=0):
+    def save_files(self, arr, file_paths, dry_run=True, file_suffix=None, mask=None, fill_value=0, convert_to_nifti=True, convert_to_leaddbs=True, symmetric=True, sign = "positive"):
         """
         Save per-file fiber statistics back to geometry-aware outputs.
 
@@ -329,16 +331,38 @@ class FiberIO:
             out_dir = os.path.dirname(file_path)
             base = os.path.splitext(os.path.basename(file_path))[0]
             out_name = base + (file_suffix if file_suffix is not None else '')
-
+            out_path = os.path.join(out_dir, f"{out_name}.fib.npy")
+            os.makedirs(out_dir, exist_ok=True)
             fiber_list = self.assign_values_to_fibers(
                 arr[:, i],
                 mask=mask,
                 fill_value=fill_value,
             )
 
-            out_path = os.path.join(out_dir, f"{out_name}.fib.npy")
 
             if dry_run:
                 print(f"Saving to: {out_path}")
             else:
                 np.save(out_path, np.array(fiber_list, dtype=object), allow_pickle=True)
+            
+            print(f"Saving positive/negative fibers: {sign}")
+            print(f"Saving symmetric version of fibers: {symmetric}")
+            if convert_to_nifti:
+                print(f"Saving volumetric version of fibers (.nii.gz).")
+                TractDensity(
+                    fiber_path=out_path,
+                    reference_nifti_path=DEFAULT_MNI_MASK,
+                    out_path=os.path.join(out_dir, f"{out_name}.nii.gz"),
+                    fiberset=sign,
+                    symmetric=symmetric,
+                    threshold=None).run()
+            
+            if convert_to_leaddbs:
+                print(f"Saving lead-dbs compatible version of fibers (.mat).")
+                FiberResultVisualizer(
+                    values_path=out_path,
+                    out_dir=os.path.dirname(out_path),
+                    sign=sign,
+                    symmetric=symmetric,
+                    min_abs_value=None,
+                    top_percent=None).run()

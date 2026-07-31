@@ -119,6 +119,41 @@ class CorrelationCalculator:
         RHO = 1 - ( (6 * SIGMA_D) / (N * (N**2 - 1)) )
         return RHO
 
+    @staticmethod
+    def _transpose_singleton_if_alignment_improves(X, Y, context="correlation"):
+        """
+        Correct common (1, n) vs (n, p) orientation mistakes.
+
+        Expected shapes are:
+            X: (n_observations, n_predictors)
+            Y: (n_observations, n_voxels)
+        """
+        transposed = []
+        if (
+            getattr(X, "ndim", None) == 2
+            and getattr(Y, "ndim", None) == 2
+            and X.shape[0] == 1
+            and X.shape[1] == Y.shape[0]
+        ):
+            X = X.T
+            transposed.append(f"indep_var {X.T.shape} -> {X.shape}")
+
+        if (
+            getattr(X, "ndim", None) == 2
+            and getattr(Y, "ndim", None) == 2
+            and Y.shape[0] == 1
+            and Y.shape[1] == X.shape[0]
+        ):
+            Y = Y.T
+            transposed.append(f"niftis {Y.T.shape} -> {Y.shape}")
+
+        if transposed:
+            print(
+                "CorrelationCalculator: transposed singleton-dimension array(s) "
+                f"for {context}: " + "; ".join(transposed)
+            )
+        return X, Y
+
     def _calculate_spearman_r_map(self, niftis, indep_var):
         """Calculate the Spearman rank-order correlation coefficient for each voxel in a fully vectorized manner."""
         if self.use_jax:
@@ -138,17 +173,74 @@ class CorrelationCalculator:
         if self.use_jax:
             return _calculate_pearson_r_map_jax(niftis, indep_var)
         
-        X = indep_var
-        Y = niftis
-        X_BAR = X.mean(axis=0)[:, np.newaxis]
-        Y_BAR = Y.mean(axis=0)[np.newaxis, :]
-        X_C = X - X_BAR
-        Y_C = Y - Y_BAR
-        NUMERATOR = np.dot(X_C.T, Y_C)
-        SST_X = np.sum((X - X_BAR)**2, axis=0)
-        SST_Y = np.sum((Y - Y_BAR)**2, axis=0)
-        DENOMINATOR = np.sqrt(SST_X * SST_Y)
-        r = NUMERATOR / DENOMINATOR
+        X = np.asarray(indep_var)
+        Y = np.asarray(niftis)
+        X, Y = self._transpose_singleton_if_alignment_improves(X, Y, context="pearson preflight")
+
+        if X.ndim != 2 or Y.ndim != 2:
+            raise ValueError(
+                f"Pearson map expects 2D arrays; got niftis shape={Y.shape}, "
+                f"indep_var shape={X.shape}."
+            )
+
+        if X.shape[0] != Y.shape[0]:
+            viable_transpose = (
+                (X.shape[0] == 1 and X.shape[1] == Y.shape[0])
+                or (Y.shape[0] == 1 and Y.shape[1] == X.shape[0])
+            )
+            if not viable_transpose:
+                raise ValueError(
+                    "Pearson map observation-count mismatch. "
+                    f"niftis has {Y.shape[0]} observations, indep_var has {X.shape[0]}. "
+                    "A singleton transpose cannot fix this because the counts are different. "
+                    "Expected niftis=(n_observations, n_voxels) and "
+                    "indep_var=(n_observations, 1)."
+                )
+
+        def _compute_pearson(local_X, local_Y):
+            X_BAR = local_X.mean(axis=0)[:, np.newaxis]
+            Y_BAR = local_Y.mean(axis=0)[np.newaxis, :]
+            X_C = local_X - X_BAR
+            Y_C = local_Y - Y_BAR
+            NUMERATOR = np.dot(X_C.T, Y_C)
+            SST_X = np.sum((local_X - X_BAR)**2, axis=0)
+            SST_Y = np.sum((local_Y - Y_BAR)**2, axis=0)
+            DENOMINATOR = np.sqrt(SST_X * SST_Y)
+            return NUMERATOR / DENOMINATOR, X_BAR, Y_BAR, X_C, Y_C, NUMERATOR, DENOMINATOR
+
+        try:
+            r, X_BAR, Y_BAR, X_C, Y_C, NUMERATOR, DENOMINATOR = _compute_pearson(X, Y)
+        except ValueError as e:
+            original_error = e
+            original_X_shape = X.shape
+            original_Y_shape = Y.shape
+            retry_candidates = []
+            if X.ndim == 2 and 1 in X.shape and X.T.shape[0] == Y.shape[0]:
+                retry_candidates.append(("indep_var", X.T, Y))
+            if Y.ndim == 2 and 1 in Y.shape and Y.T.shape[0] == X.shape[0]:
+                retry_candidates.append(("niftis", X, Y.T))
+
+            for array_name, retry_X, retry_Y in retry_candidates:
+                try:
+                    print(
+                        "CorrelationCalculator: caught Pearson shape alignment error "
+                        f"({original_error}). Transposing {array_name} and rerunning: "
+                        f"X {X.shape} -> {retry_X.shape}, Y {Y.shape} -> {retry_Y.shape}"
+                    )
+                    r, X_BAR, Y_BAR, X_C, Y_C, NUMERATOR, DENOMINATOR = _compute_pearson(retry_X, retry_Y)
+                    X, Y = retry_X, retry_Y
+                    print("CorrelationCalculator: transpose retry succeeded.")
+                    break
+                except ValueError:
+                    continue
+            else:
+                raise ValueError(
+                    "Pearson map shape alignment failed after singleton-dimension "
+                    f"transpose retry. niftis shape={original_Y_shape}, "
+                    f"indep_var shape={original_X_shape}. "
+                    "Expected niftis=(n_observations, n_voxels) and "
+                    f"indep_var=(n_observations, 1). Original error: {original_error}"
+                ) from original_error
         
         if self.verbose:
             print(f"Shape of X: {X.shape}")
@@ -190,7 +282,12 @@ class CorrelationCalculator:
                 data = data_loader.load_dataset(dataset_name, nifti_type='niftis_ranked') 
             else:
                 data = data_loader.load_dataset(dataset_name) 
-            corr_map_dict[dataset_name] = self._process_data(data)
+            try:
+                corr_map_dict[dataset_name] = self._process_data(data)
+            except ValueError as e:
+                raise ValueError(
+                    f"Failed to generate correlation map for dataset '{dataset_name}'. {e}"
+                ) from e
             
             if dataset_name in self.datasets_to_flip:           # manually flip dataset correlation for topology test
                 print('flipping')

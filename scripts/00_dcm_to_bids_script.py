@@ -20,7 +20,7 @@ from pathlib import Path
 
 
 # The raw folder is the input. It will not be modified.
-RAW_ROOT = "/Volumes/HowExp2/datasets/01f_PPMI_Parkinson_Atrophy/BIDS/PPMI"
+RAW_ROOT = "/Volumes/HowExp2/datasets/01f_PPMI_Parkinson_Atrophy/PPMI"
 
 # New BIDS-style folders will be written here.
 BIDS_ROOT = "/Volumes/HowExp2/datasets/01f_PPMI_Parkinson_Atrophy/BIDS"

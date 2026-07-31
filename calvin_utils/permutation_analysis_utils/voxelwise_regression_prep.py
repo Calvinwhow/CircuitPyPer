@@ -56,7 +56,10 @@ class RegressionPrep:
         self.contrast_matrix = contrast_matrix
         self.outcome_df = outcome_df
         self.out_dir = out_dir
+        if mask_path.split('.')[1] == 'npz':
+            mask_path = None
         self.mask_path = mask_path
+        
         self.exchangeability_block = exchangeability_block
         self.data_transform_method = data_transform_method
         self.weights_vector = self.get_weights(weights)
@@ -152,7 +155,7 @@ class RegressionPrep:
             transpose=False,
         )
         loaded = importer.run()
-        
+                
         if not isinstance(loaded, pd.DataFrame):
             raise TypeError(f"Expected GiiNiiFileImport.run() to return a DataFrame, got {type(loaded)}")
 
@@ -181,6 +184,7 @@ class RegressionPrep:
         return arr
 
     def _handle_nans(self, arr, value=0):
+        print(arr.shape)
         max_val = np.nanmax(arr)
         min_val = np.nanmin(arr)
         return np.nan_to_num(arr, nan=value, posinf=max_val, neginf=min_val)

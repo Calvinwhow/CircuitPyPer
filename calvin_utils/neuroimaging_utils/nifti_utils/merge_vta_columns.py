@@ -88,22 +88,26 @@ class MergeVTAColumns:
 
         merged_paths = []
         for idx, row in self._df.iterrows():
-            subject_id = row[self.subject_col]
-            paths = self._collect_paths(row)
-            if not paths:
-                merged_paths.append("")
-                continue
+            try:
+                subject_id = row[self.subject_col]
+                paths = self._collect_paths(row)
+                if not paths:
+                    merged_paths.append("")
+                    continue
 
-            out_path = os.path.join(out_dir, f"{self._safe_subject(subject_id)}{self.output_suffix}")
-            if os.path.exists(out_path) and not self.overwrite:
+                out_path = os.path.join(out_dir, f"{self._safe_subject(subject_id)}{self.output_suffix}")
+                if os.path.exists(out_path) and not self.overwrite:
+                    merged_paths.append(out_path)
+                    continue
+
+                self._merge_paths(paths, out_path)
                 merged_paths.append(out_path)
-                continue
 
-            self._merge_paths(paths, out_path)
-            merged_paths.append(out_path)
-
-            if self.verbose:
-                print(f"Merged {len(paths)} VTAs for {subject_id} -> {out_path}")
+                if self.verbose:
+                    print(f"Merged {len(paths)} VTAs for {subject_id} -> {out_path}")
+            except:
+                print("Failed on: ", row)
+                merged_paths.append("")
 
         self._merged_paths = merged_paths
         self._df[self.output_col] = merged_paths

@@ -57,6 +57,8 @@ class DamageScorer:
         self._roi_df = df
 
     def _load_brain_indices(self):
+        if self.mask_path is None:
+            return None
         try:
             mask_data = nib.load(self.mask_path).get_fdata().flatten()
             return np.where(mask_data > 0)[0]
@@ -98,6 +100,32 @@ class DamageScorer:
         if 'dice' in metrics:
             results['dice'] = DamageScorer._calculate_dice(subject_array, roi_array)
         return results
+
+    @staticmethod
+    def _normalize_metric_name(metric):
+        """Normalize public metric aliases to the internal DamageScorer names."""
+        aliases = {
+            "spatial_correl": "spatial_correlation",
+            "spatial_corr": "spatial_correlation",
+            "correlation": "spatial_correlation",
+        }
+        return aliases.get(metric, metric)
+
+    @staticmethod
+    def _output_metric_name(metric):
+        """Return the user-facing score column stem for a metric."""
+        output_names = {
+            "spatial_correlation": "spatial_correl",
+        }
+        return output_names.get(metric, metric)
+
+    @staticmethod
+    def _score_column_name(metric, target_suffix=None):
+        """Build a score column name without forcing a target suffix."""
+        metric_name = DamageScorer._output_metric_name(metric)
+        if target_suffix is None or str(target_suffix).strip() == "":
+            return metric_name
+        return f"{metric_name}_{target_suffix}"
 
     @staticmethod
     def _calculate_max_in_roi(array1, roi_arr):
@@ -168,10 +196,11 @@ class DamageScorer:
         path_col: str,
         target_path: str,
         selected_damage: str | list[str] = 'avg_in_target',
-        target_suffix: str = 'target',
+        target_suffix: str | None = None,
         threshold: float | None = None,
         out_path: str | None = None,
         resample_interpolation: str = "nearest",
+        resample_to_target: bool = True,
         target_threshold: float = 0.0,
         score_nonzero_only: bool = False,
         verbose: bool = False,
@@ -181,144 +210,136 @@ class DamageScorer:
         Load a CSV, score each NIfTI in `path_col` against a target image,
         and save the results back to CSV.
 
-        Images are resampled into the target's space via nilearn.
+        If resample_to_target is True, each subject image is resampled into the
+        target image space. If False, the target image is resampled into each
+        subject image space before scoring.
+        `target_suffix` is optional and retained only for backwards-compatible
+        column naming; omit it to write columns named by metric only.
         """
         df = pd.read_csv(csv_path)
         if path_col not in df.columns:
             raise ValueError(f"Missing path column: {path_col}")
 
         target_img = image.load_img(target_path)
-
-        space_img = target_img
+        mask_img = None
         if self.mask_path is not None:
-            space_img = image.load_img(self.mask_path)
+            mask_img = image.load_img(self.mask_path)
 
         if verbose or log_resample:
             print(
                 f"Target image: shape={target_img.shape}, "
                 f"zooms={target_img.header.get_zooms()[:3]}"
             )
-            if space_img is target_img:
-                print("Resample space: target")
-            else:
+            print("Resample mode: subjects -> target" if resample_to_target else "Resample mode: target -> subjects")
+            if mask_img is not None:
                 print(
-                    f"Resample space (mask): shape={space_img.shape}, "
-                    f"zooms={space_img.header.get_zooms()[:3]}"
+                    f"Mask image: shape={mask_img.shape}, "
+                    f"zooms={mask_img.header.get_zooms()[:3]}"
                 )
 
-        if space_img is target_img:
-            target_data = target_img.get_fdata()
-            if log_resample or verbose:
-                print("[no resample] target_path -> resample space")
-        else:
+        raw_metrics = [selected_damage] if isinstance(selected_damage, str) else list(selected_damage)
+        metrics = [self._normalize_metric_name(metric) for metric in raw_metrics]
+        valid_metrics = {
+            "spatial_correlation",
+            "cosine",
+            "sum",
+            "max_in_roi",
+            "min_in_roi",
+            "avg_in_target",
+            "avg_in_subject",
+            "num_in_roi",
+            "dice",
+        }
+        invalid_metrics = sorted(set(metrics) - valid_metrics)
+        if invalid_metrics:
+            raise ValueError(f"Unsupported selected_damage metric(s): {invalid_metrics}")
+
+        def same_space(img_a, img_b):
+            return img_a.shape == img_b.shape and np.allclose(img_a.affine, img_b.affine)
+
+        def data_in_space(src_img, space_img, label, interpolation):
+            if same_space(src_img, space_img):
+                if log_resample or verbose:
+                    print(f"[no resample] {label} -> scoring space")
+                return src_img.get_fdata()
             if log_resample or verbose:
                 print(
-                    f"[resample] target_path shape={target_img.shape}, "
-                    f"zooms={target_img.header.get_zooms()[:3]} "
+                    f"[resample] {label} shape={src_img.shape}, "
+                    f"zooms={src_img.header.get_zooms()[:3]} "
                     f"-> space shape={space_img.shape}, "
                     f"zooms={space_img.header.get_zooms()[:3]}"
                 )
-            target_resampled = image.resample_to_img(
-                target_img,
+            resampled = image.resample_to_img(
+                src_img,
                 space_img,
-                interpolation="nearest",
+                interpolation=interpolation,
                 force_resample=True,
                 copy_header=True,
             )
-            target_data = target_resampled.get_fdata()
+            return resampled.get_fdata()
 
-        target_data = np.nan_to_num(target_data, nan=0.0, posinf=0.0, neginf=0.0)
+        def target_and_mask_in_space(space_img):
+            target_data = data_in_space(target_img, space_img, "target_path", "nearest")
+            target_data = np.nan_to_num(target_data, nan=0.0, posinf=0.0, neginf=0.0)
 
-        if space_img is target_img:
-            target_mask = target_data > target_threshold
-        else:
-            mask_data = space_img.get_fdata()
-            mask_data = np.nan_to_num(mask_data, nan=0.0, posinf=0.0, neginf=0.0)
-            target_mask = mask_data > 0
+            if mask_img is None:
+                target_mask = target_data > target_threshold
+            else:
+                mask_data = data_in_space(mask_img, space_img, "mask_path", "nearest")
+                mask_data = np.nan_to_num(mask_data, nan=0.0, posinf=0.0, neginf=0.0)
+                target_mask = mask_data > 0
+            return target_data, target_mask
 
-        target_vec = target_data.flatten()[target_mask.flatten()]
+        fixed_target_vec = None
+        fixed_target_mask = None
+        if resample_to_target:
+            fixed_target_data, fixed_target_mask = target_and_mask_in_space(target_img)
+            fixed_target_vec = fixed_target_data.flatten()[fixed_target_mask.flatten()]
 
         subject_paths = df[path_col].tolist()
-        subject_data = {}
+        score_rows = []
+        last_target_vec = fixed_target_vec
         for path in tqdm(subject_paths, desc="Scoring damage", disable=log_resample):
             if pd.isna(path) or not isinstance(path, str) or not path:
-                subject_data[path] = np.full(target_vec.shape, np.nan, dtype=float)
+                score_rows.append({self._score_column_name(metric, target_suffix): np.nan for metric in metrics})
                 continue
-            subj_img = image.load_img(path)
-            same_shape = subj_img.shape == space_img.shape
-            same_affine = np.allclose(subj_img.affine, space_img.affine)
-            if same_shape and same_affine:
-                if log_resample or verbose:
-                    print(f"[no resample] {path} -> resample space")
-                subj_data = subj_img.get_fdata()
-            else:
-                if log_resample or verbose:
-                    print(
-                        f"[resample] {path} shape={subj_img.shape}, "
-                        f"zooms={subj_img.header.get_zooms()[:3]} "
-                        f"-> space shape={space_img.shape}, "
-                        f"zooms={space_img.header.get_zooms()[:3]}"
-                    )
-                subj_resampled = image.resample_to_img(
-                    subj_img,
-                    space_img,
-                    interpolation=resample_interpolation,
-                    force_resample=True,
-                    copy_header=True,
-                )
-                subj_data = subj_resampled.get_fdata()
-            subj_data = np.nan_to_num(subj_data, nan=0.0, posinf=0.0, neginf=0.0)
-            subj_vec = subj_data.flatten()[target_mask.flatten()]
-            subject_data[path] = subj_vec
-
-        self.dv_df = pd.DataFrame(subject_data)
-        self.roi_df = pd.DataFrame({target_suffix: target_vec})
-        self.damage_df = self._initialize_damage_df()
-        metrics = [selected_damage] if isinstance(selected_damage, str) else list(selected_damage)
-        for subject in self.dv_df.columns:
-            subject_array = self.dv_df[subject].values
-            roi_array = self.roi_df[target_suffix].values
-            results = self._calculate_metrics(
-                subject_array,
-                roi_array,
-                metrics,
-                score_nonzero_only=score_nonzero_only,
-            )
-            for metric, value in results.items():
-                if metric == "spatial_correlation":
-                    col_name = f"{target_suffix}_spatial_corr"
-                elif metric == "avg_in_target":
-                    col_name = f"{target_suffix}_average_subject_in_target"
-                elif metric == "avg_in_subject":
-                    col_name = f"{target_suffix}_average_target_in_subject"
-                elif metric == "dice":
-                    col_name = f"{target_suffix}_dice_coeff"
-                elif metric == "max_in_roi":
-                    col_name = f"{target_suffix}_max_in_roi"
-                elif metric == "min_in_roi":
-                    col_name = f"{target_suffix}_min_in_roi"
+            try:
+                subj_img = image.load_img(path)
+                if resample_to_target:
+                    subj_data = data_in_space(subj_img, target_img, path, resample_interpolation)
+                    target_vec = fixed_target_vec
+                    target_mask = fixed_target_mask
                 else:
-                    col_name = f"{target_suffix}_{metric}"
-                self.damage_df.loc[subject, col_name] = value
+                    subj_data = subj_img.get_fdata()
+                    target_data, target_mask = target_and_mask_in_space(subj_img)
+                    target_vec = target_data.flatten()[target_mask.flatten()]
+                    last_target_vec = target_vec
+                subj_data = np.nan_to_num(subj_data, nan=0.0, posinf=0.0, neginf=0.0)
+                subj_vec = subj_data.flatten()[target_mask.flatten()]
+                results = self._calculate_metrics(
+                    subj_vec,
+                    target_vec,
+                    metrics,
+                    score_nonzero_only=score_nonzero_only,
+                )
+                score_rows.append(
+                    {
+                        self._score_column_name(metric, target_suffix): results.get(metric, np.nan)
+                        for metric in metrics
+                    }
+                )
+            except Exception:
+                if verbose:
+                    print(f"Failed to score {path}")
+                score_rows.append({self._score_column_name(metric, target_suffix): np.nan for metric in metrics})
 
-        for metric in metrics:
-            if metric == "spatial_correlation":
-                metric_col = f"{target_suffix}_spatial_corr"
-            elif metric == "avg_in_target":
-                metric_col = f"{target_suffix}_average_subject_in_target"
-            elif metric == "avg_in_subject":
-                metric_col = f"{target_suffix}_average_target_in_subject"
-            elif metric == "dice":
-                metric_col = f"{target_suffix}_dice_coeff"
-            elif metric == "max_in_roi":
-                metric_col = f"{target_suffix}_max_in_roi"
-            elif metric == "min_in_roi":
-                metric_col = f"{target_suffix}_min_in_roi"
-            else:
-                metric_col = f"{target_suffix}_{metric}"
-            scores = self.damage_df[metric_col].reindex(subject_paths).to_numpy()
-            col_name = f"{metric}_{target_suffix}"
-            df[col_name] = scores
+        self.dv_df = None
+        self.roi_df = pd.DataFrame({"target": last_target_vec if last_target_vec is not None else []})
+        self.damage_df = pd.DataFrame(score_rows, index=subject_paths)
+        self.damage_df.index.name = path_col
+        for col in self.damage_df.columns:
+            df[col] = self.damage_df[col].to_numpy()
+
         out_path = out_path or csv_path
         df.to_csv(out_path, index=False)
         return df

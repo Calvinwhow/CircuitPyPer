@@ -724,4 +724,4 @@ class BrainUmap:
                         legend=False,
                         transparent=False,
                     )
-        return fig
+        return None
