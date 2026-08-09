@@ -509,7 +509,7 @@ class CalvinFWEMap():
             print('5th percentile of permuted statistic: ', np.percentile(max_stats, 5))
         return max_stats
             
-    def p_value_calculation(self, uncorrected_df, max_stat_dist, debug=False):
+    def p_value_calculation(self, uncorrected_df, max_stat_dist, p_values=True, debug=False):
         """
         Calculate p-values for the uncorrected statistic values using the distribution of maximum statistics.
 
@@ -520,21 +520,19 @@ class CalvinFWEMap():
         Returns:
             np.ndarray: Array of p-values corresponding to the uncorrected statistic values.
         """
-        # Calculate P-Values
-        max_stat_dist = np.array(max_stat_dist)
-        max_stat_dist = max_stat_dist[:, np.newaxis]
-        if debug:
-            print(max_stat_dist.shape, uncorrected_df.values.shape)
-        p_values = np.mean(max_stat_dist >= np.abs(uncorrected_df.values), axis=0) # Absval for 2-tail testing
-        p_values_df = uncorrected_df.copy()
-        p_values_df.loc[:,:] = p_values
-        
-        # Threshold by 95th Percentile of Max Status
+        p_values_df = None
         threshold = np.percentile(max_stat_dist, 95)
         corrected_df = uncorrected_df.where(np.abs(uncorrected_df) > threshold, 0)
-
-        if debug:
-            print(p_values_df.shape, f'\n Max absolute value in uncorrected DF: {np.max(np.abs(uncorrected_df))} \n', f'Absolute threshold: {threshold} \n', f'Max absolute value in corrected DF: {np.max(np.abs(corrected_df))}')
+        
+        if p_values:
+            # max_stat_dist is (n_perm,) and |r| is (n_voxels, 1), so numpy aligns trailing axes
+            # and broadcasts to (n_voxels, n_perm) -- voxels down, permutations across. The
+            # per-voxel FWE p-value is therefore the mean over axis=1; axis=0 would collapse the
+            # voxel dimension and return one value per permutation. reshape because .loc[:,:]
+            # will not accept a 1-D right-hand side.
+            p_values = np.mean(max_stat_dist >= np.abs(uncorrected_df.values), axis=1) # Absval for 2-tail testing
+            p_values_df = uncorrected_df.copy()     # Copy so it doesnt mutate uncorrected_df
+            p_values_df.loc[:,:] = np.asarray(p_values).reshape(-1, 1)
         return p_values_df, corrected_df
 
     def save_single_nifti(self, nifti_df, out_dir, name='generated_nifti', silent=True):
