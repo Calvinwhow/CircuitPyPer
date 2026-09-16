@@ -38,6 +38,9 @@ def load_parcel_df(parcel_path=None, parcel_df=None, mask_path=None):
     importer = GiiNiiFileImport(
         import_path=parcel_dir,
         file_pattern=file_pattern,
+        # Parcel names such as ACC_sub are not subject IDs.
+        pre_splice=None,
+        post_splice=None,
         mask_path=mask_path if mask_path is not None else "default",
         transpose=False,
     )
@@ -190,9 +193,11 @@ class ParcelwiseDamageMap:
             self.build_map()
         return self.output_handler.view_map(self.output_map, self.output_name)
 
-    def run(self):
-        self.save_map()
-        return self.view_map()
+    def run(self, view=False):
+        nii_path =self.save_map()
+        if view:
+            self.view_map()
+        return nii_path
 
 
 class ParcelwiseRegressionSimilarity:

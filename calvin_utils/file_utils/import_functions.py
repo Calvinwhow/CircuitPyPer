@@ -230,24 +230,26 @@ class GiiNiiFileImport:
 
     def _import_matrices(self, file_paths):
         """Orchestrates import"""
-        self.output_ftype = self._import_type_switch(file_paths)
-        if self.output_ftype == "npy":
+        detected_ftype = self._import_type_switch(file_paths)
+        self.output_ftype = detected_ftype
+        if detected_ftype == "npy":
             arr = self.import_npy_to_numpy_array(file_paths)
-        elif self.output_ftype == "nii":
+        elif detected_ftype == "nii":
             arr = self.import_nifti_to_numpy_array(file_paths)
-        elif self.output_ftype == "nii_timeseries":
+        elif detected_ftype == "nii_timeseries":
             arr = self.import_nifti_timeseries_to_numpy_array(file_paths)
-        elif self.output_ftype in {"gii", "freesurfer"}:
+        elif detected_ftype in {"gii", "freesurfer"}:
             arr = self.import_surface_to_numpy_array(file_paths)
-        elif self.output_ftype == "fiber":
+        elif detected_ftype == "fiber":
             arr = self.import_fiber_to_numpy_array(file_paths)
         else:
-            raise RuntimeError(f"Unknown file type ({self.output_ftype}) imported. Did not detect nifti, gifti, fiber, or npy. Please provide one of these files for import.")
+            raise RuntimeError(f"Unknown file type ({detected_ftype}) imported. Did not detect nifti, gifti, fiber, or npy. Please provide one of these files for import.")
         return arr
 
     def import_nifti_timeseries_to_numpy_array(self, file_paths):
         """Loads 4D volumetric timeseries niftis"""
         self.timeseries_io = VolumetricTimeSeriesIO(mask_path=self.mask_path)
+        self.output_ftype = self.timeseries_io.output_ftype
         data = self.timeseries_io.import_nifti_to_numpy_array(file_paths)
         return data
 
@@ -258,19 +260,24 @@ class GiiNiiFileImport:
     def import_nifti_to_numpy_array(self, file_path):
         """Loads niftis"""
         self.nifti_io = NiftiIO(mask_path=self.mask_path)
+        self.output_ftype = self.nifti_io.output_ftype
         data = self.nifti_io.import_nifti_to_numpy_array(file_path)
         return data
 
     def import_surface_to_numpy_array(self, file_paths):
         """Imports surface files (GIFTI/FreeSurfer) and converts them to a NumPy array."""
         mask_path = None if self.mask_path == 'default' else self.mask_path
+        self.mask_path = mask_path
         self.surface_io = SurfaceIO(mask_path=mask_path)
+        self.output_ftype = self.surface_io.output_ftype
         arr = self.surface_io.import_surface_to_numpy_array(file_paths)
         return arr
     
     def import_fiber_to_numpy_array(self, file_paths):
         mask_path = None if self.mask_path == 'default' else self.mask_path
+        self.mask_path = mask_path
         self.fiber_io = FiberIO(mask_path=mask_path)
+        self.output_ftype = self.fiber_io.output_ftype
         arr = self.fiber_io.import_fiber_to_numpy_array(file_paths)
         return arr
         

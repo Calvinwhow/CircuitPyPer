@@ -1,0 +1,903 @@
+#!/usr/bin/env python3
+"""One-file neuroimaging plotting orchestrator."""
+
+from __future__ import annotations
+
+import argparse
+import html
+import json
+import sys
+import webbrowser
+from pathlib import Path
+
+import matplotlib
+matplotlib.use("Agg")  # Figures are written to disk only; never displayed.
+import matplotlib.pyplot as plt
+
+CIRCUIT_PYPER_DIR = Path(__file__).resolve().parents[1]
+if str(CIRCUIT_PYPER_DIR) not in sys.path:
+    sys.path.insert(0, str(CIRCUIT_PYPER_DIR))
+    
+from calvin_utils.plotting_utils.parcelwise_plot import ParcelwisePlot
+from calvin_utils.permutation_analysis_utils.parcelwise_regression_similarity import ParcelwiseDamageMap
+from calvin_utils.neuroimaging_utils.nifti_utils.cerebellum_plot import SUITCerebellumPlotter
+
+
+# =============================================================================
+# 1. USER ARGUMENTS / DEFAULTS
+# =============================================================================
+# Input / output ----------------------------------------------------------------
+
+NIFTI_PATH = Path('/Users/cu135/Partners HealthCare Dropbox/Calvin Howard/studies/raynor_network_mapping/results/schmahmann_discovery_clustering_mapping/all_columns_no_perm_palm/regression_37/contrast_tval_0_neg1.nii.gz')
+OUTPUT_DIR = "/Users/cu135/hires_backdrops" #NIFTI_PATH.parent / "neuro_plots"
+
+
+# Optional parcellation ---------------------------------------------------------
+# If PARCEL_PATH=None, will plot the source NIfTI directly.
+PARCEL_PATH = None  # example: "/Volumes/HowExp/resources/atlases/mni_space/aal_atlas/AAL_MNI_V7_fine_rois/*.nii.gz"
+MASK_PATH = CIRCUIT_PYPER_DIR / "resources" / "MNI152_T1_2mm_brain_mask.nii"
+PARCEL_DAMAGE_METRIC = "avg_in_target"
+PARCEL_SCORE_NONZERO_ONLY = True
+PARCEL_FILL_VALUE = float("nan")
+
+# Plot selection ----------------------------------------------------------------
+# for yabplot: PLOT = vertexwise | cortical | cortical_outline | subcortical | tracts | voxelwise | connectome
+# for nilearn: PLOT = glass_brain
+# for SUITPy: PLOT = cerebellum
+# for glass_mesh.py: PLOT = glass_mesh  (carved translucent hull; rendered through voxelwise)
+#                    PLOT = brain_mesh  (same, uncarved: outer cerebrum + cerebellum only)
+
+PLOT = "subcortical"
+PROJECT = None                       # None | vol2surf | vol2tract
+ATLAS = "aal3"                       # built-in yabplot atlas
+CUSTOM_ATLAS_PATH = None             # mutually exclusive with ATLAS
+BMESH = "midthickness"
+
+# Cerebellum ---------------------------------------------------------------------
+# Drawn alongside plot="cortical". Same shape as the cortical block above:
+# what to draw, the geometry, the atlas that parcellates it.
+
+CEREBELLUM = "parcels"               # None | surface | parcels
+CEREBELLUM_MESH_PATH = "/Users/cu135/hires_backdrops/suit/yabplot_suit"
+CEREBELLUM_ATLAS = "default"         # "default" | atlas path | yabplot name | None
+
+# Glass mesh ---------------------------------------------------------------------
+# Backdrop for plot="glass_mesh" and plot="brain_mesh": prebuilt meshes read
+# straight off disk from resources/neuro_plotter_resources/. Nothing is computed at
+# plot time. The plot mode picks the hull:
+#   glass_mesh  glass_cerebrum.vtk -- deep grey structures subtracted out of the
+#               hull, so they read as hollow shaded voids rather than solid
+#               bodies drawn on top.
+#   brain_mesh  plain_cerebrum.vtk -- nothing subtracted: the outer cerebral
+#               surface and the cerebellum, no ROI geometry in the mesh at all.
+# Both draw the same SUIT cerebellum alongside at the same alpha. To change what
+# is carved (or rebuild from other source volumes), call
+# calvin_utils.plotting_utils.glass_mesh.rebuild_glass_meshes().
+
+GLASS_CEREBRUM_MESH = None           # None -> the mesh the plot mode implies
+GLASS_CEREBELLUM_MESH = None         # None -> glass_cerebellum.vtk; False -> hull only
+GLASS_ALPHA = 0.16                   # tuned for yabplot (no back-face culling there)
+GLASS_COLOR = "#8d99ae"
+
+# visualization settings ---------------------------------------------------------------
+CMAP = "bwr"                    # also accepts Matplotlibe LUT names, MRIcroGL LUT names in ./resources/colour_luts, and hex codes.
+VMINMAX = None
+THRESHOLD = None
+STYLE = "default"
+DISPLAY_TYPE = "matplotlib"
+DAMAGE_SCORE_METRIC = "max_in_roi" # avg_in_target | max_in_roi
+VIEWER_SCORE_NONZERO_ONLY = False
+
+
+# SUIT -------------------------------------------------------------------------
+SUIT_SPACE = "MNI"                  # MNI for ordinary MNI-space maps
+SUIT_WITHOUT_BACKGROUND = False
+SUIT_COLORBAR = True
+SUIT_RENDER = "matplotlib"
+
+
+# Output products ---------------------------------------------------------------
+
+VIEWS = [
+    "left_lateral",
+    "right_lateral",
+    "left_medial",
+    "right_medial",
+    "superior",
+    "inferior",
+    "anterior",
+    "posterior",
+]
+FORMATS = ["png", "svg"]
+MAKE_GALLERY = True
+MAKE_OVERVIEW = True
+MAKE_INDIVIDUAL_VIEWS = True
+MAKE_HTML = True
+OPEN_HTML = False
+
+
+# Backend escape hatches --------------------------------------------------------
+
+PROJECTION_KWARGS = {
+    "interpolation": "linear",
+    "nan_fill": 0.0,
+}
+PLOT_KWARGS = {}
+SUIT_KWARGS = {}
+
+
+# Optional multi-figure mode ----------------------------------------------------
+# Each dictionary below inherits the defaults and overrides only what it names.
+# If this is filled out, will override the above 'plot_selection' args and create a multi-plot figure
+
+# FIGURES = None
+FIGURES = [
+    # Multiple transparent maps in one glass brain. Paths may be absolute or
+    # relative to NIFTI_PATH's directory. See neuro_plotter_glass_mesh_multi.md.
+    {
+        "name": "triple_dissociation",
+        "plot": "multi_overlay",
+        "render_on": "cortical_subcortical",  # "glass_mesh" | "cortical_subcortical"
+        "overlays": [
+            {"path": "/Users/cu135/hires_backdrops/contrast_tval_FWE_0.nii.gz", "label": "Motor Network",
+             "color": "#c15656", "threshold": 1.96, "alpha": 0.85},
+            {"path": "/Users/cu135/hires_backdrops/contrast_tval_FWE_1.nii.gz", "label": "Cognitive Network",
+             "color": "#5071a0", "threshold": 1.96, "alpha": 0.85},
+            {"path": "/Users/cu135/hires_backdrops/contrast_tval_FWE_2.nii.gz", "label": "Emotional Network",
+             "color": "#9a8ed1", "threshold": 1.96, "alpha": 0.85},
+        ],
+        "plot_kwargs": {"n_levels": 1, "zoom": 1.25},
+    },
+    # {
+    #     "name": "cortical_subcortical",
+    #     "plot": "cortical",
+    #     "project": "vol2surf",
+    #     "atlas": "aal3",
+    #     "symmetric_cbar": True,
+    #     "plot_kwargs": {
+    #         "cerebellum_score_metric": "max_in_roi",
+    #     },
+    # },
+    # {
+    #     "name": "tracts_xtract_large",
+    #     "plot": "tracts",
+    #     "project": "vol2tract",
+    #     "atlas": "xtract_large",
+    #     "cerebellum": None,
+    # },
+    # {
+    #     "name": "glass_mesh",
+    #     "plot": "glass_mesh",
+    #     "fwe_only": True,   # the nilearn entry was gated to FWE maps; True restores that
+    #     "project": None,
+    #     "atlas": None,
+    #     "cerebellum": None,
+    #     "cmap": "bwr",
+    #     "vminmax": None,
+    #     "threshold": None,  # percentile threshold
+    #     "plot_kwargs": {
+    #         "n_levels": 20,
+    #         "zoom": 1.25,
+    #     },
+    # },
+    # {
+    #     "name": "vertexwise",
+    #     "plot": "vertexwise",
+    #     "project": "vol2surf",
+    #     "atlas": None,
+    # },
+    # {
+    #     "name": "basal_ganglia_and_hippocampus",
+    #     "plot": "subcortical",
+    #     "atlas": "aseg",
+    # },
+    # {
+    #     "name": "cerebellar_cortex",
+    #     "plot": "cerebellum",
+    #     "space": "MNI",
+    #     "symmetric_cbar": True,
+    #     "parcel_path": "/Users/cu135/hires_backdrops/suit/atl-Anatom_space-MNI_dseg_rois/*nii.gz",
+    #     "parcel_damage_metric": "max_in_roi",
+    # },
+]
+
+
+# =============================================================================
+# 2. PLOTTING MACHINERY
+# =============================================================================
+
+
+def nifti_stem(path):
+    name = Path(path).name
+    if name.endswith(".nii.gz"):
+        return name[:-7]
+    if name.endswith(".nii"):
+        return name[:-4]
+    return Path(name).stem
+
+
+def parcellate_map(nifti_path, spec, out_dir):
+    """Binary ROI(s) -> one score per ROI -> parcel-filled NIfTI."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    parcellator = ParcelwiseDamageMap(
+        target_map=nifti_path,
+        parcel_path=spec["parcel_path"],
+        mask_path=spec["mask_path"],
+        out_dir=out_dir,
+        output_name=spec["parcellation_name"],
+        selected_damage=spec["parcel_damage_metric"],
+        score_nonzero_only=spec["parcel_score_nonzero_only"],
+        fill_value=spec["parcel_fill_value"],
+    )
+    return Path(parcellator.run())
+
+
+def plot_yabplot(nifti_path, export_path, spec, views=None):
+    """Render through ParcelwisePlot/yabplot."""
+    plot_kwargs = {
+        "style": spec["style"],
+        "display_type": spec["display_type"],
+        "cmap": spec["cmap"],
+        **spec["plot_kwargs"],
+    }
+
+    # Translate the three cerebellum knobs into plot kwargs. Anything set
+    # explicitly in a figure's plot_kwargs wins, so per-figure overrides and
+    # rarely-touched defaults (cerebellum_base_color, cerebellum_filter,
+    # cerebellum_data) still go through plot_kwargs as usual.
+    if spec.get("cerebellum") or plot_kwargs.get("include_cerebellum"):
+        plot_kwargs.setdefault("include_cerebellum", True)
+        if spec.get("cerebellum"):
+            plot_kwargs.setdefault("cerebellum_mode", spec["cerebellum"])
+        if spec.get("cerebellum_mesh_path"):
+            plot_kwargs.setdefault("cerebellum_atlas_path", spec["cerebellum_mesh_path"])
+
+        atlas = spec.get("cerebellum_atlas", "default")
+        plot_kwargs.setdefault("cerebellum_parcellate", atlas is not None)
+        if atlas not in (None, "default"):
+            plot_kwargs.setdefault("cerebellum_parcel_atlas", atlas)
+
+    if spec["vminmax"] is not None:
+        plot_kwargs["vminmax"] = spec["vminmax"]
+    if views is not None:
+        plot_kwargs["views"] = views
+    plot_kwargs["export_path"] = str(export_path)
+
+    return ParcelwisePlot(map_path=nifti_path).run(
+        project=spec["project"],
+        plot=spec["plot"],
+        bmesh=spec["bmesh"],
+        atlas=spec["atlas"],
+        custom_atlas_path=spec["custom_atlas_path"],
+        threshold=spec["threshold"],
+        damage_score_metric=spec["damage_score_metric"],
+        score_nonzero_only=spec["viewer_score_nonzero_only"],
+        projection_kwargs=spec["projection_kwargs"],
+        plot_kwargs=plot_kwargs,
+    )
+
+
+def glassify(spec, carved=True):
+    """Rewrite a ``glass_mesh`` figure into a voxelwise one with a carved bmesh.
+
+    yabplot has no glass-mesh plot type and does not need one: plot_voxelwise
+    already renders the map as nested isosurfaces inside a translucent context
+    mesh, and its bmesh argument takes PolyData. All this does is read the two
+    prebuilt meshes out of resources/neuro_plotter_resources/ and hand them over.
+
+    ignore_bmesh=False is deliberate. The default (True) pushes the voxel data
+    in front of the brain with a polygon offset, which is the x-ray look; for
+    glass we want the shell to sit in front and tint what is behind it.
+
+    ``carved=False`` swaps the hull for the uncarved one, giving a backdrop
+    that is only the outer cerebral surface plus the cerebellum, with no ROI
+    geometry inside it. That is plot="brain_mesh"; everything else about the
+    two modes is identical.
+    """
+    from calvin_utils.plotting_utils.glass_mesh import glass_bmesh
+
+    spec = dict(spec)
+    plot_kwargs = dict(spec["plot_kwargs"])
+
+    plot_kwargs.setdefault(
+        "bmesh",
+        glass_bmesh(
+            cerebrum=spec["glass_cerebrum_mesh"],
+            cerebellum=spec["glass_cerebellum_mesh"],
+            carved=carved,
+        ),
+    )
+    plot_kwargs.setdefault("ignore_bmesh", False)
+    plot_kwargs.setdefault("bmesh_alpha", spec["glass_alpha"])
+    plot_kwargs.setdefault("bmesh_color", spec["glass_color"])
+
+    # plot="voxelwise" with project=None never receives run()'s threshold, so
+    # it has to travel in plot_kwargs. spec["threshold"] already absorbs
+    # THRESHOLD -> FIGURES entry -> --threshold in that order, so it is the one
+    # that should win; an explicit plot_kwargs["threshold"] stays the last word.
+    if "threshold" not in spec["plot_kwargs"]:
+        plot_kwargs["threshold"] = spec["threshold"]
+
+    spec.update(
+        plot="voxelwise",
+        project=None,
+        atlas=None,
+        custom_atlas_path=None,
+        cerebellum=None,        # already part of the bmesh
+        bmesh=None,             # a PolyData dict cannot go through run(bmesh=...)
+        plot_kwargs=plot_kwargs,
+    )
+    return spec
+
+
+def _has_plottable_values(nifti_path):
+    """True when a map has at least one finite, nonzero value.
+
+    SUITPy derives its own colour range when cscale is None
+    (flatmap.py: ``cscale = np.array([np.nanmin(data), np.nanmax(data)])``),
+    so a map that is entirely NaN/zero inside the parcels yields NaN limits and
+    the plot dies downstream. An explicit VMINMAX never touches the data and so
+    never hits this. Rather than depend on that, skip maps with nothing to draw.
+    """
+    import nibabel as nib
+    import numpy as np
+
+    data = np.asanyarray(nib.load(str(nifti_path)).dataobj)
+    finite = np.isfinite(data)
+    return bool(finite.any() and np.any(data[finite] != 0))
+
+
+def symmetrize_color_limits(nifti_path, spec):
+    """Use zero-centered limits for a figure unless limits were supplied."""
+    if not spec.get("symmetric_cbar") or spec["vminmax"] is not None:
+        return spec
+
+    import nibabel as nib
+    import numpy as np
+
+    data = np.asanyarray(nib.load(str(nifti_path)).dataobj)
+    finite = data[np.isfinite(data)]
+    if finite.size == 0:
+        return spec
+
+    limit = float(np.max(np.abs(finite)))
+    if limit == 0:
+        return spec
+
+    spec = dict(spec)
+    spec["vminmax"] = (-limit, limit)
+    return spec
+
+
+def plot_cerebellum(nifti_path, export_path, spec):
+    """Render through SUITCerebellumPlotter/SUITPy.
+
+    Returns None (drawing nothing) when the map has no finite nonzero values --
+    common for FWE maps with no surviving cerebellar voxels.
+    """
+    if not _has_plottable_values(nifti_path):
+        print(
+            f"Skipping cerebellum figure: {Path(nifti_path).name} has no finite "
+            f"nonzero values to plot."
+        )
+        return None
+
+    plotter = SUITCerebellumPlotter(
+        import_path=nifti_path,
+        out_dir=export_path.parent,
+    )
+
+    method = (
+        plotter.plot_without_background
+        if spec["suit_without_background"]
+        else plotter.run
+    )
+
+    return method(
+        nifti_path=nifti_path,
+        space=spec["space"],
+        out_file=export_path,
+        cmap=spec["cmap"],
+        cscale=list(spec["vminmax"]) if spec["vminmax"] is not None else None,
+        threshold=spec["threshold"],
+        colorbar=spec["suit_colorbar"],
+        render=spec["suit_render"],
+        **spec["suit_kwargs"],
+    )
+
+
+def plot_glass_brain(nifti_path, export_path, spec):
+    """Render a signed volumetric map on a nilearn glass brain."""
+    from nilearn import plotting
+
+    plot_kwargs = dict(spec["plot_kwargs"])
+    if spec["vminmax"] is not None:
+        plot_kwargs.setdefault("vmin", spec["vminmax"][0])
+        plot_kwargs.setdefault("vmax", spec["vminmax"][1])
+
+    return plotting.plot_glass_brain(
+        str(nifti_path),
+        output_file=str(export_path),
+        cmap=spec["cmap"],
+        threshold=spec["threshold"],
+        **plot_kwargs,
+    )
+
+
+def plot_multi_glass(export_path, spec, views=None):
+    """Render several independently colored NIfTIs with optional context."""
+    from calvin_utils.plotting_utils.glass_mesh import glass_bmesh
+    from calvin_utils.plotting_utils.multi_overlay_glass import (
+        plot_multi_overlay_glass,
+    )
+
+    plot_kwargs = dict(spec["plot_kwargs"])
+    show_bmesh = plot_kwargs.pop("show_bmesh", True)
+    if "bmesh" not in plot_kwargs:
+        plot_kwargs["bmesh"] = (
+            glass_bmesh(
+                cerebrum=spec["glass_cerebrum_mesh"],
+                cerebellum=spec["glass_cerebellum_mesh"],
+            )
+            if show_bmesh
+            else None
+        )
+    plot_kwargs.setdefault("views", views)
+    plot_kwargs.setdefault("style", spec["style"])
+    plot_kwargs.setdefault("display_type", spec["display_type"])
+    plot_kwargs.setdefault("bmesh_alpha", spec["glass_alpha"])
+    plot_kwargs.setdefault("bmesh_color", spec["glass_color"])
+    plot_kwargs.setdefault("export_path", str(export_path))
+    return plot_multi_overlay_glass(spec["overlays"], **plot_kwargs)
+
+
+def close_figures():
+    """Release every open matplotlib figure and any lingering pyvista plotter.
+
+    yabplot's finalize_plot() creates a figure per render (scene.prepare_plotter)
+    and never closes it, so each one stays in pyplot's global registry holding a
+    full-resolution screenshot array. Closing here is what bounds memory.
+
+    pyvista's Plotter.close() already removes itself from _ALL_PLOTTERS, so
+    close_all() only catches plotters that raised before closing -- but each one
+    pins an OpenGL context, and contexts are the scarce resource in a long batch.
+    The durable fix for that is FIGURES_IN_SUBPROCESS in the regression
+    pipelines; this is just cheap insurance.
+    """
+    plt.close("all")
+    try:
+        import gc
+
+        import pyvista as pv
+
+        pv.close_all()
+        gc.collect()
+    except Exception:  # pyvista absent, or already torn down
+        pass
+
+
+def render_to_formats(nifti_to_plot, figure_dir, basename, spec, views):
+    """Render the 3D scene once, then write every requested format from it."""
+    formats = [x.lower().lstrip(".") for x in spec["formats"]]
+    files = {}
+    if not formats:
+        return files
+
+    primary = figure_dir / f"{basename}.{formats[0]}"
+    result = plot_yabplot(nifti_to_plot, primary, spec, views)
+    files[formats[0]] = primary
+
+    figure = result.get_figure() if hasattr(result, "get_figure") else None
+    for ext in formats[1:]:
+        path = figure_dir / f"{basename}.{ext}"
+        if figure is not None:
+            figure.savefig(path, bbox_inches="tight", dpi=300, transparent=True)
+        else:  # non-matplotlib display types return no figure: re-render.
+            plot_yabplot(nifti_to_plot, path, spec, views)
+        files[ext] = path
+
+    close_figures()
+    return files
+
+
+def render_multi_to_formats(figure_dir, basename, spec, views):
+    """Render a multi-overlay scene once, then write all requested formats."""
+    formats = [x.lower().lstrip(".") for x in spec["formats"]]
+    files = {}
+    if not formats:
+        return files
+
+    primary = figure_dir / f"{basename}.{formats[0]}"
+    result = plot_multi_glass(primary, spec, views)
+    files[formats[0]] = primary
+
+    figure = result.get_figure() if hasattr(result, "get_figure") else None
+    for ext in formats[1:]:
+        path = figure_dir / f"{basename}.{ext}"
+        if figure is not None:
+            figure.savefig(path, bbox_inches="tight", dpi=300, transparent=True)
+        else:
+            plot_multi_glass(path, spec, views)
+        files[ext] = path
+
+    close_figures()
+    return files
+
+
+def write_index(output_dir, source_nifti, cards):
+    """Write the local PNG/SVG gallery."""
+    blocks = []
+
+    for card in cards:
+        files = card["files"]
+        preview = files.get("png") or files.get("svg")
+        if preview is None:
+            continue
+
+        preview_rel = Path(preview).relative_to(output_dir).as_posix()
+        links = []
+        for ext in ("svg", "png"):
+            if ext in files:
+                rel = Path(files[ext]).relative_to(output_dir).as_posix()
+                links.append(f'<a href="{html.escape(rel)}">{ext.upper()}</a>')
+
+        blocks.append(
+            f'''<div class="card">
+<h2>{html.escape(card["title"])}</h2>
+<a href="{html.escape(preview_rel)}"><img src="{html.escape(preview_rel)}" loading="lazy"></a>
+<p>{" · ".join(links)}</p>
+</div>'''
+        )
+
+    page = f'''<!doctype html>
+<html><head><meta charset="utf-8"><title>{html.escape(nifti_stem(source_nifti))}</title>
+<style>
+body{{font-family:system-ui;margin:36px;max-width:1600px;background:#f4f5f7;color:#17212c}}
+.grid{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:20px}}
+.card{{background:white;padding:20px;border-radius:12px}} img{{width:100%;background:white}}
+a{{color:#235c8c}} @media(max-width:900px){{.grid{{grid-template-columns:1fr}}}}
+</style></head><body>
+<h1>{html.escape(nifti_stem(source_nifti))} figures</h1>
+<div class="grid">{"".join(blocks)}</div>
+</body></html>'''
+
+    index_path = output_dir / "index.html"
+    index_path.write_text(page, encoding="utf-8")
+    return index_path
+
+
+# =============================================================================
+# 3. DISPATCH
+# =============================================================================
+
+
+def defaults():
+    return {
+        "name": None,
+        "parcel_path": PARCEL_PATH,
+        "parcellation_name": "parcellated_map",
+        "mask_path": MASK_PATH,
+        "parcel_damage_metric": PARCEL_DAMAGE_METRIC,
+        "parcel_score_nonzero_only": PARCEL_SCORE_NONZERO_ONLY,
+        "parcel_fill_value": PARCEL_FILL_VALUE,
+        "plot": PLOT,
+        "overlays": None,
+        "project": PROJECT,
+        "atlas": ATLAS,
+        "custom_atlas_path": CUSTOM_ATLAS_PATH,
+        "cerebellum": CEREBELLUM,
+        "cerebellum_mesh_path": CEREBELLUM_MESH_PATH,
+        "cerebellum_atlas": CEREBELLUM_ATLAS,
+        "glass_cerebrum_mesh": GLASS_CEREBRUM_MESH,
+        "glass_cerebellum_mesh": GLASS_CEREBELLUM_MESH,
+        "glass_alpha": GLASS_ALPHA,
+        "glass_color": GLASS_COLOR,
+        "bmesh": BMESH,
+        "cmap": CMAP,
+        "vminmax": VMINMAX,
+        "symmetric_cbar": False,
+        "threshold": THRESHOLD,
+        "style": STYLE,
+        "display_type": DISPLAY_TYPE,
+        "damage_score_metric": DAMAGE_SCORE_METRIC,
+        "viewer_score_nonzero_only": VIEWER_SCORE_NONZERO_ONLY,
+        "space": SUIT_SPACE,
+        "suit_without_background": SUIT_WITHOUT_BACKGROUND,
+        "suit_colorbar": SUIT_COLORBAR,
+        "suit_render": SUIT_RENDER,
+        "views": VIEWS,
+        "formats": FORMATS,
+        "gallery": MAKE_GALLERY,
+        "overview": MAKE_OVERVIEW,
+        "individual_views": MAKE_INDIVIDUAL_VIEWS,
+        "projection_kwargs": dict(PROJECTION_KWARGS),
+        "plot_kwargs": dict(PLOT_KWARGS),
+        "suit_kwargs": dict(SUIT_KWARGS),
+    }
+
+
+def name_for(spec):
+    if spec.get("name"):
+        return spec["name"]
+    if spec["plot"] == "cerebellum":
+        return "cerebellum"
+    if spec.get("atlas"):
+        return f'{spec["plot"]}_{spec["atlas"]}'
+    return spec["plot"]
+
+
+def figure_applies_to_source(figure, source_nifti):
+    """Return whether a conditional figure should be rendered for this map."""
+    if figure.get("fwe_only") and "_fwe_" not in Path(source_nifti).name.lower():
+        return False
+    return True
+
+
+def parcellation_key(spec):
+    if spec["parcel_path"] is None:
+        return None
+    return (
+        str(spec["parcel_path"]),
+        str(spec["mask_path"]),
+        spec["parcellation_name"],
+        spec["parcel_damage_metric"],
+        spec["parcel_score_nonzero_only"],
+        repr(spec["parcel_fill_value"]),
+    )
+
+
+def resolve_input_nifti(source_nifti, output_dir, spec, cache):
+    if spec["parcel_path"] is None:
+        return source_nifti
+
+    key = parcellation_key(spec)
+    if key not in cache:
+        cache[key] = parcellate_map(
+            source_nifti,
+            spec,
+            output_dir / "_parcellated",
+        )
+    return cache[key]
+
+
+def resolve_overlay_paths(overlays, source_nifti):
+    """Resolve relative overlay paths beside the dispatch source NIfTI."""
+    if not overlays:
+        raise ValueError("plot='glass_mesh_multi' requires an 'overlays' list")
+
+    resolved = []
+    for overlay in overlays:
+        item = dict(overlay)
+        if "path" not in item:
+            raise ValueError("every multi-overlay entry requires a 'path'")
+        path = Path(item["path"]).expanduser()
+        if not path.is_absolute():
+            path = Path(source_nifti).parent / path
+        item["path"] = path.resolve()
+        resolved.append(item)
+    return resolved
+
+
+def render_figure(source_nifti, output_dir, spec, cache):
+    """Dispatcher: choose SUIT or yabplot and generate requested outputs."""
+    name = name_for(spec)
+    figure_dir = output_dir / name
+    figure_dir.mkdir(parents=True, exist_ok=True)
+
+    if spec["plot"] in {
+        "glass_mesh_multi",
+        "glass_multi",
+        "voxelwise_multi",
+        "multi_overlay",
+    }:
+        spec = dict(spec)
+        spec["overlays"] = resolve_overlay_paths(spec["overlays"], source_nifti)
+        cards = []
+        title = spec.get("title", name.replace("_", " ").title())
+
+        if not spec["gallery"]:
+            files = render_multi_to_formats(
+                figure_dir, name, spec, spec["views"]
+            )
+            return [{"title": title, "files": files}]
+
+        if spec["overview"]:
+            files = render_multi_to_formats(
+                figure_dir, "all_views", spec, spec["views"]
+            )
+            cards.append({"title": title, "files": files})
+
+        if spec["individual_views"]:
+            for view in spec["views"]:
+                files = render_multi_to_formats(
+                    figure_dir, view, spec, [view]
+                )
+                cards.append({
+                    "title": f'{title} — {view.replace("_", " ").title()}',
+                    "files": files,
+                })
+        return cards
+
+    # Rewritten after name_for() so the figure keeps its own name on disk.
+    if spec["plot"] in {"glass_mesh", "glass_hull"}:
+        spec = glassify(spec)
+    elif spec["plot"] in {"brain_mesh", "brain", "plain_mesh"}:
+        spec = glassify(spec, carved=False)
+
+    nifti_to_plot = resolve_input_nifti(source_nifti, output_dir, spec, cache)
+    spec = symmetrize_color_limits(nifti_to_plot, spec)
+    formats = [x.lower().lstrip(".") for x in spec["formats"]]
+    cards = []
+
+    if spec["plot"] in {"cerebellum", "suit", "suit_cerebellum"}:
+        files = {}
+        for ext in formats:
+            path = figure_dir / f"{name}.{ext}"
+            if plot_cerebellum(nifti_to_plot, path, spec) is None:
+                continue        # nothing plottable; leave the card out entirely
+            files[ext] = path
+        close_figures()
+        if not files:
+            return []
+        return [{"title": spec.get("title", name.replace("_", " ").title()), "files": files}]
+
+    if spec["plot"] in {"glass_brain", "glass"}:
+        files = {}
+        for ext in formats:
+            path = figure_dir / f"{name}.{ext}"
+            plot_glass_brain(nifti_to_plot, path, spec)
+            files[ext] = path
+        close_figures()
+        return [{"title": spec.get("title", name.replace("_", " ").title()), "files": files}]
+
+    if not spec["gallery"]:
+        files = render_to_formats(nifti_to_plot, figure_dir, name, spec, spec["views"])
+        return [{"title": spec.get("title", name.replace("_", " ").title()), "files": files}]
+
+    if spec["overview"]:
+        files = render_to_formats(nifti_to_plot, figure_dir, "all_views", spec, spec["views"])
+        cards.append({"title": spec.get("title", name.replace("_", " ").title()), "files": files})
+
+    if spec["individual_views"]:
+        for view in spec["views"]:
+            files = render_to_formats(nifti_to_plot, figure_dir, view, spec, [view])
+            cards.append({
+                "title": f'{spec.get("title", name.replace("_", " ").title())} — {view.replace("_", " ").title()}',
+                "files": files,
+            })
+
+    return cards
+
+
+def dispatch(source_nifti, output_dir, figures=None, overrides=None, make_html=MAKE_HTML, open_html=OPEN_HTML):
+    source_nifti = Path(source_nifti).expanduser().resolve()
+    output_dir = Path(output_dir).expanduser().resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    if not source_nifti.exists():
+        raise FileNotFoundError(source_nifti)
+
+    base = defaults()
+    overrides = overrides or {}
+    figures = figures if figures is not None else [{}]
+    figures = [
+        figure for figure in figures
+        if figure_applies_to_source(figure, source_nifti)
+    ]
+
+    # Precedence: capital defaults < FIGURES entry < explicit argparse override.
+    specs = [{**base, **figure, **overrides} for figure in figures]
+
+    cache = {}
+    cards = []
+    for spec in specs:
+        print(f"Rendering: {name_for(spec)}")
+        cards.extend(render_figure(source_nifti, output_dir, spec, cache))
+
+    if not make_html:
+        return cards
+
+    index_path = write_index(output_dir, source_nifti, cards)
+    print(f"HTML viewer: {index_path}")
+
+    if open_html:
+        webbrowser.open(index_path.as_uri())
+
+    return index_path
+
+
+# Optional argparse -------------------------------------------------------------
+# default=SUPPRESS is deliberate: only arguments actually provided on the CLI
+# overwrite the capitalized values above.
+
+
+def json_dict(value):
+    result = json.loads(value)
+    if not isinstance(result, dict):
+        raise argparse.ArgumentTypeError("Expected a JSON dictionary.")
+    return result
+
+
+def json_list(value):
+    result = json.loads(value)
+    if not isinstance(result, list):
+        raise argparse.ArgumentTypeError("Expected a JSON list.")
+    return result
+
+
+def parser():
+    p = argparse.ArgumentParser()
+    add = lambda *a, **k: p.add_argument(*a, default=argparse.SUPPRESS, **k)
+
+    add("--nifti", dest="nifti_path")
+    add("--output-dir")
+    add("--plot")
+    add("--overlays", type=json_list)
+    add("--project")
+    add("--atlas")
+    add("--custom-atlas-path")
+    add("--bmesh")
+    add("--parcel-path")
+    add("--parcellation-name")
+    add("--mask-path")
+    add("--cmap")
+    add("--vminmax", nargs=2, type=float)
+    add("--threshold", nargs="+", type=float)
+    add("--space")
+    add("--views", nargs="+")
+    add("--formats", nargs="+")
+    add("--projection-kwargs", type=json_dict)
+    add("--plot-kwargs", type=json_dict)
+    add("--suit-kwargs", type=json_dict)
+
+    p.add_argument("--no-gallery", dest="gallery", action="store_false", default=argparse.SUPPRESS)
+    p.add_argument("--no-html", dest="make_html", action="store_false", default=argparse.SUPPRESS)
+    p.add_argument("--no-open-html", dest="open_html", action="store_false", default=argparse.SUPPRESS)
+    return p
+
+
+def normalize_overrides(values):
+    values = dict(values)
+
+    if "vminmax" in values:
+        values["vminmax"] = tuple(values["vminmax"])
+
+    if "threshold" in values:
+        threshold = values["threshold"]
+        if len(threshold) == 1:
+            values["threshold"] = threshold[0]
+        elif len(threshold) == 2:
+            values["threshold"] = tuple(threshold)
+        else:
+            raise ValueError("--threshold accepts one value or two values.")
+
+    if "mask_path" in values:
+        values["mask_path"] = Path(values["mask_path"])
+
+    return values
+
+
+if __name__ == "__main__":
+    args = vars(parser().parse_args())
+
+    source_nifti = Path(args.pop("nifti_path", NIFTI_PATH)).expanduser()
+
+    if "output_dir" in args:
+        output_dir = Path(args.pop("output_dir")).expanduser()
+    elif source_nifti != NIFTI_PATH:
+        output_dir = source_nifti.parent / f"{nifti_stem(source_nifti)}_figures"
+    else:
+        output_dir = OUTPUT_DIR
+
+    make_html = args.pop("make_html", MAKE_HTML)
+    open_html = args.pop("open_html", OPEN_HTML)
+
+    dispatch(
+        source_nifti=source_nifti,
+        output_dir=output_dir,
+        figures=FIGURES,
+        overrides=normalize_overrides(args),
+        make_html=make_html,
+        open_html=open_html,
+    )

@@ -4,18 +4,17 @@ import tempfile
 
 import pandas as pd
 
+from calvin_utils.neuroimaging_utils.ccm_utils.bounding_box import NiftiBoundingBox
 from calvin_utils.neuroimaging_utils.nifti_utils.damage_score_utils import DamageScorer
 from calvin_utils.plotting_utils.pair_superiority_plot import PairSuperiorityPlot
 
 
 class CompareOverlapWithTarget:
     """
-    Score two VTA columns against a target NIfTI using DamageScorer.
-
-    Default CSV columns are VTA1, VTA2, and Target. If target_path is provided,
-    the Target column is not required. Also saves a paired superiority plot
-    comparing the two scored overlap columns.
+    Score two VTA columns against one target NIfTI and save the results.
     """
+
+    OUTPUT_STEM = "compare_overlap_with_target"
 
     def __init__(
         self,
@@ -23,51 +22,44 @@ class CompareOverlapWithTarget:
         *,
         vta_col1: str = "VTA1",
         vta_col2: str = "VTA2",
-        target_path: str | None = None,
-        target_col: str = "Target",
-        output_dir: str | None = None,
-        output_stem: str = "compare_overlap_with_target",
-        output_path: str | None = None,
-        figure_path: str | None = None,
+        target_path: str,
+        output_dir: str,
         mask_path: str | None = None,
-        selected_damage: str | list[str] = "avg_in_subject",
-        group_labels: list[str] | None = None,
-        stat_label: str = "Overlap",
-        target_threshold: float = 0.0,
-        score_nonzero_only: bool = False,
+        selected_damage: str = "avg_in_subject",
         resample_to_target: bool = True,
-        verbose: bool = False,
         log_resample: bool = False,
-        show: bool = True,
     ):
         self.csv_path = csv_path
         self.vta_col1 = vta_col1
         self.vta_col2 = vta_col2
         self.target_path = target_path
-        self.target_col = target_col
-        self.output_dir = output_dir
-        self.output_stem = output_stem
-        self.output_path = output_path
-        self.figure_path = figure_path
+        self.output_dir = os.path.abspath(os.path.expanduser(output_dir))
         self.mask_path = mask_path
         self.selected_damage = selected_damage
-        self.group_labels = group_labels or [vta_col1, vta_col2]
-        self.stat_label = stat_label
-        self.target_threshold = float(target_threshold)
-        self.score_nonzero_only = bool(score_nonzero_only)
         self.resample_to_target = bool(resample_to_target)
-        self.verbose = bool(verbose)
         self.log_resample = bool(log_resample)
-        self.show = bool(show)
+
+        self.output_path = os.path.join(self.output_dir, f"{self.OUTPUT_STEM}.csv")
+        self.figure_path = os.path.join(self.output_dir, f"{self.OUTPUT_STEM}.svg")
 
         self.df = None
         self.overlap_df = None
 
-    def run(self) -> pd.DataFrame:
+    def run(self):
         self.df = pd.read_csv(self.csv_path)
         self._validate_inputs()
+        os.makedirs(self.output_dir, exist_ok=True)
 
         scoring_df = self._build_scoring_df()
+        self._ensure_mask_path(scoring_df)
+        scored = self._score_overlap_columns(scoring_df)
+
+        self.overlap_df = scored
+        self._rename_default_metric_columns()
+        self._save()
+        return self._plot_paired_superiority()
+
+    def _score_overlap_columns(self, scoring_df: pd.DataFrame) -> pd.DataFrame:
         with tempfile.NamedTemporaryFile(suffix=".csv", delete=False) as tmp:
             tmp_path = tmp.name
 
@@ -81,10 +73,7 @@ class CompareOverlapWithTarget:
                 selected_damage=self.selected_damage,
                 target_suffix=f"{self.vta_col1}_vs_target",
                 out_path=tmp_path,
-                target_threshold=self.target_threshold,
-                score_nonzero_only=self.score_nonzero_only,
                 resample_to_target=self.resample_to_target,
-                verbose=self.verbose,
                 log_resample=self.log_resample,
             )
             scored.to_csv(tmp_path, index=False)
@@ -95,37 +84,59 @@ class CompareOverlapWithTarget:
                 selected_damage=self.selected_damage,
                 target_suffix=f"{self.vta_col2}_vs_target",
                 out_path=tmp_path,
-                target_threshold=self.target_threshold,
-                score_nonzero_only=self.score_nonzero_only,
                 resample_to_target=self.resample_to_target,
-                verbose=self.verbose,
                 log_resample=self.log_resample,
             )
         finally:
             if os.path.exists(tmp_path):
                 os.unlink(tmp_path)
 
-        self.overlap_df = scored
-        self._rename_default_metric_columns()
-        self._save()
-        self._plot_paired_superiority()
-        return self.overlap_df
+        return scored
 
     def _validate_inputs(self):
-        if self.mask_path is None:
-            raise ValueError("mask_path is required because this class delegates scoring to DamageScorer.")
         if not isinstance(self.selected_damage, str):
             raise ValueError("selected_damage must be a single metric for paired superiority plotting.")
-        if len(self.group_labels) != 2:
-            raise ValueError("group_labels must contain exactly two labels.")
 
-        required = {self.vta_col1, self.vta_col2}
-        if self.target_path is None:
-            required.add(self.target_col)
-
-        missing = required - set(self.df.columns)
+        missing = {self.vta_col1, self.vta_col2} - set(self.df.columns)
         if missing:
             raise ValueError(f"Missing required columns: {sorted(missing)}")
+
+    ### MASKING METHODS ###
+
+    def _ensure_mask_path(self, scoring_df: pd.DataFrame):
+        if self.mask_path is not None:
+            self.mask_path = self._resolve_path(self.mask_path)
+            return
+
+        mask_files = self._collect_mask_source_files(scoring_df)
+        self.mask_path = self._generate_mask_from_files(mask_files, self.output_dir)
+
+    def _collect_mask_source_files(self, scoring_df: pd.DataFrame) -> list[str]:
+        files = []
+        for col in (self.vta_col1, self.vta_col2):
+            files.extend(scoring_df[col].dropna().tolist())
+        files.append(self._single_target_path())
+        return self._dedupe_paths(files)
+
+    @staticmethod
+    def _dedupe_paths(paths: list[str]) -> list[str]:
+        deduped = []
+        seen = set()
+        for path in paths:
+            if path in seen:
+                continue
+            seen.add(path)
+            deduped.append(path)
+        return deduped
+
+    @staticmethod
+    def _generate_mask_from_files(files: list[str], output_dir: str) -> str:
+        if not files:
+            raise ValueError("Cannot generate a mask because no NIfTI files were provided.")
+
+        bbox = NiftiBoundingBox(files)
+        bbox.gen_mask(output_dir)
+        return os.path.join(output_dir, "mask.nii.gz")
 
     def _build_scoring_df(self) -> pd.DataFrame:
         df = self.df.dropna(subset=[self.vta_col1, self.vta_col2]).copy()
@@ -134,13 +145,7 @@ class CompareOverlapWithTarget:
         return df
 
     def _single_target_path(self) -> str:
-        if self.target_path is not None:
-            return self._resolve_path(self.target_path)
-
-        targets = self.df[self.target_col].dropna().map(self._resolve_path).unique()
-        if len(targets) != 1:
-            raise ValueError("Target column must contain exactly one unique target path.")
-        return targets[0]
+        return self._resolve_path(self.target_path)
 
     def _resolve_path(self, path: str) -> str:
         if not isinstance(path, str) or not path.strip():
@@ -188,40 +193,20 @@ class CompareOverlapWithTarget:
         if data.empty:
             raise ValueError("No paired overlap scores available to plot.")
 
-        out_dir = os.path.dirname(os.path.abspath(self._resolve_figure_path()))
-        os.makedirs(out_dir, exist_ok=True)
-
         plotter = PairSuperiorityPlot(
-            stat_array_1=data[col1].to_numpy(dtype=float),
-            stat_array_2=data[col2].to_numpy(dtype=float),
-            model1_name=self.group_labels[0],
-            model2_name=self.group_labels[1],
-            stat=self.stat_label,
+            stat_array_1=data[col2].to_numpy(dtype=float),
+            stat_array_2=data[col1].to_numpy(dtype=float),
+            model1_name=self.vta_col2,
+            model2_name=self.vta_col1,
+            stat="Overlap",
             out_dir=None,
             method="bootstrap",
         )
-        plotter.draw(verbose=self.show, save=False)
+        plotter.draw(verbose=False, save=False)
         fig = plt.gcf()
         fig.savefig(self.figure_path, bbox_inches="tight")
-        if not self.show:
-            plt.close(fig)
-
-    def _resolve_figure_path(self) -> str:
-        if self.figure_path is None:
-            out_dir = self._resolve_output_dir()
-            self.figure_path = os.path.join(out_dir, f"{self.output_stem}.svg")
-        return self.figure_path
-
-    def _resolve_output_dir(self) -> str:
-        if self.output_dir is not None:
-            return os.path.abspath(os.path.expanduser(self.output_dir))
-        if self.output_path is not None:
-            return os.path.dirname(os.path.abspath(self.output_path))
-        return os.path.dirname(os.path.abspath(self.csv_path))
+        plt.close(fig)
+        return fig
 
     def _save(self):
-        if self.output_path is None:
-            out_dir = self._resolve_output_dir()
-            self.output_path = os.path.join(out_dir, f"{self.output_stem}.csv")
-        os.makedirs(os.path.dirname(os.path.abspath(self.output_path)), exist_ok=True)
         self.overlap_df.to_csv(self.output_path, index=False)

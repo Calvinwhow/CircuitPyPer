@@ -94,6 +94,9 @@ class MergeVTAColumns:
                 if not paths:
                     merged_paths.append("")
                     continue
+                normalized_paths = [os.path.realpath(os.path.abspath(path)) for path in paths]
+                if len(set(normalized_paths)) != len(normalized_paths):
+                    raise ValueError(f"Duplicate VTA input path for subject {subject_id}: {paths}")
 
                 out_path = os.path.join(out_dir, f"{self._safe_subject(subject_id)}{self.output_suffix}")
                 if os.path.exists(out_path) and not self.overwrite:
@@ -105,9 +108,8 @@ class MergeVTAColumns:
 
                 if self.verbose:
                     print(f"Merged {len(paths)} VTAs for {subject_id} -> {out_path}")
-            except:
-                print("Failed on: ", row)
-                merged_paths.append("")
+            except Exception:
+                raise
 
         self._merged_paths = merged_paths
         self._df[self.output_col] = merged_paths
@@ -146,7 +148,7 @@ class MergeVTAColumns:
         bbox.generate_bounding_box()
         bbox.add_niftis_to_bounding_box()
         bbox.collapse_bbox_to_3d()
-        bbox.save_nifti(bbox._collapsed_data, out_path)
+        bbox.save_nifti(bbox.collapsed_bbox_to_mask(), out_path)
 
     # ---- internal: output ----
     def _write_csv(self):

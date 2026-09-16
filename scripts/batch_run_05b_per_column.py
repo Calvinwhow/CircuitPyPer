@@ -44,10 +44,10 @@ AVERAGE_CV_LABELS = ["loocv", "2", "5", "10"]
 
 
 SCRIPT_ARGS: dict[str, Any] = {
-    "input_csv": "/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/master_list_redo.csv",
-    "mask_path": "/Users/cu135/Software_Local/calvin_utils_project/circuit_pyper/resources/MNI152_T1_2mm_brain_mask.nii",
-    "paths_col": "onetouch_path",
-    "out_root": "/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/results/optimzation/symptoms_on_lhs_redo2",
+    "input_csv": "/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/Schmahmann_BIDS/guerrera_2026_fibfilt/fiber_filter_manifest.csv",
+    "mask_path": "/Volumes/OneTouch/resources/Atlas_tck_MNI/Atlas_all30_MNI.npz",
+    "paths_col": "fiber_path",
+    "out_root": "/Users/cu135/Partners HealthCare Dropbox/Calvin Howard/studies/raynor_network_mapping/results/schmahmann_discovery_fibers",
     "summary_csv": "batch_05b_summary.csv",
     "columns": [
         "Gait",
@@ -167,8 +167,8 @@ SCRIPT_ARGS: dict[str, Any] = {
     ],
     "filter_col": "selected",
     "filter_value": 1,
-    "drop_nans": ["onetouch_path", "AffectFailS"],
-    "cv": 'loocv',
+    "drop_nans": ["fiber_path"],
+    "cv": None,
     "n_permutations": 0,
     "data_transform": None,
     "verbose": True,
@@ -305,6 +305,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--columns", nargs="*", default=None)
     parser.add_argument("--all-numeric", action="store_true")
     parser.add_argument("--exclude-col", action="append", default=[])
+    parser.add_argument("--shard-index", type=int, default=0)
+    parser.add_argument("--num-shards", type=int, default=1)
+    parser.add_argument("--skip-existing", action="store_true")
     parser.add_argument("--filter-col", default=None)
     parser.add_argument("--filter-value", default=None)
     parser.add_argument("--drop-nans", nargs="*", default=None)
@@ -322,7 +325,9 @@ def main(argv: list[str] | None = None) -> int:
     out_root = Path(args.out_root)
     out_root.mkdir(parents=True, exist_ok=True)
     summary_csv = out_root / Path(args.summary_csv).name
-    mask_data = np.asanyarray(nib.load(str(args.mask_path)).dataobj)
+    mask_data = None
+    if Path(args.mask_path).suffix.lower() != ".npz":
+        mask_data = np.asanyarray(nib.load(str(args.mask_path)).dataobj)
 
     df = pd.read_csv(args.input_csv)
     if args.filter_col is not None:
@@ -333,11 +338,18 @@ def main(argv: list[str] | None = None) -> int:
     if args.all_numeric:
         columns = [c for c in df.select_dtypes(include=["number"]).columns if c not in set(args.exclude_col)]
     else:
-        columns = list(args.columns or [])
+        columns = list(SCRIPT_ARGS["columns"] if args.columns is None else args.columns)
+    if args.num_shards < 1 or not 0 <= args.shard_index < args.num_shards:
+        raise ValueError("Require num_shards >= 1 and 0 <= shard_index < num_shards.")
+    columns = columns[args.shard_index::args.num_shards]
 
     for predictor in columns:
         out_dir = out_root / _safe_name(predictor)
         out_dir.mkdir(parents=True, exist_ok=True)
+
+        if args.skip_existing and (out_dir / "contrast_tval_0.fib.npy").exists():
+            print(f"[skip existing] {predictor}")
+            continue
 
         tmp = pd.DataFrame(
             {
@@ -353,9 +365,23 @@ def main(argv: list[str] | None = None) -> int:
         contrast_path = out_dir / "contrast.json"
         contrast_path.write_text(json.dumps([[0, 1]], indent=2))
 
+        if len(input_df) < 3 or input_df[predictor].nunique(dropna=True) < 2:
+            row = {
+                "predictor": predictor,
+                "n": len(input_df),
+                "out_dir": str(out_dir),
+                "cv": "",
+                "status": "skipped",
+                "reason": "requires at least 3 observations and 2 distinct outcome values",
+                **_empty_cv_metrics(),
+                **_average_cv_metrics(_empty_cv_metrics()),
+            }
+            _append_summary_row(summary_csv, row)
+            continue
+
         cmd = [
             sys.executable,
-            str(_SCRIPTS_DIR / "05b_full_voxelwise_regression.py"),
+            str(_SCRIPTS_DIR / "05b_full_voxelwise_regression_cli.py"),
             "fit",
             "--input-path",
             str(input_csv),
@@ -384,7 +410,21 @@ def main(argv: list[str] | None = None) -> int:
         if args.verbose:
             cmd += ["--verbose"]
 
-        subprocess.run(cmd, check=True)
+        try:
+            subprocess.run(cmd, check=True)
+        except subprocess.CalledProcessError as exc:
+            row = {
+                "predictor": predictor,
+                "n": len(input_df),
+                "out_dir": str(out_dir),
+                "cv": "",
+                "status": "failed",
+                "reason": f"regression subprocess exited with status {exc.returncode}",
+                **_empty_cv_metrics(),
+                **_average_cv_metrics(_empty_cv_metrics()),
+            }
+            _append_summary_row(summary_csv, row)
+            continue
 
         if cv_value is not None and len(input_df) >= 2:
             cv_labels = _valid_cv_labels(len(input_df))
@@ -407,16 +447,20 @@ def main(argv: list[str] | None = None) -> int:
             cv_metrics = _empty_cv_metrics()
         avg_cv_metrics = _average_cv_metrics(cv_metrics)
 
-        fwe_dots = {
-            f"dot_{_strip_nii_suffix(map_path.name)}": _dot_product_with_mask(map_path, mask_data)
-            for map_path in _find_fwe_maps(out_dir)
-        }
+        fwe_dots = {}
+        if mask_data is not None:
+            fwe_dots = {
+                f"dot_{_strip_nii_suffix(map_path.name)}": _dot_product_with_mask(map_path, mask_data)
+                for map_path in _find_fwe_maps(out_dir)
+            }
 
         row = {
             "predictor": predictor,
             "n": len(input_df),
             "out_dir": str(out_dir),
             "cv": "" if cv_value is None else "all",
+            "status": "complete",
+            "reason": "",
             **cv_metrics,
             **avg_cv_metrics,
             **fwe_dots,

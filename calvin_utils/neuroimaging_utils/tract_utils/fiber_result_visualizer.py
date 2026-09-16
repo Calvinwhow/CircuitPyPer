@@ -116,20 +116,26 @@ class FiberResultVisualizer:
 
     Thresholding
     ------------
-    By default all finite fibers are exported. Use ``sign``, ``min_abs_value``,
-    or ``top_percent`` to reduce the displayed fibers.
+    By default all finite, non-zero fibers are exported. Use ``sign``,
+    ``min_abs_value``, or ``top_percent`` to reduce the displayed fibers.
 
     ``sign``:
-        "both"     keep positive and negative finite values
+        "both"     keep positive and negative finite, non-zero values in one
+                   signed, bidirectional output
         "positive" keep values > 0
-        "negative" keep values < 0
+        "negative" keep input values < 0 and export their positive magnitudes
+
+        Values are case-insensitive. ``"pos"`` and ``"neg"`` remain accepted
+        as aliases. Use ``sign="both"`` when a single ``*_ftr.mat`` containing
+        both directions is desired; regression output uses two separate
+        visualizer calls so its positive and negative files remain independent.
 
     ``min_abs_value``:
         Keep fibers with absolute statistic >= this value.
 
     ``top_percent``:
         Keep the top percent of fibers by absolute statistic after sign/value
-        filtering. For example, ``top_percent=5`` exports the strongest 5%.
+        filtering. For example, ``top_percent=5`` exports the strongest 5% negative values if sign=negative.
 
     ``symmetric``:
         If True, duplicate the selected fibers after thresholding and mirror
@@ -139,6 +145,15 @@ class FiberResultVisualizer:
 
     ``run()`` returns a dictionary with output paths and exported counts.
     """
+
+    SIGN_OPTIONS = ("both", "positive", "negative")
+    _SIGN_ALIASES = {
+        "both": "both",
+        "positive": "positive",
+        "pos": "positive",
+        "negative": "negative",
+        "neg": "negative",
+    }
 
     def __init__(
         self,
@@ -151,7 +166,7 @@ class FiberResultVisualizer:
         sign: str = "both",
         min_abs_value: float | None = None,
         top_percent: float | None = None,
-        save_discfibers_mat: bool = True,
+        save_discfibers_mat: bool = False,
         save_ftr_mat: bool = True,
         save_tck: bool = False,
         save_track_mat: bool = False,
@@ -165,7 +180,7 @@ class FiberResultVisualizer:
         self.values = None if values is None else np.asarray(values, dtype=np.float32).flatten()
         self.out_dir = Path(out_dir)
         self.output_name = output_name
-        self.sign = sign
+        self.sign = self._normalize_sign(sign)
         self.min_abs_value = min_abs_value
         self.top_percent = top_percent
         self.save_discfibers_mat = bool(save_discfibers_mat)
@@ -212,8 +227,6 @@ class FiberResultVisualizer:
             raise FileNotFoundError(f"values_path does not exist: {self.values_path}")
         if self.fiber_atlas_path is not None and not self.fiber_atlas_path.exists():
             raise FileNotFoundError(f"fiber_atlas_path does not exist: {self.fiber_atlas_path}")
-        if self.sign not in {"both", "positive", "pos", "negative", "neg"}:
-            raise ValueError("sign must be one of: both, positive, pos, negative, neg.")
         if self.top_percent is not None and not (0 < float(self.top_percent) <= 100):
             raise ValueError("top_percent must be in (0, 100].")
         if not str(self.tck_suffix).endswith(".tck"):
@@ -266,10 +279,12 @@ class FiberResultVisualizer:
         vals = np.asarray(self.values, dtype=np.float32).flatten()
         keep = np.isfinite(vals)
 
-        if self.sign in {"positive", "pos"}:
+        if self.sign == "positive":
             keep &= vals > 0
-        elif self.sign in {"negative", "neg"}:
+        elif self.sign == "negative":
             keep &= vals < 0
+        else:
+            keep &= vals != 0
 
         if self.min_abs_value is not None:
             keep &= np.abs(vals) >= float(self.min_abs_value)
@@ -283,6 +298,10 @@ class FiberResultVisualizer:
         self.keep_mask = keep
         self.selected_fibers = [fiber for fiber, selected in zip(self.fibers, keep) if selected]
         self.selected_values = vals[keep].astype(np.float32)
+        if self.sign == "negative":
+            # Select using the original sign, then expose negative results as
+            # positive magnitudes for visualization tools such as Lead-DBS.
+            self.selected_values *= -1.0
         self.n_selected_before_symmetry = int(len(self.selected_fibers))
 
     def apply_symmetry(self):
@@ -376,6 +395,8 @@ class FiberResultVisualizer:
             "fiber_atlas_path": str(self.fiber_atlas_path) if self.fiber_atlas_path is not None else None,
             "output_name": self.output_name,
             "sign": self.sign,
+            "bidirectional": self.sign == "both",
+            "negative_values_exported_as_magnitudes": self.sign == "negative",
             "min_abs_value": self.min_abs_value,
             "top_percent": self.top_percent,
             "n_input_fibers": int(len(self.fibers)),
@@ -392,6 +413,21 @@ class FiberResultVisualizer:
 
     def _values_path_is_fib_npy(self):
         return self.values_path is not None and self.values_path.name.endswith(".fib.npy")
+
+    @classmethod
+    def _normalize_sign(cls, sign):
+        if not isinstance(sign, str):
+            raise ValueError(
+                "sign must be one of: both, positive, or negative "
+                "(case-insensitive; pos/neg aliases are accepted)."
+            )
+        normalized = cls._SIGN_ALIASES.get(sign.strip().lower())
+        if normalized is None:
+            raise ValueError(
+                "sign must be one of: both, positive, or negative "
+                "(case-insensitive; pos/neg aliases are accepted)."
+            )
+        return normalized
 
     def _mirror_fiber(self, fiber):
         mirrored = np.asarray(fiber, dtype=np.float32).copy()

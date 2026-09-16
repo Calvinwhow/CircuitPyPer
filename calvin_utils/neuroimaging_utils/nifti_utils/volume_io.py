@@ -31,6 +31,8 @@ PACKAGE_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..
 DEFAULT_MASK = os.path.join(PACKAGE_ROOT, "resources", "MNI152_T1_2mm_brain_mask.nii")
 
 class NiftiIO:
+    output_ftype = "nii"
+
     def __init__(self, mask_path='default', threshold=0):
         self.mask_path = mask_path
         self.threshold = threshold
@@ -38,6 +40,10 @@ class NiftiIO:
         self.bbox = None
         self.bbox_mask = None
         self.bbox_4d = None
+
+    def validate_for_output(self):
+        # Unmasked arrays remain supported by the legacy NIfTI writer.
+        return None
 
     @property
     def resolved_mask_path(self):
@@ -181,6 +187,31 @@ class NiftiIO:
 
         return arr
 
+    def prepare_map_for_evaluation(self, map_data):
+        """Return one fitted volumetric map as a flat evaluation vector."""
+        return np.asarray(map_data, dtype=np.float32).reshape(-1)
+
+    def prepare_evaluation_data(self, file_paths):
+        """Return subject maps as ``(subjects, locations)``."""
+        return self.import_nifti_to_numpy_array(list(file_paths)).T.astype(np.float32, copy=False)
+
+    @staticmethod
+    def evaluation_size(model_size):
+        return int(model_size)
+
+    @staticmethod
+    def is_native_map_file(path):
+        name = str(path).lower()
+        return name.endswith(".nii") or name.endswith(".nii.gz")
+
+    def load_map_values(self, path):
+        return self.import_nifti_to_numpy_array([str(path)])[:, 0]
+
+    @staticmethod
+    def native_map_stem(path):
+        name = os.path.basename(str(path))
+        return name[:-7] if name.lower().endswith(".nii.gz") else os.path.splitext(name)[0]
+
     def save_files(self, arr: np.ndarray, file_paths, dry_run=True, file_suffix=None, fill_value=0):
         """
         Save one NIfTI map per output file.
@@ -264,12 +295,18 @@ class NiftiIO:
                 nib.save(img, out_path)
 
 class VolumetricTimeSeriesIO:
+    output_ftype = "nii_timeseries"
+
     def __init__(self, mask_path='default', threshold=0):
         self.mask_path = mask_path
         self.threshold = threshold
         self._affines = set()
         self._shapes = set()
         self._n_timepoints = set()
+
+    def validate_for_output(self):
+        if self.resolved_mask_path is None:
+            raise ValueError("Volumetric time-series output requires a reference mask.")
 
     @property
     def resolved_mask_path(self):
@@ -392,6 +429,31 @@ class VolumetricTimeSeriesIO:
             return arr
         n_vox, n_time, n_files = arr.shape
         return arr.reshape(n_vox * n_time, n_files)
+
+    def prepare_map_for_evaluation(self, map_data):
+        """Return one fitted space-by-time map as a flat evaluation vector."""
+        return np.asarray(map_data, dtype=np.float32).reshape(-1)
+
+    def prepare_evaluation_data(self, file_paths):
+        """Return subject time series as ``(subjects, flattened locations)``."""
+        return self.import_nifti_to_numpy_array(list(file_paths)).T.astype(np.float32, copy=False)
+
+    @staticmethod
+    def evaluation_size(model_size):
+        return int(model_size)
+
+    @staticmethod
+    def is_native_map_file(path):
+        name = str(path).lower()
+        return name.endswith(".nii") or name.endswith(".nii.gz")
+
+    def load_map_values(self, path):
+        return self.import_nifti_to_numpy_array([str(path)])[:, 0]
+
+    @staticmethod
+    def native_map_stem(path):
+        name = os.path.basename(str(path))
+        return name[:-7] if name.lower().endswith(".nii.gz") else os.path.splitext(name)[0]
 
     def save_files(self, arr: np.ndarray, file_paths, dry_run=True, file_suffix=None, fill_value=0):
         """

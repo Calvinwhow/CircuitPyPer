@@ -1,0 +1,1402 @@
+#!/usr/bin/env python3
+"""One-file neuroimaging plotting orchestrator."""
+
+from __future__ import annotations
+
+import argparse
+import html
+import json
+import sys
+import webbrowser
+from pathlib import Path
+import nibabel as nib
+import numpy as np
+from scipy.ndimage import map_coordinates
+import yabplot as yab
+
+from calvin_utils.plotting_utils.glass_mesh import build_bmesh
+    
+import matplotlib
+matplotlib.use("Agg")  # Figures are written to disk only; never displayed.
+import matplotlib.pyplot as plt
+
+CIRCUIT_PYPER_DIR = Path(__file__).resolve().parents[1]
+if str(CIRCUIT_PYPER_DIR) not in sys.path:
+    sys.path.insert(0, str(CIRCUIT_PYPER_DIR))
+    
+from calvin_utils.plotting_utils.parcelwise_plot import ParcelwisePlot
+from calvin_utils.permutation_analysis_utils.parcelwise_regression_similarity import ParcelwiseDamageMap
+from calvin_utils.neuroimaging_utils.nifti_utils.cerebellum_plot import SUITCerebellumPlotter
+
+
+# =============================================================================
+# 1. USER ARGUMENTS / DEFAULTS
+# =============================================================================
+# Input / output ----------------------------------------------------------------
+
+NIFTI_PATH = Path("/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/results/optimization/symptom_on_lhs/network_regressions_clusters/cluster_regression_identity_standardized/Nifti_File_Path-on-cluster_motor-cluster_cognitive-cluster_emotional/regression/contrast_tval_FWE_0.nii.gz")
+OUTPUT_DIR = NIFTI_PATH.parent / "neuro_plots"
+
+
+# Optional parcellation ---------------------------------------------------------
+# If PARCEL_PATH=None, will plot the source NIfTI directly.
+PARCEL_PATH = None
+ATLAS_PATH = CIRCUIT_PYPER_DIR / "resources" / "atlases" # example: "/Volumes/HowExp/resources/atlases/mni_space/aal_atlas/AAL_MNI_V7_fine_rois/*.nii.gz"
+MASK_PATH = CIRCUIT_PYPER_DIR / "resources" / "MNI152_T1_2mm_brain_mask.nii"
+PARCEL_DAMAGE_METRIC = "avg_in_target"
+PARCEL_SCORE_NONZERO_ONLY = True
+PARCEL_FILL_VALUE = float("nan")
+
+# Plot and geometry menus ------------------------------------------------------
+from calvin_utils.plotting_utils.brains import (  # noqa: E402
+    ATLASES as _ATLAS_SPECS,
+    MESHES as _MESH_SPECS,
+    atlas_name,
+    mesh_bmesh,
+    mesh_pieces,
+    mesh_subcortex,
+)
+
+PLOTS = {
+    "surface": "[surface mesh + surface atlas] parcel values on a cortical surface",
+    "parcel_mesh": "[subcortex mesh; no atlas] one value on every regional mesh",
+    "surface_mesh": "[surface mesh]; no atlas] one value across each surface of a custom mesh",
+    "mesh": "[surface mesh; no atlas] NIfTIs as isosurfaces and tract files as streamlines",
+    "vertexwise": "[surface mesh] values already defined at surface vertices",
+    "cortical_outline": "[surface mesh + surface atlas] outlined cortical parcels",
+    "connectome": "[yabplot atlas] nodes and edges",
+    "glass_brain": "[NIfTI] nilearn projected glass-brain view",
+    "cerebellum": "[NIfTI] SUITPy cerebellar flatmap",
+}
+
+MESHES = {
+    "pial": "[surface, mesh] yabplot pial cortex",
+    "midthickness": "[surface, mesh] yabplot midthickness cortex",
+    "white": "[surface, mesh] yabplot white-matter surface",
+    "inflated": "[surface, mesh] yabplot inflated cortex",
+    "very_inflated": "[surface, mesh] yabplot very-inflated cortex",
+    "pial_wholebrain": "[mesh] pial cortex + custom cerebellum + brainstem",
+    "midthickness_wholebrain": "[mesh] midthickness cortex + custom cerebellum + brainstem",
+    "inflated_wholebrain": "[mesh] inflated cortex + custom cerebellum + brainstem",
+    "glass_wholebrain": "[mesh] custom carved hull + custom cerebellum",
+    "plain_wholebrain": "[mesh] custom uncarved hull + custom cerebellum",
+    "aal3_suit_parcels": "[parcel_mesh] custom AAL3 + SUIT, 165 regional meshes",
+    "suit_parcels": "[parcel_mesh] custom SUIT cerebellum, 32 regional meshes",
+    "aal3_subcortical": "[parcel_mesh] yabplot AAL3 subcortical meshes",
+    "aal3_nocer": "[parcel_mesh] yabplot AAL3 subcortical meshes without cerebellum",
+    "aseg": "[parcel_mesh] yabplot FreeSurfer aseg structures",
+    "tian2020_s1": "[parcel_mesh] yabplot Tian 2020 scale 1 structures",
+    "brainnetome_sc": "[parcel_mesh] yabplot Brainnetome subcortical structures",
+    "musus100": "[parcel_mesh] yabplot Melbourne subcortex atlas",
+    "musus100_dbn": "[parcel_mesh] yabplot Melbourne deep-brain nuclei",
+    "musus100_tha": "[parcel_mesh] yabplot Melbourne thalamic nuclei",
+}
+
+ATLASES = {
+    "aal3": "[surface] AAL3 cortical parcellation",
+    "aparc": "[surface] Desikan-Killiany cortical parcellation",
+    "brainnetome": "[surface] Brainnetome cortical parcellation",
+    "schaefer100": "[surface] Schaefer 100 cortical parcels",
+    "schaefer200": "[surface] Schaefer 200 cortical parcels",
+    "schaefer300": "[surface] Schaefer 300 cortical parcels",
+    "schaefer400": "[surface] Schaefer 400 cortical parcels",
+    "schaefer1000": "[surface] Schaefer 1000 cortical parcels",
+    "hcp1065_medium": "[tracts] HCP 1065 medium tract atlas",
+    "hcp1065_small": "[tracts] HCP 1065 small tract atlas",
+    "hcp1065_tiny": "[tracts] HCP 1065 tiny tract atlas",
+    "xtract_large": "[tracts] XTRACT large tract atlas",
+    "xtract_medium": "[tracts] XTRACT medium tract atlas",
+    "xtract_small": "[tracts] XTRACT small tract atlas",
+    "xtract_tiny": "[tracts] XTRACT tiny tract atlas",
+    None: "[mesh, parcel_mesh] no cortical surface parcellation",
+}
+
+_TRACT_ATLASES = {
+    "hcp1065_medium", "hcp1065_small", "hcp1065_tiny", "xtract_large",
+    "xtract_medium", "xtract_small", "xtract_tiny",
+}
+if (
+    set(MESHES) != set(_MESH_SPECS)
+    or set(ATLASES) - _TRACT_ATLASES - {None} != set(_ATLAS_SPECS)
+):
+    raise RuntimeError("The neuro_plotter menus and brains.py registry disagree.")
+
+PLOT = "parcel_mesh"                # any key in PLOTS
+MESH = "aal3_suit_parcels"
+ATLAS = None                         # any key in ATLASES
+PROJECT = None                       # None | "vol2surf" | "vol2tract"
+
+SURFACE_PLOTS = {"surface"}
+SUBCORTEX_PLOTS = {"parcel_mesh"}
+PLOT_ALIASES = {"surface": "cortical", "parcel_mesh": "subcortical"}
+
+# Style -----------------------------------------------------------------------
+MESH_ALPHA = 0.16                    # tuned for yabplot (no back-face culling there)
+MESH_COLOR = "#8d99ae"
+
+# visualization settings ---------------------------------------------------------------
+CMAP = "#c15656"                    # also accepts Matplotlibe LUT names, MRIcroGL LUT names in ./resources/colour_luts, and hex codes.
+VMINMAX = None
+THRESHOLD = 0                # Minimum  value plotted
+ABSOLUTE_THRESHOLD = False      # Whether minimum value plotted is an absolute value or not
+STYLE = "default"
+DISPLAY_TYPE = "matplotlib"
+DAMAGE_SCORE_METRIC = "avg_in_target" # avg_in_target | max_in_roi |avg_in_target
+VIEWER_SCORE_NONZERO_ONLY = False
+SYMMETRIC_CBAR = False
+
+# Tracts ----------------------------------------------------------------------
+TRACT_ATLAS_PATH = None              # None | canonical .npz/.npy geometry for vector .fib.npy
+TRACT_SIGN = "positive"             # "both" | "positive" | "negative"
+TRACT_MIN_ABS_VALUE = None           # None | nonnegative number
+TRACT_TOP_PERCENT = None             # None | number in (0, 100]
+TRACT_ALPHA = 1.0                    # number from 0.0 to 1.0
+TRACT_LINE_WIDTH = 1.2               # positive number
+TRACT_RENDER_AS_TUBES = True         # True | False
+TRACT_ORIENTATION_COLORING = False   # True | False; True ignores CMAP and values
+
+
+# Cerebellar Cortex ------------------------------------------------------------
+SUIT_SPACE = "MNI"                  # MNI for ordinary MNI-space maps
+SUIT_WITHOUT_BACKGROUND = False
+SUIT_COLORBAR = True
+SUIT_RENDER = "matplotlib"
+
+
+# Output products ---------------------------------------------------------------
+
+VIEWS = [
+    "left_lateral",
+    "right_lateral",
+    "left_medial",
+    "right_medial",
+    "superior",
+    "inferior",
+    "anterior",
+    "posterior",
+]
+FORMATS = ["svg"]
+MAKE_GALLERY = True
+MAKE_OVERVIEW = True
+MAKE_INDIVIDUAL_VIEWS = False
+MAKE_HTML = True
+OPEN_HTML = True
+
+# Backend escape hatches --------------------------------------------------------
+
+PROJECTION_KWARGS = {
+    "interpolation": "linear",
+    "nan_fill": 0.0,
+}
+PLOT_KWARGS = {}
+SUIT_KWARGS = {}
+
+
+# Presets ---------------------------------------------------------------------
+PRESETS = {
+    "custom_parcel_mesh": {
+        "note": "Parcel mesh of AAL3 and SUIT. configure mesh, cmap, vminmax, threshold, and plot_kwargs.subcortical_score_metric.",
+        "name": "custom_parcel_mesh",
+        "plot": "parcel_mesh",
+        "mesh": "aal3_suit_parcels",
+        "atlas": None,
+        "project": None,
+        "symmetric_cbar": SYMMETRIC_CBAR,
+        "plot_kwargs": {"subcortical_score_metric": "max_in_roi"}
+        },
+    "custom_brain_mesh": {
+        "note": "Project volumetric NIfTI onto the cortical surface.",
+        "name": "custom_brain_mesh",
+        "plot": "surface_mesh",
+        "mesh": "pial_wholebrain", # pial_wholebrain (shows sulci) | plain_wholebrain (no-sulcal envelop of the brain) | glass_wholebrain (clear mesh)
+        "atlas": None,
+        "project": None,
+        "symmetric_cbar": SYMMETRIC_CBAR,
+        "plot_kwargs": {"zoom": 1.25},
+    },
+    "glass_brain_mesh": {
+        "note": "Smooth brain mesh NIfTIs render as isosurfaces and tract files render as streamlines, selected automatically from the input; configure it like glass_mesh.",
+        "name": "glass_brain_mesh",
+        "plot": "mesh",
+        "mesh": "pial_wholebrain", # pial_wholebrain (shows sulci) | plain_wholebrain (no-sulcal envelop of the brain) | glass_wholebrain (clear mesh)
+        "atlas": None,
+        "project": None,
+        "symmetric_cbar": SYMMETRIC_CBAR,
+        "plot_kwargs": {"n_levels": 20, "zoom": 1.25},
+    },
+    "yabplot_subcortical": {
+        "note": "Access to yabplot subcortical plot with packages atlases.",
+        "name": "yabplot_subcortical",
+        "plot": "parcel_mesh",
+        "mesh": "aseg", # aal3 | aseg | schaefer100 etc--read ATLASES above
+        "atlas": None,
+        "symmetric_cbar": SYMMETRIC_CBAR,
+        "project": None,
+    },
+    "yabplot_cortical": {
+        "note": "Outlined cortical parcels rather than filled regional surfaces; configure mesh and atlas for geometry and parcellation, plus cmap, vminmax, and threshold.",
+        "name": "yabplot_cortical",
+        "plot": "surface",
+        "mesh": "pial",
+        "atlas": "schaefer400",
+        "project": None,
+        "symmetric_cbar": SYMMETRIC_CBAR,
+    },
+    "yabplot_vertexwise": {
+        "note": "Projects a volumetric NIfTI directly to surface vertices instead of averaging within parcels; configure mesh and projection_kwargs.",
+        "name": "yabplot_vertexwise",
+        "plot": "vertexwise",
+        "mesh": "midthickness",
+        "atlas": None,
+        "project": "vol2surf",
+        "symmetric_cbar": SYMMETRIC_CBAR,
+    },
+    "yabplot_xtracts": {
+        "note": "Projects a NIfTI onto the XTRACT streamline atlas and renders the tracts; configure atlas, mesh, and the TRACT_* selection and appearance settings.",
+        "name": "tracts_xtract_large",
+        "plot": "mesh",
+        "mesh": "midthickness",
+        "atlas": "xtract_large",
+        "project": "vol2tract",
+        "symmetric_cbar": SYMMETRIC_CBAR,
+    },
+    "yabplot_connectome": {
+        "note": "Node-and-edge connectome view using a named atlas and surface mesh; configure atlas, mesh, and connectome options in plot_kwargs.",
+        "name": "yabplot_connectome",
+        "plot": "connectome",
+        "mesh": "midthickness",
+        "atlas": None,
+        "project": None,
+        "symmetric_cbar": SYMMETRIC_CBAR,
+    },
+    "suitpy_cerebellar_cortex": {
+        "note": "Cerebellar flatmap separate from the 3D whole-brain meshes; configure parcel_path, parcel_damage_metric, SUIT_* settings, cmap, threshold, and symmetric_cbar.",
+        "name": "suitpy_cerebellar_cortex",
+        "plot": "cerebellum",
+        "space": "MNI",
+        "symmetric_cbar": SYMMETRIC_CBAR,
+        "parcel_path": ATLAS_PATH / "suit" / "*.nii.gz",
+        "parcel_damage_metric": "max_in_roi",
+    },
+    "multiplot_pial_wholebrain": {
+        "note": "Plot multiple niftis or tracts. NIfTIs become isosurfaces, tracts remain streamlines. Mesh selects glass_wholebrain, pial_wholebrain, or a cortex-only surface.",
+        "name": "multiplot_pial_wholebrain",
+        "plot": "mesh", 
+        "mesh": "pial_wholebrain", # pial_wholebrain (not see through) | glass_wholebrain (see throuhg) | 
+        "project": None,
+        "overlays": [
+            {"path": "/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/results/optimization/symptom_on_lhs/network_regressions_clusters/cluster_regression_identity_standardized/Nifti_File_Path-on-cluster_motor-cluster_cognitive-cluster_emotional/regression/contrast_tval_FWE_0.nii.gz", "label": "Motor Network", "color": "#c15656", "threshold": 6, "alpha": 0.85},
+            {"path": "/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/results/optimization/symptom_on_lhs/network_regressions_clusters/cluster_regression_identity_standardized/Nifti_File_Path-on-cluster_motor-cluster_cognitive-cluster_emotional/regression/contrast_tval_FWE_1.nii.gz", "label": "Cognitive Network", "color": "#5071a0", "threshold": 6, "alpha": 0.85},
+            {"path": "/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/results/optimization/symptom_on_lhs/network_regressions_clusters/cluster_regression_identity_standardized/Nifti_File_Path-on-cluster_motor-cluster_cognitive-cluster_emotional/regression/contrast_tval_FWE_2.nii.gz", "label": "Emotional Network", "color": "#9a8ed1", "threshold": 6, "alpha": 0.85},
+        ],
+        "plot_kwargs": {"zoom": 1.25},
+    },
+    "multiplot_parcel_wholebrain": {
+        "note": "Plot multiple niftis or tracts. NIfTIs become isosurfaces, tracts remain streamlines. Mesh is a custom whole-brain mesh.",
+        "name": "multiplot_parcel_wholebrain",
+        "plot": "parcel_mesh",
+        "mesh": "aal3_suit_parcels",
+        "atlas": None,
+        "project": None,
+        "overlays": [
+            {"path": "/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/results/optimization/symptom_on_lhs/network_regressions_clusters/cluster_regression_identity_standardized/Nifti_File_Path-on-cluster_motor-cluster_cognitive-cluster_emotional/regression/contrast_tval_FWE_0.nii.gz", "label": "Motor Network", "color": "#c15656", "threshold": 6, "alpha": 0.85},
+            {"path": "/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/results/optimization/symptom_on_lhs/network_regressions_clusters/cluster_regression_identity_standardized/Nifti_File_Path-on-cluster_motor-cluster_cognitive-cluster_emotional/regression/contrast_tval_FWE_1.nii.gz", "label": "Cognitive Network", "color": "#5071a0", "threshold": 6, "alpha": 0.85},
+            {"path": "/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/results/optimization/symptom_on_lhs/network_regressions_clusters/cluster_regression_identity_standardized/Nifti_File_Path-on-cluster_motor-cluster_cognitive-cluster_emotional/regression/contrast_tval_FWE_2.nii.gz", "label": "Emotional Network", "color": "#9a8ed1", "threshold": 6, "alpha": 0.85},
+        ],
+        "plot_kwargs": {"zoom": 1.25, "subcortical_score_metric": "max_in_roi"},
+    },
+}
+
+# Select complete recipes here, or set FIGURES=None to use PLOT/MESH/ATLAS.
+FIGURES = [
+    PRESETS["custom_parcel_mesh"],
+    PRESETS["custom_brain_mesh"],
+    PRESETS["glass_brain_mesh"],
+    PRESETS["yabplot_subcortical"],
+    # PRESETS["yabplot_vertexwise"],
+    # PRESETS["yabplot_cortical"],
+    # PRESETS["yabplot_xtracts"],
+    # PRESETS["yabplot_connectome"],
+    PRESETS["suitpy_cerebellar_cortex"],
+    PRESETS["multiplot_pial_wholebrain"],
+    PRESETS["multiplot_parcel_wholebrain"],
+]
+
+
+# =============================================================================
+# 2. PLOTTING MACHINERY
+# =============================================================================
+
+
+def nifti_stem(path):
+    name = Path(path).name
+    if name.lower().endswith(".fib.npy"):
+        return name[:-8]
+    if name.endswith(".nii.gz"):
+        return name[:-7]
+    if name.endswith(".nii"):
+        return name[:-4]
+    return Path(name).stem
+
+
+def parcellate_map(nifti_path, spec, out_dir):
+    """Binary ROI(s) -> one score per ROI -> parcel-filled NIfTI."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    parcellator = ParcelwiseDamageMap(
+        target_map=nifti_path,
+        parcel_path=spec["parcel_path"],
+        mask_path=spec["mask_path"],
+        out_dir=out_dir,
+        output_name=spec["parcellation_name"],
+        selected_damage=spec["parcel_damage_metric"],
+        score_nonzero_only=spec["parcel_score_nonzero_only"],
+        fill_value=spec["parcel_fill_value"],
+    )
+    return Path(parcellator.run())
+
+def plot_surface_mesh(nifti_path, export_path, spec, views=None):
+    img = nib.load(str(nifti_path))
+    data = np.asarray(img.get_fdata())
+    inv_affine = np.linalg.inv(img.affine)
+
+    meshes = build_bmesh(mesh_pieces(spec["mesh"]))
+
+    sampled = {}
+
+    for hemi in ("L", "R"):
+        mesh = meshes[hemi].copy()
+
+        # mesh vertices are already MNI/world coordinates
+        ijk = nib.affines.apply_affine(
+            inv_affine,
+            np.asarray(mesh.points),
+        )
+
+        values = map_coordinates(
+            data,
+            ijk.T,
+            order=1,
+            mode="constant",
+            cval=np.nan,
+        )
+
+        threshold = spec["threshold"]
+        if threshold is not None:
+            if THRESHOLD:
+                values[np.abs(values) < threshold] = np.nan
+            else: 
+                values[values < threshold] = np.nan
+
+        mesh["Data"] = values
+        sampled[hemi] = mesh
+
+    kwargs = {
+        "cmap": spec["cmap"],
+        "style": spec["style"],
+        "display_type": spec["display_type"],
+        "export_path": str(export_path),
+        **spec["plot_kwargs"],
+    }
+
+    if views is not None:
+        kwargs["views"] = views
+
+    if spec["vminmax"] is not None:
+        kwargs["vminmax"] = spec["vminmax"]
+
+    return yab.plot_vertexwise(
+        sampled["L"],
+        sampled["R"],
+        **kwargs,
+    )
+    
+def plot_yabplot(nifti_path, export_path, spec, views=None):
+    """Render through ParcelwisePlot/yabplot."""
+    plot_kwargs = {
+        "style": spec["style"],
+        "display_type": spec["display_type"],
+        "cmap": spec["cmap"],
+        **spec["plot_kwargs"],
+    }
+    if spec["plot"] in SURFACE_PLOTS and any(
+        "cerebellum" in piece for piece in mesh_pieces(spec["mesh"])
+    ):
+        plot_kwargs.setdefault("include_cerebellum", True)
+
+    is_tract_plot = (
+        spec.get("_tract_path") is not None
+        or spec.get("project") == "vol2tract"
+    )
+    tract_bmesh = None
+    if is_tract_plot:
+        for volume_option in ("n_levels", "blur_sigma", "smooth_i", "smooth_f"):
+            plot_kwargs.pop(volume_option, None)
+        plot_kwargs.setdefault("alpha", spec["tract_alpha"])
+        plot_kwargs.setdefault("bmesh_alpha", spec["mesh_alpha"])
+        plot_kwargs.setdefault("bmesh_color", spec["mesh_color"])
+        plot_kwargs.setdefault(
+            "orientation_coloring", spec["tract_orientation_coloring"]
+        )
+        tract_kwargs = dict(plot_kwargs.get("tract_kwargs", {}))
+        tract_kwargs.setdefault("line_width", spec["tract_line_width"])
+        tract_kwargs.setdefault(
+            "render_lines_as_tubes", spec["tract_render_as_tubes"]
+        )
+        plot_kwargs["tract_kwargs"] = tract_kwargs
+        pieces = mesh_pieces(spec["mesh"])
+        if len(pieces) == 1:
+            tract_bmesh = mesh_bmesh(spec["mesh"])
+        else:
+            from calvin_utils.plotting_utils.glass_mesh import build_bmesh
+
+            plot_kwargs.setdefault("bmesh", build_bmesh(pieces))
+
+    if spec["vminmax"] is not None:
+        plot_kwargs["vminmax"] = spec["vminmax"]
+    if views is not None:
+        plot_kwargs["views"] = views
+    plot_kwargs["export_path"] = str(export_path)
+
+    if is_tract_plot:
+        custom_tract = spec.get("_tract_path")
+        selection = {
+            "custom_atlas_path": custom_tract,
+            "atlas": None if custom_tract else spec["atlas"],
+        }
+    elif spec["plot"] in SUBCORTEX_PLOTS:
+        selection = mesh_subcortex(spec["mesh"])
+    else:
+        selection = {
+            "custom_atlas_path": None,
+            "atlas": atlas_name(spec["atlas"]),
+        }
+    if spec["plot"] in SUBCORTEX_PLOTS and selection["custom_atlas_path"]:
+        plot_kwargs.setdefault("bmesh", None)
+
+    return ParcelwisePlot(map_path=nifti_path).run(
+        project=spec["project"],
+        plot="tracts" if is_tract_plot else PLOT_ALIASES.get(spec["plot"], spec["plot"]),
+        bmesh=(
+            None
+            if spec["plot"] in SUBCORTEX_PLOTS or "bmesh" in plot_kwargs
+            else tract_bmesh if is_tract_plot else mesh_bmesh(spec["mesh"])
+        ),
+        atlas=selection["atlas"],
+        custom_atlas_path=selection["custom_atlas_path"],
+        threshold=spec["threshold"],
+        damage_score_metric=spec["damage_score_metric"],
+        score_nonzero_only=spec["viewer_score_nonzero_only"],
+        projection_kwargs=spec["projection_kwargs"],
+        plot_kwargs=plot_kwargs,
+    )
+
+
+def glassify(spec):
+    """Rewrite a mesh-backed volume figure into a yabplot voxelwise spec.
+
+    yabplot's voxelwise renderer already creates nested isosurfaces and accepts
+    arbitrary PolyData as anatomical context. ``glass_mesh`` supplies the
+    carved prebuilt hull; ``brain_mesh`` supplies yabplot's cortical surfaces
+    plus the SUIT cerebellum.
+
+    ignore_bmesh=False is deliberate. The default (True) pushes the voxel data
+    in front of the brain with a polygon offset, which is the x-ray look; for
+    glass we want the shell to sit in front and tint what is behind it.
+
+    ``brain_mesh`` therefore shows gyri and sulci rather than the smooth
+    envelope marching-cubed from a brain mask. Everything else about the two
+    modes is identical.
+    """
+    from calvin_utils.plotting_utils.glass_mesh import build_bmesh
+
+    spec = dict(spec)
+    plot_kwargs = dict(spec["plot_kwargs"])
+
+    if "bmesh" not in plot_kwargs:
+        plot_kwargs["bmesh"] = build_bmesh(mesh_pieces(spec["mesh"]))
+    plot_kwargs.setdefault("ignore_bmesh", False)
+    plot_kwargs.setdefault("bmesh_alpha", spec["mesh_alpha"])
+    plot_kwargs.setdefault("bmesh_color", spec["mesh_color"])
+
+    # plot="voxelwise" with project=None never receives run()'s threshold, so
+    # it has to travel in plot_kwargs. spec["threshold"] already absorbs
+    # THRESHOLD -> FIGURES entry -> --threshold in that order, so it is the one
+    # that should win; an explicit plot_kwargs["threshold"] stays the last word.
+    if "threshold" not in spec["plot_kwargs"]:
+        plot_kwargs["threshold"] = spec["threshold"]
+
+    spec.update(
+        plot="voxelwise",
+        project=None,
+        atlas=None,
+        custom_atlas_path=None,
+        cerebellum=None,        # already part of the bmesh
+        bmesh=None,             # a PolyData dict cannot go through run(bmesh=...)
+        plot_kwargs=plot_kwargs,
+    )
+    return spec
+
+
+def _has_plottable_values(nifti_path):
+    """True when a map has at least one finite, nonzero value.
+
+    SUITPy derives its own colour range when cscale is None
+    (flatmap.py: ``cscale = np.array([np.nanmin(data), np.nanmax(data)])``),
+    so a map that is entirely NaN/zero inside the parcels yields NaN limits and
+    the plot dies downstream. An explicit VMINMAX never touches the data and so
+    never hits this. Rather than depend on that, skip maps with nothing to draw.
+    """
+    import nibabel as nib
+    import numpy as np
+
+    data = np.asanyarray(nib.load(str(nifti_path)).dataobj)
+    finite = np.isfinite(data)
+    return bool(finite.any() and np.any(data[finite] != 0))
+
+
+def symmetrize_color_limits(nifti_path, spec):
+    """Use zero-centered limits for a figure unless limits were supplied."""
+    if not spec.get("symmetric_cbar") or spec["vminmax"] is not None:
+        return spec
+
+    import nibabel as nib
+    import numpy as np
+
+    data = np.asanyarray(nib.load(str(nifti_path)).dataobj)
+    finite = data[np.isfinite(data)]
+    if finite.size == 0:
+        return spec
+
+    limit = float(np.max(np.abs(finite)))
+    if limit == 0:
+        return spec
+
+    spec = dict(spec)
+    spec["vminmax"] = (-limit, limit)
+    return spec
+
+
+def plot_cerebellum(nifti_path, export_path, spec):
+    """Render through SUITCerebellumPlotter/SUITPy.
+
+    Returns None (drawing nothing) when the map has no finite nonzero values --
+    common for FWE maps with no surviving cerebellar voxels.
+    """
+    if not _has_plottable_values(nifti_path):
+        print(
+            f"Skipping cerebellum figure: {Path(nifti_path).name} has no finite "
+            f"nonzero values to plot."
+        )
+        return None
+
+    plotter = SUITCerebellumPlotter(
+        import_path=nifti_path,
+        out_dir=export_path.parent,
+    )
+
+    method = (
+        plotter.plot_without_background
+        if spec["suit_without_background"]
+        else plotter.run
+    )
+
+    return method(
+        nifti_path=nifti_path,
+        space=spec["space"],
+        out_file=export_path,
+        cmap=spec["cmap"],
+        cscale=list(spec["vminmax"]) if spec["vminmax"] is not None else None,
+        threshold=spec["threshold"],
+        colorbar=spec["suit_colorbar"],
+        render=spec["suit_render"],
+        **spec["suit_kwargs"],
+    )
+
+
+def plot_glass_brain(nifti_path, export_path, spec):
+    """Render a signed volumetric map on a nilearn glass brain."""
+    from nilearn import plotting
+
+    plot_kwargs = dict(spec["plot_kwargs"])
+    if spec["vminmax"] is not None:
+        plot_kwargs.setdefault("vmin", spec["vminmax"][0])
+        plot_kwargs.setdefault("vmax", spec["vminmax"][1])
+
+    return plotting.plot_glass_brain(
+        str(nifti_path),
+        output_file=str(export_path),
+        cmap=spec["cmap"],
+        threshold=spec["threshold"],
+        **plot_kwargs,
+    )
+
+
+def plot_multi_overlay(export_path, spec, views=None):
+    """Render overlays as parcel colors or volumetric surfaces."""
+    from calvin_utils.plotting_utils.multi_overlay import (
+        plot_mesh_overlays,
+        plot_parcel_overlays,
+    )
+
+    plot_kwargs = dict(spec["plot_kwargs"])
+    plot_kwargs.setdefault("views", views)
+    plot_kwargs.setdefault("style", spec["style"])
+    plot_kwargs.setdefault("display_type", spec["display_type"])
+    plot_kwargs.setdefault("export_path", str(export_path))
+
+    if spec["plot"] == "mesh":
+        from calvin_utils.plotting_utils.glass_mesh import build_bmesh
+
+        plot_kwargs.setdefault("bmesh", build_bmesh(mesh_pieces(spec["mesh"])))
+        plot_kwargs.setdefault("bmesh_alpha", spec["mesh_alpha"])
+        plot_kwargs.setdefault("bmesh_color", spec["mesh_color"])
+        plot_kwargs.setdefault("alpha", spec["tract_alpha"])
+        tract_kwargs = dict(plot_kwargs.get("tract_kwargs", {}))
+        tract_kwargs.setdefault("line_width", spec["tract_line_width"])
+        tract_kwargs.setdefault(
+            "render_lines_as_tubes", spec["tract_render_as_tubes"]
+        )
+        plot_kwargs["tract_kwargs"] = tract_kwargs
+        return plot_mesh_overlays(spec["overlays"], **plot_kwargs)
+
+    if spec["plot"] not in SUBCORTEX_PLOTS:
+        raise ValueError(
+            "Overlays currently support the surface, subcortex, and tracts families."
+        )
+
+    plot_kwargs.pop("subcortical_score_metric", None)
+    plot_kwargs.pop("data", None)
+    subcortex = mesh_subcortex(spec["mesh"])
+    plot_kwargs.setdefault("atlas", subcortex["atlas"])
+    plot_kwargs.setdefault("custom_atlas_path", subcortex["custom_atlas_path"])
+    plot_kwargs.setdefault("bmesh", None)
+    plot_kwargs.setdefault("projection_kwargs", spec["projection_kwargs"])
+    tract_kwargs = dict(plot_kwargs.get("tract_kwargs", {}))
+    tract_kwargs.setdefault("line_width", spec["tract_line_width"])
+    tract_kwargs.setdefault(
+        "render_lines_as_tubes", spec["tract_render_as_tubes"]
+    )
+    plot_kwargs["tract_kwargs"] = tract_kwargs
+    return plot_parcel_overlays(spec["overlays"], **plot_kwargs)
+
+
+def close_figures():
+    """Release every open matplotlib figure and any lingering pyvista plotter.
+
+    yabplot's finalize_plot() creates a figure per render (scene.prepare_plotter)
+    and never closes it, so each one stays in pyplot's global registry holding a
+    full-resolution screenshot array. Closing here is what bounds memory.
+
+    pyvista's Plotter.close() already removes itself from _ALL_PLOTTERS, so
+    close_all() only catches plotters that raised before closing -- but each one
+    pins an OpenGL context, and contexts are the scarce resource in a long batch.
+    The durable fix for that is FIGURES_IN_SUBPROCESS in the regression
+    pipelines; this is just cheap insurance.
+    """
+    plt.close("all")
+    try:
+        import gc
+
+        import pyvista as pv
+
+        pv.close_all()
+        gc.collect()
+    except Exception:  # pyvista absent, or already torn down
+        pass
+
+
+def render_to_formats(nifti_to_plot, figure_dir, basename, spec, views):
+    """Render the 3D scene once, then write every requested format from it."""
+    formats = [x.lower().lstrip(".") for x in spec["formats"]]
+    files = {}
+    if not formats:
+        return files
+
+    primary = figure_dir / f"{basename}.{formats[0]}"
+    result = plot_yabplot(nifti_to_plot, primary, spec, views)
+    files[formats[0]] = primary
+
+    figure = result.get_figure() if hasattr(result, "get_figure") else None
+    for ext in formats[1:]:
+        path = figure_dir / f"{basename}.{ext}"
+        if figure is not None:
+            figure.savefig(path, bbox_inches="tight", dpi=300, transparent=True)
+        else:  # non-matplotlib display types return no figure: re-render.
+            plot_yabplot(nifti_to_plot, path, spec, views)
+        files[ext] = path
+
+    close_figures()
+    return files
+
+
+def render_multi_to_formats(figure_dir, basename, spec, views):
+    """Render a multi-overlay scene once, then write all requested formats."""
+    formats = [x.lower().lstrip(".") for x in spec["formats"]]
+    files = {}
+    if not formats:
+        return files
+
+    primary = figure_dir / f"{basename}.{formats[0]}"
+    result = plot_multi_overlay(primary, spec, views)
+    files[formats[0]] = primary
+
+    figure = result.get_figure() if hasattr(result, "get_figure") else None
+    for ext in formats[1:]:
+        path = figure_dir / f"{basename}.{ext}"
+        if figure is not None:
+            figure.savefig(path, bbox_inches="tight", dpi=300, transparent=True)
+        else:
+            plot_multi_overlay(path, spec, views)
+        files[ext] = path
+
+    close_figures()
+    return files
+
+
+def write_index(output_dir, source_nifti, cards):
+    """Write the local PNG/SVG gallery."""
+    blocks = []
+
+    for card in cards:
+        files = card["files"]
+        preview = files.get("png") or files.get("svg")
+        if preview is None:
+            continue
+
+        preview_rel = Path(preview).relative_to(output_dir).as_posix()
+        links = []
+        for ext in ("svg", "png"):
+            if ext in files:
+                rel = Path(files[ext]).relative_to(output_dir).as_posix()
+                links.append(f'<a href="{html.escape(rel)}">{ext.upper()}</a>')
+
+        blocks.append(
+            f'''<div class="card">
+<h2>{html.escape(card["title"])}</h2>
+<a href="{html.escape(preview_rel)}"><img src="{html.escape(preview_rel)}" loading="lazy"></a>
+<p>{" · ".join(links)}</p>
+</div>'''
+        )
+
+    page = f'''<!doctype html>
+<html><head><meta charset="utf-8"><title>{html.escape(nifti_stem(source_nifti))}</title>
+<style>
+body{{font-family:system-ui;margin:36px;max-width:1600px;background:#f4f5f7;color:#17212c}}
+.grid{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:20px}}
+.card{{background:white;padding:20px;border-radius:12px}} img{{width:100%;background:white}}
+a{{color:#235c8c}} @media(max-width:900px){{.grid{{grid-template-columns:1fr}}}}
+</style></head><body>
+<h1>{html.escape(nifti_stem(source_nifti))} figures</h1>
+<div class="grid">{"".join(blocks)}</div>
+</body></html>'''
+
+    index_path = output_dir / "index.html"
+    index_path.write_text(page, encoding="utf-8")
+    return index_path
+
+
+# =============================================================================
+# 3. DISPATCH
+# =============================================================================
+
+
+def normalize_plot_spec(spec):
+    """Translate old plot names into the explicit plot/mesh/atlas model."""
+    requested = spec["plot"]
+    legacy = {
+        "cortical": {"plot": "surface"},
+        "subcortex": {"plot": "parcel_mesh"},
+        "subcortical": {"plot": "parcel_mesh"},
+        "cortical_subcortical": {
+            "plot": "parcel_mesh", "mesh": "aal3_suit_parcels", "atlas": None,
+        },
+        "volume": {"plot": "mesh", "atlas": None},
+        "voxelwise": {"plot": "mesh", "atlas": None},
+        "glass_mesh": {
+            "plot": "mesh", "mesh": "glass_wholebrain", "atlas": None,
+        },
+        "glass_hull": {
+            "plot": "mesh", "mesh": "glass_wholebrain", "atlas": None,
+        },
+        "brain_mesh": {
+            "plot": "mesh", "mesh": "pial_wholebrain", "atlas": None,
+        },
+        "brain": {
+            "plot": "mesh", "mesh": "pial_wholebrain", "atlas": None,
+        },
+        "plain_mesh": {
+            "plot": "mesh", "mesh": "plain_wholebrain", "atlas": None,
+        },
+        "tract": {"plot": "mesh"},
+        "tracts": {"plot": "mesh"},
+        "glass": {"plot": "glass_brain"},
+        "suit": {"plot": "cerebellum"},
+        "suit_cerebellum": {"plot": "cerebellum"},
+    }
+    normalized = {**spec, **legacy.get(requested, {})}
+
+    if requested == "cortical":
+        if _MESH_SPECS.get(normalized["mesh"], {}).get("family") != "surface":
+            normalized["mesh"] = "pial"
+        if normalized["atlas"] is None:
+            normalized["atlas"] = "aal3"
+    elif requested in {"volume", "voxelwise"}:
+        if _MESH_SPECS.get(normalized["mesh"], {}).get("family") != "surface":
+            normalized["mesh"] = "pial_wholebrain"
+    elif requested in {"subcortex", "subcortical"}:
+        old_atlas = normalized["atlas"]
+        atlas_mesh = {
+            "aal3": "aal3_subcortical",
+            **{
+                name: name for name in (
+                    "aal3_nocer", "aseg", "brainnetome_sc", "musus100",
+                    "musus100_dbn", "musus100_tha", "tian2020_s1",
+                )
+            },
+        }
+        if old_atlas in atlas_mesh:
+            normalized.update(mesh=atlas_mesh[old_atlas], atlas=None)
+        elif _MESH_SPECS.get(normalized["mesh"], {}).get("family") != "subcortex":
+            normalized.update(mesh="aal3_suit_parcels", atlas=None)
+    return normalized
+
+
+def validate_plot_spec(spec):
+    plot = spec["plot"]
+    if plot not in PLOTS:
+        raise ValueError(f"plot must be one of {list(PLOTS)}; got {plot!r}.")
+
+    if plot in {"surface", "cortical_outline"}:
+        mesh_pieces(spec["mesh"])
+        if spec["atlas"] is None:
+            raise ValueError(f"plot={plot!r} requires a [surface] ATLAS.")
+        atlas_name(spec["atlas"])
+    elif plot == "mesh":
+        mesh_pieces(spec["mesh"])
+        if spec["project"] == "vol2tract":
+            if spec["atlas"] not in _TRACT_ATLASES:
+                raise ValueError(
+                    f"project='vol2tract' requires one of {sorted(_TRACT_ATLASES)}."
+                )
+        elif spec["atlas"] is not None:
+            raise ValueError("plot='mesh' requires ATLAS=None.")
+    elif plot == "surface_mesh":
+        mesh_pieces(spec["mesh"])
+        if spec["atlas"] is not None:
+            raise ValueError("plot='surface_mesh' requires ATLAS=None.")
+    elif plot == "parcel_mesh":
+        mesh_subcortex(spec["mesh"])
+        if spec["atlas"] is not None:
+            raise ValueError(
+                "plot='parcel_mesh' gets its regions from MESH; set ATLAS=None."
+            )
+    elif plot == "vertexwise":
+        mesh_pieces(spec["mesh"])
+
+
+def defaults():
+    return {
+        "name": None,
+        "parcel_path": PARCEL_PATH,
+        "parcellation_name": "parcellated_map",
+        "mask_path": MASK_PATH,
+        "parcel_damage_metric": PARCEL_DAMAGE_METRIC,
+        "parcel_score_nonzero_only": PARCEL_SCORE_NONZERO_ONLY,
+        "parcel_fill_value": PARCEL_FILL_VALUE,
+        "plot": PLOT,
+        "overlays": None,
+        "project": PROJECT,
+        "mesh": MESH,
+        "atlas": ATLAS,
+        "mesh_alpha": MESH_ALPHA,
+        "mesh_color": MESH_COLOR,
+        "cmap": CMAP,
+        "vminmax": VMINMAX,
+        "symmetric_cbar": False,
+        "threshold": THRESHOLD,
+        "style": STYLE,
+        "display_type": DISPLAY_TYPE,
+        "damage_score_metric": DAMAGE_SCORE_METRIC,
+        "viewer_score_nonzero_only": VIEWER_SCORE_NONZERO_ONLY,
+        "tract_atlas_path": TRACT_ATLAS_PATH,
+        "tract_sign": TRACT_SIGN,
+        "tract_min_abs_value": TRACT_MIN_ABS_VALUE,
+        "tract_top_percent": TRACT_TOP_PERCENT,
+        "tract_alpha": TRACT_ALPHA,
+        "tract_line_width": TRACT_LINE_WIDTH,
+        "tract_render_as_tubes": TRACT_RENDER_AS_TUBES,
+        "tract_orientation_coloring": TRACT_ORIENTATION_COLORING,
+        "space": SUIT_SPACE,
+        "suit_without_background": SUIT_WITHOUT_BACKGROUND,
+        "suit_colorbar": SUIT_COLORBAR,
+        "suit_render": SUIT_RENDER,
+        "views": VIEWS,
+        "formats": FORMATS,
+        "gallery": MAKE_GALLERY,
+        "overview": MAKE_OVERVIEW,
+        "individual_views": MAKE_INDIVIDUAL_VIEWS,
+        "projection_kwargs": dict(PROJECTION_KWARGS),
+        "plot_kwargs": dict(PLOT_KWARGS),
+        "suit_kwargs": dict(SUIT_KWARGS),
+    }
+
+
+def name_for(spec):
+    if spec.get("name"):
+        return spec["name"]
+    if spec["plot"] == "cerebellum":
+        return "cerebellum"
+    if spec.get("atlas"):
+        return f'{spec["plot"]}_{spec["atlas"]}'
+    return spec["plot"]
+
+
+def figure_applies_to_source(figure, source_nifti):
+    """Return whether a conditional figure should be rendered for this map."""
+    if figure.get("fwe_only") and "_fwe_" not in Path(source_nifti).name.lower():
+        return False
+    return True
+
+
+def parcellation_key(spec):
+    if spec["parcel_path"] is None:
+        return None
+    return (
+        str(spec["parcel_path"]),
+        str(spec["mask_path"]),
+        spec["parcellation_name"],
+        spec["parcel_damage_metric"],
+        spec["parcel_score_nonzero_only"],
+        repr(spec["parcel_fill_value"]),
+    )
+
+
+def resolve_input_nifti(source_nifti, output_dir, spec, cache):
+    if spec["parcel_path"] is None:
+        return source_nifti
+
+    key = parcellation_key(spec)
+    if key not in cache:
+        cache[key] = parcellate_map(
+            source_nifti,
+            spec,
+            output_dir / "_parcellated",
+        )
+    return cache[key]
+
+
+def resolve_overlay_paths(overlays, source_nifti):
+    """Resolve relative overlay paths beside the dispatch source file."""
+    if not overlays:
+        raise ValueError("a multi-map figure requires a nonempty 'overlays' list")
+
+    resolved = []
+    for overlay in overlays:
+        item = dict(overlay)
+        if "path" not in item:
+            raise ValueError("every multi-overlay entry requires a 'path'")
+        path = Path(item["path"]).expanduser()
+        if not path.is_absolute():
+            path = Path(source_nifti).parent / path
+        item["path"] = path.resolve()
+        resolved.append(item)
+    return resolved
+
+
+def input_kind(path):
+    name = Path(path).name.lower()
+    if name.endswith((".mat", ".fib.npy", ".tck")):
+        return "tract"
+    if name.endswith((".nii", ".nii.gz")):
+        return "nifti"
+    raise ValueError(f"Input must be .nii, .nii.gz, .mat, .fib.npy, or .tck: {path}")
+
+
+def render_figure(source_nifti, output_dir, spec, cache):
+    """Dispatcher: choose SUIT or yabplot and generate requested outputs."""
+    spec = normalize_plot_spec(spec)
+    validate_plot_spec(spec)
+    source_is_tract = input_kind(source_nifti) == "tract"
+
+    if (
+        spec.get("overlays") is not None
+        and not spec.get("_overlays_ready")
+    ):
+        from contextlib import ExitStack
+
+        from calvin_utils.neuroimaging_utils.tract_utils.temporary_tractogram import (
+            TemporaryTractogram,
+        )
+
+        with ExitStack() as stack:
+            prepared = []
+            for overlay in resolve_overlay_paths(spec["overlays"], source_nifti):
+                path = Path(overlay["path"])
+                kind = input_kind(path)
+                if kind == "nifti":
+                    prepared.append(overlay)
+                    continue
+                if path.name.lower().endswith(".tck"):
+                    item = dict(overlay)
+                    item["_tract_path"] = str(path)
+                    prepared.append(item)
+                    continue
+                sign = overlay.get("sign", spec["tract_sign"])
+                if str(sign).lower() == "absolute":
+                    sign = "both"
+                tractogram = stack.enter_context(
+                    TemporaryTractogram(
+                        path,
+                        fiber_atlas_path=overlay.get(
+                            "fiber_atlas_path", spec["tract_atlas_path"]
+                        ),
+                        sign=sign,
+                        min_abs_value=overlay.get(
+                            "min_abs_value",
+                            overlay.get("threshold", spec["tract_min_abs_value"]),
+                        ),
+                        top_percent=overlay.get(
+                            "top_percent", spec["tract_top_percent"]
+                        ),
+                    )
+                )
+                item = dict(overlay)
+                item["_tract_path"] = str(tractogram.tck_path)
+                prepared.append(item)
+
+            converted = dict(spec)
+            converted["overlays"] = prepared
+            converted["_overlays_ready"] = True
+            return render_figure(source_nifti, output_dir, converted, cache)
+
+    if (
+        source_is_tract
+        and spec.get("overlays") is None
+        and not spec.get("_tract_path")
+    ):
+        if spec["plot"] not in {
+            "mesh", "surface", "cortical_outline", "parcel_mesh", "vertexwise",
+        }:
+            raise ValueError(
+                f"plot={spec['plot']!r} cannot display tract input; use a mesh, "
+                "surface, or parcel_mesh visualizer."
+            )
+        if spec["project"] is not None:
+            raise ValueError("Direct MAT/.fib.npy tract rendering requires project=None.")
+        if Path(source_nifti).name.lower().endswith(".tck"):
+            converted = dict(spec)
+            converted["parcel_path"] = None
+            if spec["plot"] == "mesh":
+                converted["atlas"] = None
+            converted["_tract_path"] = str(source_nifti)
+            converted["plot_kwargs"] = dict(spec["plot_kwargs"])
+            if spec["plot"] == "parcel_mesh":
+                converted["overlays"] = [{
+                    "path": source_nifti,
+                    "_tract_path": str(source_nifti),
+                    "label": nifti_stem(source_nifti),
+                    "color": converted["plot_kwargs"].pop("color", "#d62728"),
+                    "alpha": spec["tract_alpha"],
+                }]
+                converted["_overlays_ready"] = True
+            return render_figure(source_nifti, output_dir, converted, cache)
+        from calvin_utils.neuroimaging_utils.tract_utils.temporary_tractogram import (
+            TemporaryTractogram,
+        )
+
+        with TemporaryTractogram(
+            source_nifti,
+            fiber_atlas_path=spec["tract_atlas_path"],
+            sign=spec["tract_sign"],
+            min_abs_value=spec["tract_min_abs_value"],
+            top_percent=spec["tract_top_percent"],
+        ) as tractogram:
+            converted = dict(spec)
+            converted["parcel_path"] = None
+            if spec["plot"] == "mesh":
+                converted["atlas"] = None
+            converted["_tract_path"] = str(tractogram.tck_path)
+            converted["plot_kwargs"] = dict(spec["plot_kwargs"])
+            if spec["plot"] == "parcel_mesh":
+                converted["overlays"] = [{
+                    "path": source_nifti,
+                    "_tract_path": str(tractogram.tck_path),
+                    "label": nifti_stem(source_nifti),
+                    "color": converted["plot_kwargs"].pop("color", "#d62728"),
+                    "alpha": spec["tract_alpha"],
+                }]
+                converted["_overlays_ready"] = True
+            if tractogram.vals is not None:
+                converted["plot_kwargs"].setdefault(
+                    "data", {tractogram.tck_path.stem: tractogram.point_values()}
+                )
+            if (
+                tractogram.vals is not None
+                and converted.get("symmetric_cbar")
+                and converted["vminmax"] is None
+            ):
+                import numpy as np
+
+                finite = tractogram.vals[np.isfinite(tractogram.vals)]
+                if finite.size:
+                    limit = float(np.max(np.abs(finite)))
+                    if limit:
+                        converted["vminmax"] = (-limit, limit)
+            return render_figure(source_nifti, output_dir, converted, cache)
+
+    name = name_for(spec)
+    figure_dir = output_dir / name
+    figure_dir.mkdir(parents=True, exist_ok=True)
+
+    if spec.get("overlays") is not None:
+        spec = dict(spec)
+        spec["overlays"] = resolve_overlay_paths(spec["overlays"], source_nifti)
+        cards = []
+        title = spec.get("title", name.replace("_", " ").title())
+
+        if not spec["gallery"]:
+            files = render_multi_to_formats(
+                figure_dir, name, spec, spec["views"]
+            )
+            return [{"title": title, "files": files}]
+
+        if spec["overview"]:
+            files = render_multi_to_formats(
+                figure_dir, "all_views", spec, spec["views"]
+            )
+            cards.append({"title": title, "files": files})
+
+        if spec["individual_views"]:
+            for view in spec["views"]:
+                files = render_multi_to_formats(
+                    figure_dir, view, spec, [view]
+                )
+                cards.append({
+                    "title": f'{title} — {view.replace("_", " ").title()}',
+                    "files": files,
+                })
+        return cards
+
+    if (
+        spec["plot"] == "mesh"
+        and not spec.get("_tract_path")
+        and spec.get("project") != "vol2tract"
+    ):
+        spec = glassify(spec)
+
+    nifti_to_plot = resolve_input_nifti(source_nifti, output_dir, spec, cache)
+    if not spec.get("_tract_path"):
+        spec = symmetrize_color_limits(nifti_to_plot, spec)
+    formats = [x.lower().lstrip(".") for x in spec["formats"]]
+    cards = []
+
+    if spec["plot"] in {"cerebellum", "suit", "suit_cerebellum"}:
+        files = {}
+        for ext in formats:
+            path = figure_dir / f"{name}.{ext}"
+            if plot_cerebellum(nifti_to_plot, path, spec) is None:
+                continue        # nothing plottable; leave the card out entirely
+            files[ext] = path
+        close_figures()
+        if not files:
+            return []
+        return [{"title": spec.get("title", name.replace("_", " ").title()), "files": files}]
+
+    if spec["plot"] in {"glass_brain", "glass"}:
+        files = {}
+        for ext in formats:
+            path = figure_dir / f"{name}.{ext}"
+            plot_glass_brain(nifti_to_plot, path, spec)
+            files[ext] = path
+        close_figures()
+        return [{"title": spec.get("title", name.replace("_", " ").title()), "files": files}]
+
+    if spec["plot"] == "surface_mesh":
+        files = {}
+
+        for ext in formats:
+            path = figure_dir / f"{name}.{ext}"
+
+            plot_surface_mesh(
+                nifti_to_plot,
+                path,
+                spec,
+                spec["views"],
+            )
+
+            files[ext] = path
+
+        close_figures()
+
+        return [{
+            "title": spec.get("title", name.replace("_", " ").title()),
+            "files": files,
+        }]
+
+    if not spec["gallery"]:
+        files = render_to_formats(nifti_to_plot, figure_dir, name, spec, spec["views"])
+        return [{"title": spec.get("title", name.replace("_", " ").title()), "files": files}]
+
+    if spec["overview"]:
+        files = render_to_formats(nifti_to_plot, figure_dir, "all_views", spec, spec["views"])
+        cards.append({"title": spec.get("title", name.replace("_", " ").title()), "files": files})
+
+    if spec["individual_views"]:
+        for view in spec["views"]:
+            files = render_to_formats(nifti_to_plot, figure_dir, view, spec, [view])
+            cards.append({
+                "title": f'{spec.get("title", name.replace("_", " ").title())} — {view.replace("_", " ").title()}',
+                "files": files,
+            })
+
+    return cards
+
+
+def dispatch(source_nifti, output_dir, figures=None, overrides=None, make_html=MAKE_HTML, open_html=OPEN_HTML):
+    source_nifti = Path(source_nifti).expanduser().resolve()
+    output_dir = Path(output_dir).expanduser().resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    if not source_nifti.exists():
+        raise FileNotFoundError(source_nifti)
+
+    base = defaults()
+    overrides = overrides or {}
+    figures = figures if figures is not None else [{}]
+    figures = [
+        figure for figure in figures
+        if figure_applies_to_source(figure, source_nifti)
+    ]
+
+    # Precedence: capital defaults < FIGURES entry < explicit argparse override.
+    specs = [{**base, **figure, **overrides} for figure in figures]
+
+    cache = {}
+    cards = []
+    for spec in specs:
+        print(f"Rendering: {name_for(spec)}")
+        cards.extend(render_figure(source_nifti, output_dir, spec, cache))
+
+    if not make_html:
+        return cards
+
+    index_path = write_index(output_dir, source_nifti, cards)
+    print(f"HTML viewer: {index_path}")
+
+    if open_html:
+        webbrowser.open(index_path.as_uri())
+
+    return index_path
+
+
+# Optional argparse -------------------------------------------------------------
+# default=SUPPRESS is deliberate: only arguments actually provided on the CLI
+# overwrite the capitalized values above.
+
+
+def json_dict(value):
+    result = json.loads(value)
+    if not isinstance(result, dict):
+        raise argparse.ArgumentTypeError("Expected a JSON dictionary.")
+    return result
+
+
+def json_list(value):
+    result = json.loads(value)
+    if not isinstance(result, list):
+        raise argparse.ArgumentTypeError("Expected a JSON list.")
+    return result
+
+
+def parser():
+    p = argparse.ArgumentParser()
+    add = lambda *a, **k: p.add_argument(*a, default=argparse.SUPPRESS, **k)
+
+    add("--nifti", dest="nifti_path")
+    add("--output-dir")
+    add("--plot")
+    add("--overlays", type=json_list)
+    add("--project")
+    add("--atlas")
+    add("--custom-atlas-path")
+    add("--mesh", "--bmesh", dest="mesh")
+    add("--parcel-path")
+    add("--parcellation-name")
+    add("--mask-path")
+    add("--cmap")
+    add("--vminmax", nargs=2, type=float)
+    add("--threshold", nargs="+", type=float)
+    add("--space")
+    add("--views", nargs="+")
+    add("--formats", nargs="+")
+    add("--projection-kwargs", type=json_dict)
+    add("--plot-kwargs", type=json_dict)
+    add("--suit-kwargs", type=json_dict)
+
+    p.add_argument("--list", action="store_true", default=argparse.SUPPRESS,
+                   help="print plots, meshes, atlases, and presets, then exit")
+    p.add_argument("--no-gallery", dest="gallery", action="store_false", default=argparse.SUPPRESS)
+    p.add_argument("--no-html", dest="make_html", action="store_false", default=argparse.SUPPRESS)
+    p.add_argument("--no-open-html", dest="open_html", action="store_false", default=argparse.SUPPRESS)
+    return p
+
+
+def normalize_overrides(values):
+    values = dict(values)
+
+    if "vminmax" in values:
+        values["vminmax"] = tuple(values["vminmax"])
+
+    if "threshold" in values:
+        threshold = values["threshold"]
+        if len(threshold) == 1:
+            values["threshold"] = threshold[0]
+        elif len(threshold) == 2:
+            values["threshold"] = tuple(threshold)
+        else:
+            raise ValueError("--threshold accepts one value or two values.")
+
+    if "mask_path" in values:
+        values["mask_path"] = Path(values["mask_path"])
+
+    return values
+
+
+if __name__ == "__main__":
+    args = vars(parser().parse_args())
+
+    if args.pop("list", False):
+        for label, catalogue in (
+            ("PLOTS", PLOTS), ("MESHES", MESHES), ("ATLASES", ATLASES)
+        ):
+            print(f"\n{label}")
+            width = max(len(str(name)) for name in catalogue)
+            for name, what in catalogue.items():
+                print(f"  {str(name):{width}s}  {what}")
+        print("\nPRESETS")
+        width = max(len(name) for name in PRESETS)
+        for name, preset in PRESETS.items():
+            print(f'  {name:{width}s}  {preset["note"]}')
+        raise SystemExit(0)
+
+    source_nifti = Path(args.pop("nifti_path", NIFTI_PATH)).expanduser()
+
+    if "output_dir" in args:
+        output_dir = Path(args.pop("output_dir")).expanduser()
+    elif source_nifti != NIFTI_PATH:
+        output_dir = source_nifti.parent / f"{nifti_stem(source_nifti)}_figures"
+    else:
+        output_dir = OUTPUT_DIR
+
+    make_html = args.pop("make_html", MAKE_HTML)
+    open_html = args.pop("open_html", OPEN_HTML)
+
+    dispatch(
+        source_nifti=source_nifti,
+        output_dir=output_dir,
+        figures=FIGURES,
+        overrides=normalize_overrides(args),
+        make_html=make_html,
+        open_html=open_html,
+    )

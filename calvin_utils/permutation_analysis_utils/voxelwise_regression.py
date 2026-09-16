@@ -25,97 +25,21 @@ if not hasattr(np, "maximum_sctype"):
     np.maximum_sctype = _maximum_sctype
 import pandas as pd
 from tqdm import tqdm
-import nibabel as nib
 from scipy.stats import t
 import statsmodels.api as sm
 from scipy.special import expit
-from calvin_utils.file_utils.import_functions import GiiNiiFileImport
 from calvin_utils.neuroimaging_utils.ccm_utils.npy_utils import DataLoader
 from calvin_utils.neuroimaging_utils.nifti_utils.damage_score_utils import DamageScorer
 from calvin_utils.neuroimaging_utils.output_functions import NeuroimageFileOutporter
-from calvin_utils.neuroimaging_utils.tract_utils.fiber_io import DEFAULT_MNI_MASK
 from calvin_utils.plotting_utils.html_viewer_selector import HTMLViewerSelector
 
 class VoxelwiseRegression:
-    """
-    VoxelwiseRegression
-    A class for performing voxelwise linear regression analysis on neuroimaging data, supporting permutation-based inference and NIfTI output.
-    json_path : str
-        Path to a JSON file specifying the locations of input data arrays (design matrix, outcome data, contrasts, weights, etc.).
-    mask_path : str, optional
-        Path to a NIfTI mask file used for unmasking and saving results in brain space.
-    out_dir : str, optional
-        Directory where output NIfTI images and results will be saved.
-    Attributes
-    json_path : str
-        Path to the JSON configuration file.
-    mask_path : str or None
-        Path to the NIfTI mask file.
-    data_loader : DataLoader
-        Loader for input data specified in the JSON file.
-    design_tensor : np.ndarray
-        Design matrix tensor (observations × predictors × voxels).
-    outcome_tensor : np.ndarray
-        Outcome data tensor (observations × regressions × voxels).
-    contrast_matrix : np.ndarray
-        Contrast matrix (contrasts × predictors).
-    exchangeability_blocks : np.ndarray or None
-        Exchangeability block labels for permutation testing.
-    weight_vector : np.ndarray
-        Weights for each observation.
-    n_obs : int
-        Number of observations.
-    n_preds : int
-        Number of predictors.
-    dim3_X : int
-        Number of voxels in the design tensor.
-    dim3_Y : int
-        Number of voxels in the outcome tensor.
-    n_contrasts : int
-        Number of contrasts.
-    n_voxels : int
-        Number of voxels (max of design and outcome).
-    n_outputs : int
-        Number of output channels in the outcome tensor.
-    Methods
-    -------
-    load_data()
-        Loads design, outcome, contrast, weights, and exchangeability block data from files.
-    set_variables()
-        Sets and returns key shape variables for the regression.
-    _get_targets(permutation)
-        Returns regressor, regressand, and weights, optionally permuting the outcome data.
-    _prep_targets(regressor, regressand, weights, voxel_idx, regression_idx=0)
-        Prepares X, Y, and W matrices for regression at a given voxel and output index.
-    get_r2(Y, Y_HAT, W, e=1e-6)
-        Computes R-squared for model fit.
-    apply_contrasts(XtX_inv, BETA, MSE, e=1e-6, get_p=False)
-        Applies contrast matrix to regression coefficients to compute t-values.
-    _run_regression(X, Y, W)
-        Runs weighted linear regression for a single voxel.
-    voxelwise_regression(permutation=False)
-        Performs voxelwise regression across all voxels, optionally with permutation.
-    _get_max_stat(arr, pseudo_var_smooth=True, t=99.99)
-        Computes the maximum (or high percentile) statistic for permutation testing.
-    run_permutation(n_permutations)
-        Runs permutation testing to compute FWE-corrected p-values for T and R2.
-    _unmask_array(data_array)
-        Unmasks a vectorized data array to full-brain NIfTI shape using the mask.
-    _save_map(map_data, file_name)
-        Saves a NIfTI image to disk after unmasking.
-    _save_nifti_maps()
-        Saves regression results (BETA, T, R2, and permutation-corrected maps) as NIfTI images.
-    full_multiout_regression()
-        Runs regression for all output channels in the outcome tensor.
-    run_all_outputs(n_permutations=0)
-        Runs regression and permutation testing for each output channel, saving results in subdirectories.
-    run(n_permutations=0)
-        Runs regression and permutation testing for the default output, saving results.
-    Notes
-    -----
-    - This class is designed for neuroimaging applications where voxelwise regression and permutation-based inference are required.
-    - Input data must be preprocessed and formatted as specified in the JSON configuration file.
-    - NIfTI output requires a valid mask file for unmasking vectorized results.
+    """Run location-wise regression independently of the neuroimaging backend.
+
+    The serialized input contains generic observation-by-predictor-by-location
+    tensors. Native map loading, evaluation-space projection, output validation,
+    saving, and viewing are delegated to ``NeuroimageFileOutporter`` and its
+    selected IO backend.
     """
     def __init__(self, json_path, mask_path=None, out_dir=None, regression_type='linear', n_permutations=0):
         self.json_path = json_path
@@ -134,6 +58,7 @@ class VoxelwiseRegression:
         self.output_ftype = info["output_ftype"]
         self.mask_path = mask_path if mask_path is not None else info["mask_path"]
         self.output_handler = NeuroimageFileOutporter(output_ftype=self.output_ftype, mask_path=self.mask_path)
+        self.output_handler.validate_for_output()
 
     #### Setter/Getter methods ####
     def load_data(self):
@@ -721,157 +646,8 @@ class VoxelwiseRegression:
 
         return views
 
-    def _is_fiber_output(self):
-        return self.output_ftype == "fiber"
-
-    @staticmethod
-    def _strip_fiber_suffix(path):
-        path = str(path)
-        return path[:-8] if path.endswith(".fib.npy") else os.path.splitext(path)[0]
-
-    def _fiber_density_path(self, file_name, out_dir=None):
-        out_dir = self.out_dir if out_dir is None else out_dir
-        return os.path.join(out_dir, f"{file_name}.nii.gz")
-
-    def _ensure_fiber_density_map(self, map_data, file_name, out_dir=None):
-        out_dir = self.out_dir if out_dir is None else out_dir
-        if out_dir is None:
-            raise ValueError("out_dir is required to materialize fiber density maps.")
-        os.makedirs(out_dir, exist_ok=True)
-        density_path = self._fiber_density_path(file_name, out_dir=out_dir)
-        if not os.path.exists(density_path):
-            self.output_handler.save_map(np.asarray(map_data), file_name, out_dir, visualize=False)
-        return density_path
-
     def _view_result_map(self, map_data, file_name):
-        if not self._is_fiber_output():
-            return self.output_handler.view_map(map_data, file_name)
-
-        density_path = self._ensure_fiber_density_map(map_data, file_name)
-        from nilearn import plotting
-
-        return plotting.view_img(density_path, title=os.path.basename(file_name))
-
-    def _fiber_density_vector(self, map_data, file_name, out_dir):
-        return self._fiber_values_to_density_vector(map_data)
-
-    def _get_fiber_density_projector(self):
-        cache = getattr(self, "_fiber_density_projector_cache", None)
-        if cache is not None and cache.get("fiber_atlas_path") == self.mask_path:
-            return cache
-
-        if self.mask_path is None:
-            raise ValueError("Fiber output requires mask_path to point to the internal .npz fiber atlas.")
-
-        atlas = np.load(self.mask_path, allow_pickle=True)
-        if "fibers" not in atlas:
-            raise ValueError(f"Fiber atlas is missing 'fibers' key: {self.mask_path}")
-
-        fibers = [np.asarray(fiber, dtype=np.float32)[:, :3] for fiber in atlas["fibers"].tolist()]
-        mask_img = nib.load(DEFAULT_MNI_MASK)
-        mask_data = mask_img.get_fdata().reshape(-1) > 0
-        mask_shape = mask_img.shape[:3]
-        inv_affine = np.linalg.inv(mask_img.affine)
-
-        full_to_mask = np.full(mask_data.shape[0], -1, dtype=np.int64)
-        full_to_mask[mask_data] = np.arange(int(mask_data.sum()), dtype=np.int64)
-
-        voxel_chunks = []
-        fiber_chunks = []
-        for fiber_idx, fiber in enumerate(tqdm(fibers, desc="Building fiber density projector", unit="fiber")):
-            for xyz in (fiber, self._mirror_fiber_xyz(fiber)):
-                ijk = self._world_to_ijk_for_density(xyz, inv_affine)
-                in_bounds = (
-                    (ijk[:, 0] >= 0) & (ijk[:, 0] < mask_shape[0])
-                    & (ijk[:, 1] >= 0) & (ijk[:, 1] < mask_shape[1])
-                    & (ijk[:, 2] >= 0) & (ijk[:, 2] < mask_shape[2])
-                )
-                ijk = ijk[in_bounds]
-                if ijk.shape[0] == 0:
-                    continue
-                full_idx = np.ravel_multi_index((ijk[:, 0], ijk[:, 1], ijk[:, 2]), mask_shape)
-                mask_idx = full_to_mask[full_idx]
-                mask_idx = mask_idx[mask_idx >= 0]
-                if mask_idx.shape[0] == 0:
-                    continue
-                voxel_chunks.append(mask_idx.astype(np.int64, copy=False))
-                fiber_chunks.append(np.full(mask_idx.shape[0], fiber_idx, dtype=np.int64))
-
-        if voxel_chunks:
-            voxel_indices = np.concatenate(voxel_chunks)
-            fiber_indices = np.concatenate(fiber_chunks)
-        else:
-            voxel_indices = np.empty(0, dtype=np.int64)
-            fiber_indices = np.empty(0, dtype=np.int64)
-
-        cache = {
-            "fiber_atlas_path": self.mask_path,
-            "n_fibers": len(fibers),
-            "n_mask_voxels": int(mask_data.sum()),
-            "voxel_indices": voxel_indices,
-            "fiber_indices": fiber_indices,
-        }
-        self._fiber_density_projector_cache = cache
-        return cache
-
-    def _fiber_values_to_density_vector(self, values):
-        projector = self._get_fiber_density_projector()
-        values = np.asarray(values, dtype=np.float32).flatten()
-        if values.shape[0] != projector["n_fibers"]:
-            raise ValueError(
-                f"Fiber value length {values.shape[0]} does not match atlas fiber count {projector['n_fibers']}."
-            )
-
-        weights = values[projector["fiber_indices"]]
-        density = np.bincount(
-            projector["voxel_indices"],
-            weights=weights,
-            minlength=projector["n_mask_voxels"],
-        )
-        return density.astype(np.float32, copy=False)
-
-    @staticmethod
-    def _world_to_ijk_for_density(xyz, inv_affine):
-        xyz = np.asarray(xyz, dtype=np.float32)
-        hom = np.c_[xyz, np.ones(xyz.shape[0], dtype=np.float32)]
-        ijk_float = hom @ inv_affine.T
-        return np.rint(ijk_float[:, :3]).astype(np.int64)
-
-    @staticmethod
-    def _mirror_fiber_xyz(fiber):
-        mirrored = np.asarray(fiber, dtype=np.float32).copy()
-        mirrored[:, 0] = -mirrored[:, 0]
-        return mirrored
-
-    def _resolve_fiber_subject_files_for_cv(self, subject_files):
-        resolved = []
-        for file_path in list(subject_files):
-            file_path = str(file_path)
-            if not file_path.endswith(".fib.npy"):
-                resolved.append(file_path)
-                continue
-
-            density_path = f"{self._strip_fiber_suffix(file_path)}.nii.gz"
-            if not os.path.exists(density_path):
-                arr = np.load(file_path, allow_pickle=True)
-                if arr.ndim != 1:
-                    raise ValueError(
-                        f"Expected subject fiber file to contain a 1D vector for density conversion: {file_path}"
-                    )
-                out_dir = os.path.dirname(file_path)
-                file_name = os.path.basename(self._strip_fiber_suffix(file_path))
-                self.output_handler.save_map(arr, file_name, out_dir, visualize=False)
-            resolved.append(density_path)
-        return resolved
-
-    def _fiber_subject_array_for_cv(self, subject_files):
-        rows = []
-        for file_path in list(subject_files):
-            arr = np.load(file_path, allow_pickle=True)
-            if arr.ndim != 1:
-                raise ValueError(f"Expected 1D fiber profile for CV subject file: {file_path}")
-            rows.append(self._fiber_values_to_density_vector(arr))
-        return np.vstack(rows)
+        return self.output_handler.view_map(map_data, file_name)
 
     def _populate_viewer(self, views):
         """
@@ -894,85 +670,10 @@ class VoxelwiseRegression:
             return viewer.save(out_file)
         return viewer.to_html()
 
-    #### Prediction Helpers #### ---TODO: MAKE NIFTI-AGNOSTIC.
-    def _get_mask_indices(self):
-        """
-        Cached boolean mask (flattened) used for vectorizing/unvectorizing.
-        """
-        if self.mask_path is None:
-            raise ValueError("Mask path is not provided. Provide the mask used to create the data_array.")
-
-        cache = getattr(self, "_mask_cache", None)
-        if cache is not None and cache.get("mask_path") == self.mask_path:
-            return cache["mask_indices"]
-
-        mask_img = nib.load(self.mask_path)
-        mask_data = mask_img.get_fdata()
-        mask_indices = mask_data.flatten() > 0
-        self._mask_cache = {
-            "mask_path": self.mask_path,
-            "mask_indices": mask_indices,
-        }
-        return mask_indices
-
-    def _mask_array(self, data_array):
-        """
-        Masks a full-brain array to a vector using self.mask_path.
-        Returns:
-            masked_array: vectorized data (n_vox,)
-        """
-        mask_indices = self._get_mask_indices()
-        return data_array.flatten()[mask_indices]
-
+    #### Prediction Helpers ####
     def _load_prediction_params(self, params_dir, files):
-        """
-        Generic loader for prediction parameters saved as nifti(s) in params_dir.
-        files: list of strings. Each string is either:
-            - a basename (e.g., "LOG_PRIORS") to load a single nifti
-            - a prefix with '*' (e.g., "beta_predictor_*") to load a stack
-        Returns:
-            list of loaded arrays in the same order as files
-        """
-        if self.mask_path is None:
-            raise ValueError("mask_path is required to load prediction params.")
-        
-        def _find_single_nifti(basename):
-            candidates = [
-                os.path.join(params_dir, f"{basename}.nii.gz"),
-                os.path.join(params_dir, f"{basename}.nii"),
-            ]
-            return next((p for p in candidates if os.path.exists(p)), None)
-        
-        def _find_prefixed_niftis(prefix):
-            files = []
-            for ext in ("nii.gz", "nii"):
-                files.extend([p for p in os.listdir(params_dir) if p.startswith(prefix) and p.endswith(ext)])
-            return files
-        
-        def _beta_index(name, prefix):
-            stem = name.replace(".nii.gz", "").replace(".nii", "")
-            return int(stem.split(prefix)[1])
-
-        loaded = []
-        for item in files:
-            if item.endswith("*"):
-                prefix = item[:-1]
-                files_found = _find_prefixed_niftis(prefix)
-                if not files_found:
-                    raise FileNotFoundError(f"No {prefix}*.nii(.gz) files found in prediction params directory.")
-                files_found = sorted(set(files_found), key=lambda n: _beta_index(n, prefix))
-                betas = []
-                for bf in files_found:
-                    b_full = nib.load(os.path.join(params_dir, bf)).get_fdata()
-                    betas.append(self._mask_array(b_full))
-                loaded.append(np.stack(betas, axis=1))       # (n_vox, n_preds)
-            else:
-                path = _find_single_nifti(item)
-                if path is None:
-                    raise FileNotFoundError(f"{item}.nii(.gz) not found in prediction params directory.")
-                arr_full = nib.load(path).get_fdata()
-                loaded.append(self._mask_array(arr_full))
-        return loaded
+        """Load fitted maps by logical name through the configured IO backend."""
+        return self.output_handler.load_named_maps(params_dir, files)
 
     def _run_prediction_switch(self, temp_dir=None, *, B=None, A=None):
         """
@@ -985,17 +686,17 @@ class VoxelwiseRegression:
             if B is None or A is None:
                 if temp_dir is None:
                     raise ValueError("temp_dir is required when B/A are not provided.")
-                B, A = self._load_prediction_params(temp_dir, ["beta_predictor_*", "LOG_PRIORS"])
+                B, A = self._load_prediction_params(temp_dir, ["beta_predictor_[0-9]*", "LOG_PRIORS"])
             return self._run_naive_bayes_prediction(X, B, A)
         if self.regression_type == "linear":
             if B is None:
                 if temp_dir is None:
                     raise ValueError("temp_dir is required when B is not provided.")
-                (B,) = self._load_prediction_params(temp_dir, ["beta_predictor_*"])
+                (B,) = self._load_prediction_params(temp_dir, ["beta_predictor_[0-9]*"])
             return self._run_linear_prediction(X, B)
         raise NotImplementedError(f"Prediction for regression_type='{self.regression_type}' is not yet implemented.")
     
-    def _get_scalar_predictions(self, temp_dir, subject_arr, prediction_arr, *, T_all=None, map_prefix=None, T_all_is_density=False):
+    def _get_scalar_predictions(self, temp_dir, subject_arr, prediction_arr, *, T_all=None, T_all_is_evaluation=False):
         """
         Takes voxelwise prediction arrays (or t-maps) and extracts an average value from them
         Returns array with all t-value predictions in the first rows, then the overall prediction in the last row.
@@ -1004,25 +705,18 @@ class VoxelwiseRegression:
         if T_all is None:
             if temp_dir is None:
                 raise ValueError("temp_dir is required when T_all is not provided.")
-            (T_all,) = self._load_prediction_params(temp_dir, ["contrast_tval_*"])  # (n_vox, n_contrasts)
+            (T_all,) = self._load_prediction_params(temp_dir, ["contrast_tval_[0-9]*"])  # (n_vox, n_contrasts)
         
         # Get cosine similarity of subject's map with the T-map
-        density_dir = None
-        if self._is_fiber_output():
-            density_dir = os.path.join(self.out_dir or "/tmp", "cross_validations", "fiber_density_maps")
-            os.makedirs(density_dir, exist_ok=True)
-            map_prefix = "cv_map" if map_prefix is None else map_prefix
-
         for i in range(self.n_contrasts):
             T = T_all[:, i]
-            if self._is_fiber_output() and not T_all_is_density:
-                T = self._fiber_density_vector(T, f"{map_prefix}_contrast_tval_{i}", density_dir)
+            if not T_all_is_evaluation:
+                T = self.output_handler.prepare_map_for_evaluation(T)
             dmg_value_dict = DamageScorer._calculate_metrics(subject_arr, T, ["cosine"])
             preds[0, i] = dmg_value_dict["cosine"]
         
         # Get cosine similarity of subject's map with their prediction map
-        if self._is_fiber_output():
-            prediction_arr = self._fiber_density_vector(prediction_arr, f"{map_prefix}_prediction", density_dir)
+        prediction_arr = self.output_handler.prepare_map_for_evaluation(prediction_arr)
         dmg_value_dict = DamageScorer._calculate_metrics(subject_arr, prediction_arr, ["cosine"])
         preds[0, -1]    = dmg_value_dict["cosine"]
         return preds
@@ -1117,16 +811,10 @@ class VoxelwiseRegression:
             if save_fold_params:
                 self._save_result_maps()
 
-            T_for_scalar = self.T.T
-            T_for_scalar_is_density = False
-            if self._is_fiber_output():
-                density_dir = os.path.join(self.out_dir or "/tmp", "cross_validations", "fiber_density_maps")
-                os.makedirs(density_dir, exist_ok=True)
-                T_for_scalar = np.column_stack([
-                    self._fiber_density_vector(self.T[c, :], f"{cv}_fold_{fold_idx}_contrast_tval_{c}", density_dir)
-                    for c in range(self.n_contrasts)
-                ])
-                T_for_scalar_is_density = True
+            T_for_scalar = np.column_stack([
+                self.output_handler.prepare_map_for_evaluation(self.T[c, :])
+                for c in range(self.n_contrasts)
+            ])
 
             for local_i, global_i in enumerate(test_idx):
                 scalar_preds[global_i, :] = self._get_scalar_predictions(
@@ -1134,8 +822,7 @@ class VoxelwiseRegression:
                     subject_arr[global_i, :],
                     prediction_arr[local_i, :],
                     T_all=T_for_scalar,
-                    map_prefix=f"{cv}_fold_{fold_idx}_subject_{global_i}",
-                    T_all_is_density=T_for_scalar_is_density,
+                    T_all_is_evaluation=True,
                 )
 
         self.design_tensor = orig_design
@@ -1167,16 +854,15 @@ class VoxelwiseRegression:
         if not self.out_dir:
             raise ValueError("out_dir must be set for cross-validation plotting.")
         
-        if self._is_fiber_output():
-            subject_file_list = [str(path) for path in list(subject_files)]
-            if all(path.endswith(".fib.npy") for path in subject_file_list):
-                subject_arr = self._fiber_subject_array_for_cv(subject_file_list)
-            else:
-                importer = GiiNiiFileImport(import_path=pd.Series(subject_file_list), mask_path=DEFAULT_MNI_MASK, transpose=True)
-                subject_arr = importer.run().values
-        else:
-            importer = GiiNiiFileImport(import_path=subject_files, mask_path=self.mask_path, transpose=True)
-            subject_arr = importer.run().values
+        subject_arr = self.output_handler.prepare_evaluation_data(list(subject_files))
+        expected_locations = self.output_handler.evaluation_size(self.n_voxels)
+        if subject_arr.ndim != 2 or subject_arr.shape[1] != expected_locations:
+            raise ValueError(
+                "Cross-validation evaluation data do not match the fitted evaluation space: "
+                f"loaded shape {subject_arr.shape}, expected {expected_locations} locations. "
+                "Verify that the evaluation files and backend reference are compatible "
+                "with the fitted regression."
+            )
         scalar_preds = self.run_prediction_cv(subject_arr=subject_arr, regression_idx=regression_idx, cv=cv)
 
         def _scatter(pred_col, y_true, *, name: str):

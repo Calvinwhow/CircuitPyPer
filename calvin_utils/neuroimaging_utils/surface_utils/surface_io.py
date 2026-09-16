@@ -9,9 +9,15 @@ DEFAULT_SURFACE_MASK = None
 
 
 class SurfaceIO:
+    output_ftype = "surface"
+
     def __init__(self, mask_path=None, threshold=0):
         self.mask_path = mask_path
         self.threshold = threshold
+
+    def validate_for_output(self):
+        """Surface output can be written with or without an optional vertex mask."""
+        return None
 
     def _identify_surface_file_type(self, path):
         p = Path(path)
@@ -170,6 +176,31 @@ class SurfaceIO:
         _, _, arr = self.mask_array(arr, mask)
 
         return arr
+
+    def prepare_map_for_evaluation(self, map_data):
+        """Return one fitted surface map as a flat evaluation vector."""
+        return np.asarray(map_data, dtype=np.float32).reshape(-1)
+
+    def prepare_evaluation_data(self, file_paths):
+        """Return subject surface maps as ``(subjects, vertices)``."""
+        return self.import_surface_to_numpy_array(list(file_paths)).T.astype(np.float32, copy=False)
+
+    @staticmethod
+    def evaluation_size(model_size):
+        return int(model_size)
+
+    @staticmethod
+    def is_native_map_file(path):
+        name = str(path).lower()
+        return name.endswith(".gii") or name.endswith(".gii.gz")
+
+    def load_map_values(self, path):
+        return self.import_surface_to_numpy_array([str(path)])[:, 0]
+
+    @staticmethod
+    def native_map_stem(path):
+        name = os.path.basename(str(path))
+        return name[:-7] if name.lower().endswith(".gii.gz") else os.path.splitext(name)[0]
     
     def save_files(self, arr, file_paths, dry_run=True, file_suffix=None, fill_value=0):
         """

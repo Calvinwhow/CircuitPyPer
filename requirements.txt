@@ -1,6 +1,6 @@
 # Calvin Utils Project Requirements
 # This file lists the required packages for the Calvin Utils project, but simplified
-# Tested and works in Python 3.13.3
+# Supported on Python 3.10 through 3.13
 
 # Plotting and Visualization
 seaborn==0.12.2
@@ -32,6 +32,9 @@ scikit-learn
 scipy<1.13.0
 pytensor
 hdbscan
+# llvmlite 0.46+ has no Intel macOS wheels. Without this constraint, pip tries
+# to build llvmlite from source and fails when LLVM is not installed.
+numba==0.62.1; sys_platform == "darwin" and platform_machine == "x86_64"
 umap-learn
 pydot
 
@@ -41,6 +44,9 @@ nibabel
 nipype
 vtk
 pydicom
+yabplot
+pyvista
+# scikit-image is only needed to rebuild the glass meshes, not to plot them
 
 # Additional requirements for the project
 natsort

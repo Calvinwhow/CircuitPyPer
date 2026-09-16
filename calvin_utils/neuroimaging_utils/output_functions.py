@@ -1,4 +1,7 @@
 import os
+import fnmatch
+import re
+from pathlib import Path
 import numpy as np
 if not hasattr(np, "sctypes"):
     np.sctypes = {
@@ -25,6 +28,11 @@ if not hasattr(np, "maximum_sctype"):
 
 class NeuroimageFileOutporter:
     def __init__(self, output_ftype, mask_path=None):
+        output_ftype = {
+            "nifti": "nii",
+            "gii": "surface",
+            "freesurfer": "surface",
+        }.get(output_ftype, output_ftype)
         self.output_ftype = output_ftype
         self.mask_path = mask_path
 
@@ -61,6 +69,63 @@ class NeuroimageFileOutporter:
         if visualize and hasattr(self.io, "_map_to_image") and hasattr(self.io, "_visualize_map"):
             img = self.io._map_to_image(np.asarray(map_data))
             self.io._visualize_map(img, title=os.path.basename(file_name))
+
+    def validate_for_output(self):
+        """Ask the selected backend to validate its output configuration."""
+        self.io.validate_for_output()
+
+    def prepare_map_for_evaluation(self, map_data):
+        """Return one fitted map as a backend-defined 1D evaluation vector."""
+        result = np.asarray(self.io.prepare_map_for_evaluation(map_data), dtype=np.float32)
+        if result.ndim != 1:
+            raise ValueError(f"Expected a 1D evaluation map, got shape {result.shape}")
+        return result
+
+    def prepare_evaluation_data(self, file_paths):
+        """Return subject evaluation maps as ``(subjects, locations)``."""
+        result = np.asarray(self.io.prepare_evaluation_data(file_paths), dtype=np.float32)
+        if result.ndim != 2:
+            raise ValueError(f"Expected 2D evaluation data, got shape {result.shape}")
+        return result
+
+    def evaluation_size(self, model_size):
+        return int(self.io.evaluation_size(model_size))
+
+    def is_native_map_file(self, path):
+        return bool(self.io.is_native_map_file(path))
+
+    def load_map_values(self, path):
+        """Return native saved-map values as a format-independent 1D array."""
+        result = np.asarray(self.io.load_map_values(path), dtype=float).reshape(-1)
+        return result
+
+    def load_named_maps(self, directory, names):
+        """Load named native maps without exposing backend file conventions."""
+        native_files = [
+            path for path in Path(directory).iterdir()
+            if path.is_file() and self.is_native_map_file(path)
+        ]
+
+        def natural_key(path):
+            stem = self.io.native_map_stem(path)
+            return [int(part) if part.isdigit() else part.lower() for part in re.split(r"(\d+)", stem)]
+
+        loaded = []
+        for name in names:
+            matches = sorted(
+                (
+                    path for path in native_files
+                    if fnmatch.fnmatch(self.io.native_map_stem(path), name)
+                ),
+                key=natural_key,
+            )
+            if not matches:
+                raise FileNotFoundError(
+                    f"No native map matching '{name}' was found in {directory}."
+                )
+            arrays = [self.load_map_values(path) for path in matches]
+            loaded.append(np.column_stack(arrays) if "*" in name else arrays[0])
+        return loaded
 
     def view_map(self, map_data, file_name):
         """

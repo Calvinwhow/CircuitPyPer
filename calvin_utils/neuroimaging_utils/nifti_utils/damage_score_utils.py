@@ -129,8 +129,13 @@ class DamageScorer:
 
     @staticmethod
     def _calculate_max_in_roi(array1, roi_arr):
-        '''Expects a binary'''
-        return np.nanmax(array1[roi_arr>0])
+        """Expects a binary ROI."""
+        values = array1[roi_arr > 0]
+
+        if values.size == 0:
+            return np.nan
+
+        return np.nanmax(values)
         
     @staticmethod
     def _calculate_min_in_roi(array1, roi_arr):

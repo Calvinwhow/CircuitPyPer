@@ -6,20 +6,19 @@ import nibabel as nib
 from pathlib import Path
 from nibabel.streamlines import Tractogram
 from nibabel.streamlines.trk import TrkFile
+from scipy.io import loadmat
 
 
 class FiberFormatConverter:
     """
-    Convert fiber objects shaped like:
+    Convert fiber containers to standard tractogram files.
+
+    Instance methods write TRK using a reference tractogram header. The
+    ``convert_leaddbs_mat_to_tck`` class method needs no reference file because
+    Lead-DBS geometry is already stored in world-millimeter coordinates.
+
+    Fiber objects are shaped like:
         fiber_i = ndarray, shape (n_vertices, 3) or (n_vertices, 4)
-
-    into tractogram formats using a reference tract file/header.
-
-    Current guaranteed output:
-        - .trk
-
-    Planned / stub only:
-        - .fib / .fibfilt if you later add a known writer
     """
 
     def __init__(self, reference_path):
@@ -55,6 +54,8 @@ class FiberFormatConverter:
             return "npz"
         if suffix == ".json":
             return "json"
+        if suffix == ".mat":
+            return "mat"
         return "unknown"
 
     @staticmethod
@@ -102,6 +103,271 @@ class FiberFormatConverter:
                 )
 
         return fibers
+
+    @staticmethod
+    def _as_streamline(value):
+        fiber = np.asarray(value, dtype=np.float32)
+        if fiber.ndim != 2:
+            raise ValueError(f"Expected a 2D fiber array, got shape {fiber.shape}.")
+        if fiber.shape[1] not in (3, 4) and fiber.shape[0] in (3, 4):
+            fiber = fiber.T
+        if fiber.shape[1] not in (3, 4):
+            raise ValueError(f"Expected an N x 3 or N x 4 fiber, got shape {fiber.shape}.")
+        if not len(fiber):
+            raise ValueError("Empty fibers cannot be written to TCK.")
+        return fiber[:, :3]
+
+    @classmethod
+    def _fibcell_streamlines(cls, value):
+        streamlines = []
+
+        def collect(item):
+            array = np.asarray(item)
+            if array.dtype == object:
+                for child in array.flat:
+                    collect(child)
+            elif array.size:
+                streamlines.append(cls._as_streamline(array))
+
+        collect(value)
+        return streamlines
+
+    @classmethod
+    def _fiber_matrix_streamlines(cls, value, idx=None):
+        matrix = np.asarray(value, dtype=np.float32)
+        if matrix.ndim != 2:
+            raise ValueError(f"Expected a 2D Lead-DBS fibers matrix, got {matrix.shape}.")
+        if matrix.shape[1] not in (3, 4) and matrix.shape[0] in (3, 4):
+            matrix = matrix.T
+        if matrix.shape[1] not in (3, 4):
+            raise ValueError(f"Expected an N x 3 or N x 4 fibers matrix, got {matrix.shape}.")
+
+        if idx is not None:
+            lengths = np.asarray(idx, dtype=np.int64).reshape(-1)
+            if np.any(lengths <= 0) or lengths.sum() != len(matrix):
+                raise ValueError("Lead-DBS idx must contain positive lengths summing to the fibers rows.")
+            stops = np.cumsum(lengths)
+            starts = np.r_[0, stops[:-1]]
+            return [matrix[start:stop, :3] for start, stop in zip(starts, stops)]
+
+        if matrix.shape[1] == 3:
+            return [matrix]
+
+        fiber_ids = matrix[:, 3]
+        starts = np.r_[0, np.flatnonzero(np.diff(fiber_ids)) + 1]
+        stops = np.r_[starts[1:], len(matrix)]
+        return [matrix[start:stop, :3] for start, stop in zip(starts, stops)]
+
+    @staticmethod
+    def _hdf5_mat_fields(path):
+        import h5py
+
+        with h5py.File(path, "r") as mat:
+            fields = {}
+            for name in ("fibers", "idx", "vals"):
+                if name in mat:
+                    fields[name] = np.asarray(mat[name])
+            if "fibcell" in mat:
+                cells = []
+                for reference in np.asarray(mat["fibcell"]).flat:
+                    cells.append(np.asarray(mat[reference]))
+                fields["fibcell"] = cells
+            return fields
+
+    @classmethod
+    def load_leaddbs_mat(cls, mat_path):
+        """Load Lead-DBS FTR or discriminative-fiber MAT geometry."""
+        mat_path = Path(mat_path).expanduser()
+        if not mat_path.is_file():
+            raise FileNotFoundError(mat_path)
+        if mat_path.suffix.lower() != ".mat":
+            raise ValueError(f"Expected a .mat input, got: {mat_path}")
+
+        try:
+            fields = loadmat(mat_path, squeeze_me=True, struct_as_record=False)
+        except NotImplementedError:
+            fields = cls._hdf5_mat_fields(mat_path)
+
+        if "fibcell" in fields:
+            streamlines = cls._fibcell_streamlines(fields["fibcell"])
+        elif "fibers" in fields:
+            streamlines = cls._fiber_matrix_streamlines(
+                fields["fibers"], fields.get("idx")
+            )
+        else:
+            raise ValueError(f"Lead-DBS MAT has neither 'fibcell' nor 'fibers': {mat_path}")
+
+        if not streamlines:
+            raise ValueError(f"Lead-DBS MAT contains no fibers: {mat_path}")
+
+        lengths = np.asarray([len(fiber) for fiber in streamlines], dtype=np.int64)
+        values = fields.get("vals")
+        if values is not None:
+            values = np.asarray(values, dtype=np.float32).reshape(-1)
+            if len(values) != len(streamlines):
+                raise ValueError(
+                    f"Lead-DBS MAT has {len(values)} vals for {len(streamlines)} fibers."
+                )
+        return streamlines, lengths, values
+
+    @classmethod
+    def load_fib_npy(
+        cls,
+        fib_path,
+        fiber_atlas_path=None,
+        sign="both",
+        min_abs_value=None,
+        top_percent=None,
+    ):
+        """Load and filter a geometry-bearing or vector ``.fib.npy`` result."""
+        fib_path = Path(fib_path).expanduser()
+        if not fib_path.is_file():
+            raise FileNotFoundError(fib_path)
+        if not fib_path.name.lower().endswith(".fib.npy"):
+            raise ValueError(f"Expected a .fib.npy input, got: {fib_path}")
+
+        stored = np.load(fib_path, allow_pickle=True)
+        if stored.dtype == object:
+            fibers = [np.asarray(fiber, dtype=np.float32) for fiber in stored.tolist()]
+            if not fibers or any(
+                fiber.ndim != 2 or fiber.shape[1] != 4 for fiber in fibers
+            ):
+                raise ValueError(
+                    "A geometry-bearing .fib.npy must contain N x 4 fibers."
+                )
+            streamlines = [cls._as_streamline(fiber) for fiber in fibers]
+            values = np.asarray(
+                [np.nanmedian(fiber[:, 3]) for fiber in fibers], dtype=np.float32
+            )
+        else:
+            if stored.ndim != 1:
+                raise ValueError(
+                    f"A vector .fib.npy must be one-dimensional, got {stored.shape}."
+                )
+            if fiber_atlas_path is None:
+                raise ValueError(
+                    "This .fib.npy contains values only. Set TRACT_ATLAS_PATH to "
+                    "the canonical .npz/.npy fiber atlas that supplies its geometry."
+                )
+            streamlines = [
+                cls._as_streamline(fiber)
+                for fiber in cls._load_fibers(Path(fiber_atlas_path).expanduser())
+            ]
+            values = np.asarray(stored, dtype=np.float32)
+
+        if len(streamlines) != len(values):
+            raise ValueError(
+                f"Fiber/value length mismatch: the atlas has {len(streamlines)} "
+                f"fibers but {fib_path} has {len(values)} values."
+            )
+        keep = cls._fiber_value_mask(values, sign, min_abs_value, top_percent)
+        return (
+            [fiber for fiber, selected in zip(streamlines, keep) if selected],
+            values[keep],
+            int(len(values)),
+        )
+
+    @staticmethod
+    def _fiber_value_mask(values, sign, min_abs_value=None, top_percent=None):
+        aliases = {"both": "both", "positive": "positive", "pos": "positive",
+                   "negative": "negative", "neg": "negative"}
+        normalized_sign = aliases.get(str(sign).strip().lower())
+        if normalized_sign is None:
+            raise ValueError("sign must be 'both', 'positive', or 'negative'.")
+
+        keep = np.isfinite(values)
+        if normalized_sign == "positive":
+            keep &= values > 0
+        elif normalized_sign == "negative":
+            keep &= values < 0
+        else:
+            keep &= values != 0
+
+        if min_abs_value is not None:
+            min_abs_value = float(min_abs_value)
+            if min_abs_value < 0:
+                raise ValueError("min_abs_value must be nonnegative.")
+            keep &= np.abs(values) >= min_abs_value
+
+        if top_percent is not None:
+            top_percent = float(top_percent)
+            if not 0 < top_percent <= 100:
+                raise ValueError("top_percent must be in (0, 100].")
+            if np.any(keep):
+                cutoff = np.nanpercentile(np.abs(values[keep]), 100 - top_percent)
+                keep &= np.abs(values) >= cutoff
+
+        if not np.any(keep):
+            raise ValueError("No fibers survive the tract visualization filters.")
+        return keep
+
+    @staticmethod
+    def _write_tck(streamlines, out_path):
+        out_path = Path(out_path).expanduser()
+        if out_path.suffix.lower() != ".tck":
+            raise ValueError(f"TCK output must end in .tck, got: {out_path}")
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        tractogram = Tractogram(streamlines=streamlines, affine_to_rasmm=np.eye(4))
+        nib.streamlines.save(tractogram, str(out_path))
+        return out_path
+
+    @classmethod
+    def convert_leaddbs_mat_to_tck(
+        cls,
+        mat_path,
+        out_path,
+        sign="both",
+        min_abs_value=None,
+        top_percent=None,
+    ):
+        """Write MAT streamlines to TCK and return values for later plotting."""
+        streamlines, lengths, values = cls.load_leaddbs_mat(mat_path)
+        n_input = len(streamlines)
+        if values is not None:
+            keep = cls._fiber_value_mask(
+                values, sign, min_abs_value, top_percent
+            )
+            streamlines = [
+                fiber for fiber, selected in zip(streamlines, keep) if selected
+            ]
+            lengths = lengths[keep]
+            values = values[keep]
+        out_path = cls._write_tck(streamlines, out_path)
+        return {
+            "tck_path": str(out_path),
+            "idx": lengths,
+            "vals": values,
+            "n_fibers": len(streamlines),
+            "n_input_fibers": n_input,
+        }
+
+    @classmethod
+    def convert_fib_npy_to_tck(
+        cls,
+        fib_path,
+        out_path,
+        fiber_atlas_path=None,
+        sign="both",
+        min_abs_value=None,
+        top_percent=None,
+    ):
+        """Filter a native fiber result and write its selected fibers to TCK."""
+        streamlines, values, n_input = cls.load_fib_npy(
+            fib_path,
+            fiber_atlas_path=fiber_atlas_path,
+            sign=sign,
+            min_abs_value=min_abs_value,
+            top_percent=top_percent,
+        )
+        out_path = cls._write_tck(streamlines, out_path)
+        lengths = np.asarray([len(fiber) for fiber in streamlines], dtype=np.int64)
+        return {
+            "tck_path": str(out_path),
+            "idx": lengths,
+            "vals": values,
+            "n_fibers": len(streamlines),
+            "n_input_fibers": n_input,
+        }
 
     @staticmethod
     def _split_fibers_xyz_and_values(fibers):
