@@ -22,9 +22,16 @@ arbitrary.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
-RESOURCE_DIR = Path(__file__).resolve().parents[2] / "resources" / "neuro_plotter_resources"
+# Where the prebuilt meshes live. An application that ships its own copy points
+# this at it with NEURO_PLOTTER_RESOURCES, so it does not have to reach into
+# this package's install directory to find geometry it depends on.
+RESOURCE_DIR = Path(os.environ.get(
+    "NEURO_PLOTTER_RESOURCES",
+    Path(__file__).resolve().parents[2] / "resources" / "neuro_plotter_resources",
+)).expanduser()
 
 FAMILIES = ("surface", "subcortex")
 
@@ -69,6 +76,20 @@ MESHES = {
         "what": "[surface] inflated cortex + eroded SUIT cerebellum + brainstem",
         "family": "surface", "pieces": ["inflated", "pial_cerebellum", "brainstem"],
     },
+    # A solid core that fills the inside of the shell, cut flat at the midline.
+    # Without it a medial view looks straight through the glass at the thalamus
+    # and basal ganglia; with it you get a clean interhemispheric plane. Floored
+    # just under the thalamus so the medial temporal lobe stays visible.
+    "subcortex": {
+        "what": "[surface] solid inner core; hides the interior, planar at the midline",
+        "family": "surface", "pieces": ["subcortex"],
+    },
+    "pial_medial": {
+        "what": "[surface] pial whole brain + inner core; for medial views",
+        "family": "surface",
+        "pieces": ["pial", "pial_cerebellum", "brainstem", "subcortex"],
+    },
+
     "glass_wholebrain": {
         "what": "[surface] carved translucent hull + cerebellum; no gyral detail",
         "family": "surface", "pieces": ["glass_cerebrum", "glass_cerebellum"],
@@ -76,6 +97,44 @@ MESHES = {
     "plain_wholebrain": {
         "what": "[surface] uncarved translucent hull + cerebellum; no gyral detail",
         "family": "surface", "pieces": ["plain_cerebrum", "glass_cerebellum"],
+    },
+
+    # --- surface: Lead-DBS' own surfaces, imported from CoolSurfaces -------- #
+    # Kept in their own folder rather than copied into the pile above: they are
+    # a third-party set with their own provenance, and the resolver searches
+    # every folder under resources/meshes. The bilateral ones are directories of
+    # L/R files, which is why a piece can be a directory.
+    "leaddbs_ch2": {
+        "what": "[surface] Lead-DBS Ch2 whole-brain surface",
+        "family": "surface", "pieces": ["BrainMesh_Ch2"],
+    },
+    "leaddbs_icbm152": {
+        "what": "[surface] Lead-DBS ICBM152 Talairach whole-brain surface",
+        "family": "surface", "pieces": ["BrainMesh_ICBM152_tal"],
+    },
+    "leaddbs_surf": {
+        "what": "[surface] Lead-DBS combined cortical surface",
+        "family": "surface", "pieces": ["surf"],
+    },
+    "leaddbs_cortex_hires": {
+        "what": "[surface] Lead-DBS bilateral high-resolution cortex, DKT labels",
+        "family": "surface", "pieces": ["CortexHiRes"],
+    },
+    "leaddbs_cortex_lowres": {
+        "what": "[surface] Lead-DBS bilateral cortex, 15,000 vertices",
+        "family": "surface", "pieces": ["CortexLowRes_15000V"],
+    },
+    "leaddbs_surf_lh_rh": {
+        "what": "[surface] Lead-DBS bilateral cortical surface pair",
+        "family": "surface", "pieces": ["surf.lh-rh"],
+    },
+    "leaddbs_right": {
+        "what": "[surface] Lead-DBS right-hemisphere brain surface",
+        "family": "surface", "pieces": ["brainMeshRight"],
+    },
+    "leaddbs_surf_rh_ply": {
+        "what": "[surface] Lead-DBS right-hemisphere PLY surface variant",
+        "family": "surface", "pieces": ["surf.rh.ply"],
     },
 
     # --- subcortex: local parcel meshes, built by parcel_meshes ------------- #
@@ -255,3 +314,54 @@ __all__ = [
     "describe", "require_family",
     "mesh_pieces", "mesh_bmesh", "mesh_subcortex", "atlas_name",
 ]
+
+
+# --- supra-regions ---------------------------------------------------------
+# A 170-region atlas is too many checkboxes to work through when what you want
+# is "everything except the cerebellum". These are the coarse groupings, matched
+# on the naming AAL3 and SUIT already use rather than stored as a 170-line
+# table, so a region added later lands in the right place without an edit here.
+#
+# Every rule is a prefix or an exact stem, tried in order, so the specific ones
+# come first: "Frontal_Med_Orb" is frontal, and "OFCmed" is too, but "Olfactory"
+# has to be named because nothing in it says frontal.
+SUPRA_RULES = (
+    ("Cerebellum", ("Cerebellum", "Vermis")),
+    ("Brainstem",  ("Brainstem", "Red_N", "SN_", "Raphe", "VTA", "LC_", "PAG")),
+    ("Thalamus",   ("Thal_", "Thal-")),
+    ("Basal ganglia", ("Caudate", "Putamen", "Pallidum", "N_Acc")),
+    ("Cingulate",  ("ACC_", "Cingulate_")),
+    ("Insula",     ("Insula",)),
+    # Medial temporal sits with the temporal lobe: hippocampus and amygdala are
+    # what someone means by "turn off the temporal lobe" in a lateral view.
+    ("Temporal",   ("Temporal", "Heschl", "Fusiform", "Hippocampus",
+                    "ParaHippocampal", "Amygdala")),
+    ("Occipital",  ("Occipital", "Calcarine", "Cuneus_", "Cuneus", "Lingual")),
+    ("Parietal",   ("Parietal", "Postcentral", "Precuneus", "SupraMarginal",
+                    "Angular")),
+    ("Frontal",    ("Frontal", "Precentral", "Supp_Motor_Area", "OFC", "Rectus",
+                    "Olfactory", "Paracentral", "Rolandic_Oper")),
+    ("Midline",    ("Midline",)),
+)
+
+SUPRA_NAMES = tuple(name for name, _ in SUPRA_RULES)
+
+
+def supra_region(name):
+    """The coarse group a region belongs to, or ``None`` if nothing matches.
+
+    ``None`` rather than an "Other" bucket, so an atlas this does not understand
+    shows no supra-region controls instead of one misleading catch-all.
+    """
+    stem = str(name).rsplit(".", 1)[0]
+    for suffix in ("_L", "_R", "-L", "-R"):
+        if stem.upper().endswith(suffix):
+            stem = stem[:-2]
+            break
+    # Precuneus before Cuneus, Paracentral before Postcentral: longest first
+    # inside each group is not enough, because the groups themselves overlap.
+    for group, prefixes in SUPRA_RULES:
+        for prefix in prefixes:
+            if stem.lower().startswith(prefix.lower()):
+                return group
+    return None

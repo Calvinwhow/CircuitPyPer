@@ -57,10 +57,31 @@ DEFAULT_SMOOTHING = dict(presmooth_vox=1.2, target_mm=1.0, smooth_i=40,
                          smooth_f=0.05, decimate=0.4, min_component_frac=0.05)
 
 
+def read_backdrop_npz(path):
+    """``(data, affine)`` for a prepared backdrop, as if it were a NIfTI.
+
+    A backdrop is already the anatomy resampled, quantised to uint8 and stored
+    slice by slice, so reading one costs nothing next to meshing it. Accepting
+    it wherever a volume is accepted is what lets a prepared backdrop be the
+    surface AND the thing that colours it, instead of only a set of planes.
+    """
+    from calvin_utils.plotting_utils.backdrops import Backdrop
+
+    with Backdrop(path) as store:
+        return store.volume().astype(np.float32), np.asarray(store.affine, float)
+
+
+def is_backdrop(path):
+    return str(path).lower().endswith(".npz")
+
+
 def _load(path):
     import nibabel as nib
 
-    img = nib.load(str(Path(path).expanduser()))
+    path = Path(path).expanduser()
+    if is_backdrop(path):
+        return read_backdrop_npz(path)
+    img = nib.load(str(path))
     data = np.asarray(img.dataobj, dtype=np.float32)
     if data.ndim > 3:
         data = data[..., 0]

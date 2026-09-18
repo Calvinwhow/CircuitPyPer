@@ -1,7 +1,9 @@
 import os
 import json
+import hashlib
 import numpy as np
 import nibabel as nib
+from datetime import datetime, timezone
 from pathlib import Path
 from tqdm import tqdm
 from calvin_utils.neuroimaging_utils.tract_utils.fiber_converter import FiberFormatConverter
@@ -9,25 +11,48 @@ from calvin_utils.neuroimaging_utils.tract_utils.fiber_result_visualizer import 
 from calvin_utils.neuroimaging_utils.tract_utils.tract_density import TractDensity
 PACKAGE_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 DEFAULT_FIBER_MASK = None
-DEFAULT_MNI_MASK = os.path.join(PACKAGE_ROOT, "resources", "MNI152_T1_2mm_brain_mask.nii")
+DEFAULT_MNI_MASK = os.path.join(PACKAGE_ROOT, "resources", "mni_icbm152_t1_tal_nlin_sym_09c_mask.nii")
 
 class FiberIO:
-    """
-    Fiber-space I/O using a canonical ordered fiber library.
-    This is specifically for importing Fiber Connectivity files.
-    
+    """Fiber-space I/O using a canonical, ordered streamline atlas.
+
     Core assumptions
     ----------------
     1. Each patient file represents magnitudes over the SAME ordered fiber set.
     2. The reference mask/library stores the canonical polylines.
     3. Regression operates on per-fiber magnitudes only, not raw polyline vertices.
 
-    Conventions
-    -----------
-    - import_fiber_to_numpy_array(file_paths) returns shape (n_fibers_kept, n_files)
-    - mask unit is fiber index, not vertex index
-    - unmasking restores values to the full reference fiber set
-    - writing assigns one scalar magnitude to every vertex of a fiber
+    Canonical regression output
+    ---------------------------
+    ``save_files`` writes an atlas-referenced pair::
+
+        <stem>.fib.values.npy float32 vector with one value per atlas fiber
+        <stem>.fib.desc.json  required descriptor for the values vector
+
+    ``<stem>.fib.values.npy`` and ``<stem>.fib.desc.json`` are a logical pair
+    and must be copied, renamed, or archived together. The descriptor records
+    both relative and absolute paths to the values file, so the JSON can be
+    used as the entry point. The vector contains no
+    geometry. Its element ``i`` applies to fiber ``i`` in the canonical atlas
+    named by the descriptor. The descriptor stores absolute and relative atlas
+    paths, counts, dtype/shape, ordering, mask/fill behavior, summary values,
+    the values-file SHA-256, and the source geometry file when one exists.
+
+    Consumers should prefer the descriptor's relative atlas path when it still
+    resolves and otherwise use its absolute path. Descriptor-aware consumers
+    validate the vector hash, atlas file size, and fiber/value counts before
+    reconstructing streamlines. Geometry-bearing ``*.fib.npy`` remains
+    readable for backward compatibility and can be requested with
+    ``save_geometry=True``, but it is not a canonical regression artifact:
+    it duplicates the atlas geometry once for every result map.
+
+    Masking conventions
+    -------------------
+    ``import_fiber_to_numpy_array`` returns ``(n_fibers_kept, n_files)``.
+    Masks operate on fiber indices, never vertices. Before output, masked
+    vectors are expanded to the full atlas order using ``fill_value``; both the
+    geometry-bearing and lightweight outputs therefore have exactly one entry
+    per canonical atlas fiber.
     """
 
     output_ftype = "fiber"
@@ -354,7 +379,12 @@ class FiberIO:
         if not file_paths:
             raise ValueError("No evaluation files were provided.")
 
-        if all(path.lower().endswith(".fib.npy") for path in file_paths):
+        if all(
+            path.lower().endswith(
+                (".values.npy", ".fib.desc.json", ".fib.npy")
+            )
+            for path in file_paths
+        ):
             return np.vstack([
                 self.prepare_map_for_evaluation(self.load_map_values(path))
                 for path in file_paths
@@ -368,7 +398,9 @@ class FiberIO:
 
         raise ValueError(
             "Fiber evaluation requires all subject files to be either fiber "
-            "profiles (*.fib.npy) or MNI lesion maps (*.nii or *.nii.gz)."
+            "profiles (*.fib.desc.json/*.fib.values.npy, or legacy "
+            "*.values.npy/*.fib.npy) "
+            "or MNI lesion maps (*.nii or *.nii.gz)."
         )
 
     def evaluation_size(self, model_size=None):
@@ -377,10 +409,46 @@ class FiberIO:
 
     @staticmethod
     def is_native_map_file(path):
-        return str(path).lower().endswith(".fib.npy")
+        """Identify one native result without double-counting legacy geometry.
+
+        A complete ``*.fib.values.npy``/``*.fib.desc.json`` pair is canonical. A
+        sibling ``*.fib.npy`` is accepted only when that pair is absent, so a
+        directory containing an optional legacy export still yields one map.
+        """
+        path = Path(path)
+        lower_name = path.name.lower()
+        if lower_name.endswith(".values.npy"):
+            return FiberIO.values_description_path(path).is_file()
+        if lower_name.endswith(".fib.npy"):
+            values_path = FiberIO.values_companion_path(path)
+            legacy_values_path = path.with_name(f"{path.name[:-8]}.values.npy")
+            complete_pair = any(
+                candidate.is_file()
+                and FiberIO.values_description_path(candidate).is_file()
+                for candidate in (values_path, legacy_values_path)
+            )
+            return not complete_pair
+        return False
 
     def load_map_values(self, path):
-        """Load one value per fiber from a vector or geometry-bearing result."""
+        """Load one scalar per fiber from a vector or geometry-bearing result.
+
+        A descriptor entry point or numeric one-dimensional ``.npy`` file (including
+        ``*.fib.values.npy`` and legacy ``*.values.npy``)
+        is returned as ``float32``. A legacy object-array ``*.fib.npy`` is
+        reduced to the median of column four for each fiber. This method reads
+        values only; callers that need geometry must separately provide the
+        canonical atlas or use a descriptor-aware converter.
+        """
+        path = Path(path)
+        if path.name.lower().endswith(".fib.desc.json"):
+            path = FiberFormatConverter.values_from_description(path)
+        if path.name.lower().endswith(".values.npy"):
+            # The descriptor is part of the native format, not optional
+            # documentation. Resolve it here to validate provenance and the
+            # vector checksum even when this caller only needs magnitudes.
+            FiberFormatConverter.atlas_from_values_description(path)
+
         arr = np.load(str(path), allow_pickle=True)
         if arr.dtype != object:
             if arr.ndim != 1:
@@ -402,7 +470,16 @@ class FiberIO:
     @staticmethod
     def native_map_stem(path):
         name = os.path.basename(str(path))
-        return name[:-8] if name.lower().endswith(".fib.npy") else os.path.splitext(name)[0]
+        lower_name = name.lower()
+        if lower_name.endswith(".fib.values.npy"):
+            return name[:-15]
+        if lower_name.endswith(".values.npy"):
+            return name[:-11]
+        if lower_name.endswith(".fib.npy"):
+            return name[:-8]
+        if lower_name.endswith(".fib.desc.json"):
+            return name[:-14]
+        return os.path.splitext(name)[0]
 
     def _get_density_projector(self):
         """Build and cache the fiber-to-masked-MNI projection used by CV."""
@@ -499,6 +576,169 @@ class FiberIO:
             out_fibers.append(np.concatenate([xyz, m], axis=1))
 
         return out_fibers
+
+    @staticmethod
+    def values_companion_path(fiber_path):
+        """Map ``<stem>.fib.npy`` to ``<stem>.fib.values.npy``."""
+        fiber_path = Path(fiber_path)
+        name = fiber_path.name
+        if not name.lower().endswith(".fib.npy"):
+            raise ValueError(f"Expected a .fib.npy path, got: {fiber_path}")
+        return fiber_path.with_name(f"{name[:-4]}.values.npy")
+
+    @staticmethod
+    def values_description_path(values_path):
+        """Map a fiber values file to its required descriptor path.
+
+        Canonical ``map.fib.values.npy`` and legacy ``map.values.npy`` both map
+        to ``map.fib.desc.json`` in the same directory.
+        """
+        values_path = Path(values_path)
+        name = values_path.name
+        if not name.lower().endswith(".values.npy"):
+            raise ValueError(f"Expected a .values.npy path, got: {values_path}")
+        base = name[:-11]
+        if not base.lower().endswith(".fib"):
+            base += ".fib"
+        return values_path.with_name(f"{base}.desc.json")
+
+    @classmethod
+    def write_values_description(
+        cls,
+        values_path,
+        fiber_atlas_path,
+        *,
+        source_geometry_path=None,
+        input_value_count=None,
+        kept_fiber_count=None,
+        fill_value=0,
+    ):
+        """Write the descriptor paired with an existing fiber values file.
+
+        Parameters
+        ----------
+        values_path : path-like
+            Existing one-dimensional ``*.fib.values.npy`` vector. Legacy
+            ``*.values.npy`` names remain accepted. The descriptor is written
+            beside it as ``<stem>.fib.desc.json``.
+        fiber_atlas_path : path-like
+            Canonical ``.npz``, object-array ``.npy``, or JSON fiber atlas whose
+            fiber order defines the vector indices.
+        source_geometry_path : path-like, optional
+            Geometry-bearing ``*.fib.npy`` from which the values were derived.
+        input_value_count, kept_fiber_count : int, optional
+            Counts before expansion and after masking. They document whether a
+            masked regression vector was expanded to full atlas order.
+        fill_value : float, default=0
+            Value assigned to excluded fibers during full-atlas expansion.
+
+        Returns
+        -------
+        pathlib.Path
+            The written ``*.fib.desc.json`` path.
+
+        Notes
+        -----
+        This method is intended for backfilling metadata around an already
+        existing vector. Normal regression output should use ``save_files``,
+        which creates the vector and descriptor together.
+        """
+        values_path = Path(values_path).expanduser().resolve()
+        fiber_atlas_path = Path(fiber_atlas_path).expanduser().resolve()
+        if not values_path.is_file():
+            raise FileNotFoundError(values_path)
+        if not fiber_atlas_path.is_file():
+            raise FileNotFoundError(fiber_atlas_path)
+
+        values = np.load(values_path, mmap_mode="r")
+        if values.ndim != 1:
+            raise ValueError(f"Expected a 1D value vector in {values_path}, got {values.shape}")
+        finite = np.asarray(values[np.isfinite(values)], dtype=np.float32)
+        value_count = int(values.shape[0])
+        input_value_count = value_count if input_value_count is None else int(input_value_count)
+        kept_fiber_count = value_count if kept_fiber_count is None else int(kept_fiber_count)
+        atlas_stat = fiber_atlas_path.stat()
+        digest = hashlib.sha256()
+        with values_path.open("rb") as values_file:
+            for chunk in iter(lambda: values_file.read(1024 * 1024), b""):
+                digest.update(chunk)
+        values_relative_path = os.path.relpath(values_path, values_path.parent)
+        description = {
+            "schema": "calvin_utils.fiber_values",
+            "schema_version": 2,
+            "created_utc": datetime.now(timezone.utc).isoformat(),
+            "values_file": values_path.name,
+            "values_path": str(values_path),
+            "values_relative_path": values_relative_path,
+            "fiber_atlas": {
+                "path": str(fiber_atlas_path),
+                "relative_path": os.path.relpath(fiber_atlas_path, values_path.parent),
+                "fiber_count": value_count,
+                "size_bytes": int(atlas_stat.st_size),
+                "mtime_ns": int(atlas_stat.st_mtime_ns),
+            },
+            "values": {
+                "path": str(values_path),
+                "relative_path": values_relative_path,
+                "size_bytes": int(values_path.stat().st_size),
+                "dtype": str(values.dtype),
+                "shape": [value_count],
+                "semantics": "one scalar per fiber",
+                "ordering": "values[i] corresponds to fiber_atlas fiber i",
+                "sha256": digest.hexdigest(),
+                "finite_count": int(finite.size),
+                "nonfinite_count": value_count - int(finite.size),
+                "nonzero_count": int(np.count_nonzero(finite)),
+                "minimum": float(np.min(finite)) if finite.size else None,
+                "maximum": float(np.max(finite)) if finite.size else None,
+            },
+            "mask": {
+                "input_value_count": input_value_count,
+                "kept_fiber_count": kept_fiber_count,
+                "full_fiber_count": value_count,
+                "fill_value": float(fill_value),
+                "expanded_to_full_atlas": input_value_count != value_count,
+            },
+            "source_geometry_file": (
+                str(Path(source_geometry_path).expanduser().resolve())
+                if source_geometry_path is not None
+                else None
+            ),
+        }
+        description_path = cls.values_description_path(values_path)
+        description_path.write_text(json.dumps(description, indent=2) + "\n", encoding="utf-8")
+        return description_path
+
+    @classmethod
+    def write_values_companion(cls, fiber_path, fiber_atlas_path, output_path=None):
+        """Backfill a lightweight value/descriptor pair from ``*.fib.npy``.
+
+        Column four is reduced to one median value per fiber and saved as
+        ``float32``. ``fiber_atlas_path`` is mandatory because a value vector
+        without its geometry provenance is ambiguous. The returned path names
+        the canonical ``*.fib.values.npy`` file; the sibling
+        ``*.fib.desc.json`` is always written in the same operation.
+        """
+        fiber_path = Path(fiber_path).expanduser()
+        stored = np.load(fiber_path, allow_pickle=True)
+        values = (
+            cls._extract_geometry_values(stored, fiber_path)
+            if stored.dtype == object
+            else np.asarray(stored, dtype=np.float32).reshape(-1)
+        )
+        output_path = (
+            cls.values_companion_path(fiber_path)
+            if output_path is None
+            else Path(output_path).expanduser()
+        )
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        np.save(output_path, np.asarray(values, dtype=np.float32))
+        cls.write_values_description(
+            output_path,
+            fiber_atlas_path,
+            source_geometry_path=fiber_path,
+        )
+        return output_path
     
     ### Writing ###
     def save_files(
@@ -510,45 +750,99 @@ class FiberIO:
         mask=None,
         fill_value=0,
         convert_to_nifti=True,
-        convert_to_leaddbs=True,
+        convert_to_leaddbs=False,
         symmetric=False,
         sign="both",
+        save_values=True,
+        save_geometry=False,
     ):
-        """
-        Save per-file fiber statistics back to geometry-aware outputs.
+        """Save fiber statistics and their visualization/export companions.
 
-        arr shape:
-        - 1D: (n_fibers_kept,)
-        - 2D: (n_fibers_kept, n_files)
+        ``arr`` may be ``(n_fibers_kept,)`` or
+        ``(n_fibers_kept, n_files)``. Every output column is restored to full
+        canonical-atlas order before it is written.
 
-        For now this writes .npy object arrays of [(x,y,z,m), ...] fibers.
-        By default, it also writes a faithful volumetric companion containing
-        both signed tails without thresholding or implicit mirroring. Lead-DBS
-        output is split into ``*_positive_ftr.mat`` and
-        ``*_negative_ftr.mat`` so the two tails can be loaded independently.
-        Explicit ``sign`` and ``symmetric`` values remain available for
-        display-specific exports. Add .fibfilt writer later.
+        Output contract
+        ---------------
+        With ``save_values=True`` (the default), ``*.fib.values.npy`` and
+        ``*.fib.desc.json`` are always written as a pair and constitute the
+        native regression result. ``save_geometry=True`` additionally writes
+        the legacy geometry-bearing ``*.fib.npy`` for compatibility; it is off
+        by default because its coordinates can be reconstructed from the atlas.
+        At least one of ``save_values`` and ``save_geometry`` must be enabled.
+
+        With ``convert_to_nifti=True``, a signed tract-density NIfTI is also
+        produced. With ``convert_to_leaddbs=True``, positive and/or negative
+        FTR MAT files are produced according to ``sign``. ``symmetric`` affects
+        those display/export companions, not the stored raw value vector.
+
+        The ``mask_path`` supplied when constructing ``FiberIO`` is recorded as
+        the canonical atlas. Consequently, a writable fiber result requires a
+        real atlas path; the descriptor is not allowed to guess its geometry.
         """
         if arr.ndim == 1:
             arr = arr[:, None]
+        if not save_values and not save_geometry:
+            raise ValueError("Enable save_values, save_geometry, or both.")
 
         for i, file_path in tqdm(list(enumerate(file_paths)), desc='Saving fiber files'):
             out_dir = os.path.dirname(file_path)
             base = os.path.splitext(os.path.basename(file_path))[0]
             out_name = base + (file_suffix if file_suffix is not None else '')
             out_path = os.path.join(out_dir, f"{out_name}.fib.npy")
+            values_path = os.path.join(out_dir, f"{out_name}.fib.values.npy")
+            description_path = self.values_description_path(values_path)
             os.makedirs(out_dir, exist_ok=True)
-            fiber_list = self.assign_values_to_fibers(
-                arr[:, i],
-                mask=mask,
-                fill_value=fill_value,
+
+            effective_mask = self.fiber_mask if mask is None else np.asarray(mask, dtype=bool)
+            if self.reference_fibers is None:
+                raise ValueError("Reference fibers are required for reconstruction.")
+            values = np.asarray(arr[:, i], dtype=np.float32).reshape(-1)
+            if effective_mask is not None and values.shape[0] != int(effective_mask.sum()):
+                raise ValueError(
+                    f"Masked value vector length ({values.shape[0]}) does not match "
+                    f"number of kept fibers ({int(effective_mask.sum())})."
+                )
+            full_values = np.asarray(
+                self.unmask_array(values, effective_mask, fill_value=fill_value),
+                dtype=np.float32,
             )
-
-
+            if full_values.shape[0] != len(self.reference_fibers):
+                raise ValueError(
+                    f"Fiber value length ({full_values.shape[0]}) does not match "
+                    f"reference atlas length ({len(self.reference_fibers)})."
+                )
             if dry_run:
-                print(f"Saving to: {out_path}")
+                if save_geometry:
+                    print(f"Saving legacy geometry to: {out_path}")
+                if save_values:
+                    print(f"Saving values to: {values_path}")
+                    print(
+                        "Saving values description to: "
+                        f"{description_path}"
+                    )
             else:
-                np.save(out_path, np.array(fiber_list, dtype=object), allow_pickle=True)
+                if save_geometry:
+                    fiber_list = self.assign_values_to_fibers(
+                        values,
+                        mask=mask,
+                        fill_value=fill_value,
+                    )
+                    np.save(out_path, np.array(fiber_list, dtype=object), allow_pickle=True)
+                if save_values:
+                    np.save(values_path, full_values)
+                    description_path = self.write_values_description(
+                        values_path,
+                        self.mask_path,
+                        source_geometry_path=out_path if save_geometry else None,
+                        input_value_count=values.shape[0],
+                        kept_fiber_count=(
+                            int(effective_mask.sum())
+                            if effective_mask is not None
+                            else values.shape[0]
+                        ),
+                        fill_value=fill_value,
+                    )
 
             print(f"Saving positive/negative fibers: {sign}")
             print(f"Saving symmetric version of fibers: {symmetric}")
@@ -556,7 +850,7 @@ class FiberIO:
                 print(f"Saving volumetric version of fibers (.nii.gz).")
                 if not dry_run:
                     TractDensity(
-                        fiber_path=out_path,
+                        fiber_path=description_path if save_values else out_path,
                         reference_nifti_path=DEFAULT_MNI_MASK,
                         out_path=os.path.join(out_dir, f"{out_name}.nii.gz"),
                         fiberset=sign,
@@ -579,7 +873,7 @@ class FiberIO:
                 if not dry_run:
                     for lead_sign in lead_signs:
                         FiberResultVisualizer(
-                            values_path=out_path,
+                            values_path=description_path if save_values else out_path,
                             out_dir=os.path.dirname(out_path),
                             output_name=f"{out_name}_{lead_sign}",
                             sign=lead_sign,

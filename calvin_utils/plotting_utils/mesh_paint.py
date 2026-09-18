@@ -77,6 +77,10 @@ def _volume(nifti):
     if hasattr(nifti, "affine"):
         return _clean(nifti)
     path = str(Path(nifti).expanduser())
+    if path.lower().endswith(".npz"):
+        from calvin_utils.plotting_utils.volume_meshes import read_backdrop_npz
+
+        return read_backdrop_npz(path)
     try:
         stamp = os.path.getmtime(path)
     except OSError:
@@ -99,7 +103,8 @@ def sample_nifti(points, nifti, order=1):
     return map_coordinates(data, vox[:3], order=order, mode="constant", cval=0.0)
 
 
-def _select(values, sign="both", absolute=False, threshold=None):
+def _select(values, sign="both", absolute=False, threshold=None,
+            max_value=None):
     """Sign selection, optional |v|, and thresholding -- shared by both painters.
 
     ``sign`` is applied to the ORIGINAL values and ``absolute`` afterwards, so
@@ -115,8 +120,14 @@ def _select(values, sign="both", absolute=False, threshold=None):
         out[out > 0] = np.nan
     if absolute:
         out = np.abs(out)
+    # Threshold min/max is a BAND on the value itself, not on its magnitude:
+    # anything outside [min, max] is NaN'd. With absolute=True the values are
+    # already magnitudes by this point, so the same comparison gates |v|.
+    # (A magnitude gate made min=0 a no-op, which left -7 painted.)
     if threshold is not None:
-        out[np.abs(out) < float(threshold)] = np.nan
+        out[out < float(threshold)] = np.nan
+    if max_value is not None:
+        out[out > float(max_value)] = np.nan
     out[out == 0] = np.nan
     return out
 
@@ -224,7 +235,8 @@ def parcel_interiors(parcels, step=1.0):
 
 
 def parcel_stats(parcels, nifti, stat="max", sign="both", absolute=False,
-                 threshold=None, step=1.0, order=1, interiors=None):
+                 threshold=None, step=1.0, order=1, interiors=None,
+                 max_value=None):
     """``{region_name: value}`` reducing the volume inside each regional mesh.
 
     ``stat``
@@ -258,7 +270,8 @@ def parcel_stats(parcels, nifti, stat="max", sign="both", absolute=False,
         if not len(pts):
             out[name] = np.nan
             continue
-        v = _select(sample_nifti(pts, nifti, order=order), sign, absolute, threshold)
+        v = _select(sample_nifti(pts, nifti, order=order), sign, absolute,
+                    threshold, max_value)
         out[name] = _reduce(v[np.isfinite(v)], stat)
     return out
 
@@ -266,10 +279,14 @@ def parcel_stats(parcels, nifti, stat="max", sign="both", absolute=False,
 def _reduce(v, stat):
     if not len(v):
         return np.nan
+    # "max" is the maximum, literally. It used to be the peak MAGNITUDE with
+    # its sign kept, so a region holding only -7 reduced to -7 under "max" --
+    # which reads as a bug however it is documented. Tick Absolute value if
+    # peak magnitude is what you want.
     if stat == "max":
-        return float(v[np.argmax(np.abs(v))])       # signed peak
+        return float(np.max(v))
     if stat == "min":
-        return float(v[np.argmin(np.abs(v))])
+        return float(np.min(v))
     if stat == "mean":
         return float(np.mean(v))
     if stat == "sum":
@@ -330,3 +347,44 @@ def paint_parcels(parcels, nifti=None, values=None, stat="max", sign="both",
     merged = pv.merge(meshes) if len(meshes) > 1 else meshes[0].copy()
     merged[scalar] = np.concatenate(scalars)
     return merged
+
+
+def fill_gaps(mesh, values, passes=3):
+    """Spread sampled values into unsampled vertices across the mesh.
+
+    Vertex sampling asks the volume for a value at one exact point. A surface
+    vertex that lands in a zero voxel -- just outside a mask, or in the gap
+    between a gyral crown and the map's edge -- gets nothing, and the figure
+    speckles even when every part of the structure has data nearby.
+
+    Each pass replaces an unpainted vertex with the mean of its painted
+    neighbours ALONG THE MESH, so a value travels across the surface rather
+    than through it: the far bank of a sulcus stays unpainted unless it has its
+    own data. Nothing is invented where a whole connected patch is empty, and
+    already-painted vertices are never overwritten.
+    """
+    import numpy as np
+
+    values = np.asarray(values, float).copy()
+    if not passes or mesh.n_points != len(values):
+        return values
+
+    faces = mesh.faces.reshape(-1, 4)[:, 1:]
+    # Every undirected edge, both ways, so a vertex can be reached from either end
+    edges = np.vstack([faces[:, [0, 1]], faces[:, [1, 2]], faces[:, [2, 0]]])
+    edges = np.vstack([edges, edges[:, ::-1]])
+    src, dst = edges[:, 0], edges[:, 1]
+
+    for _ in range(int(passes)):
+        missing = ~np.isfinite(values)
+        if not missing.any():
+            break
+        known = np.isfinite(values)
+        live = known[src]
+        total = np.bincount(dst[live], weights=values[src[live]], minlength=len(values))
+        count = np.bincount(dst[live], minlength=len(values))
+        reachable = missing & (count > 0)
+        if not reachable.any():
+            break
+        values[reachable] = total[reachable] / count[reachable]
+    return values

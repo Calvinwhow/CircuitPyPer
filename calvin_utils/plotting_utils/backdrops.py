@@ -322,7 +322,25 @@ class Backdrop:
         index = int(np.clip(index, 0, self.shape[axis] - 1))
         return self._store[f"a{axis}_{index:05d}"]
 
-    def plane(self, axis, world_mm, cmap=None, transparent_below=None):
+    def plane_grid(self, axis, index):
+        """World coordinates of every texel of a slice, shaped like the slice.
+
+        Overlays are volumes in their own grids, so the only way to put one on
+        this slice is to ask where each of its texels actually is and sample
+        there.
+        """
+        others = [a for a in AXES if a != axis]
+        u, v = np.meshgrid(np.arange(self.shape[others[0]]),
+                           np.arange(self.shape[others[1]]), indexing="ij")
+        ijk = np.empty(u.shape + (4,), dtype=float)
+        ijk[..., axis] = index
+        ijk[..., others[0]] = u
+        ijk[..., others[1]] = v
+        ijk[..., 3] = 1.0
+        return (ijk @ self.affine.T)[..., :3]
+
+    def plane(self, axis, world_mm, cmap=None, transparent_below=None,
+              overlays=None, fill=None):
         """A textured quad for one slice: ``(pv.PolyData, pv.Texture, world_mm)``.
 
         The quad is built from the volume's own corner coordinates rather than
@@ -355,13 +373,69 @@ class Backdrop:
         # the two in agreement.
         picture = np.ascontiguousarray(np.asarray(image).T[::-1])
         rgb = _colourise(picture, cmap)
+        if overlays:
+            from calvin_utils.plotting_utils.overlay_paint import (
+                composite, overlay_colours, sample_for_overlay,
+            )
+
+            grid = self.plane_grid(axis, index)
+            flat = grid.reshape(-1, 3)
+            stack = []
+            for overlay in overlays:
+                values = sample_for_overlay(flat, overlay)
+                over_rgb, over_a = overlay_colours(values, overlay)
+                # Back into the picture's orientation, the same transpose and
+                # flip the base went through.
+                shape = grid.shape[:2]
+                stack.append((
+                    np.ascontiguousarray(
+                        over_rgb.reshape(*shape, 3).transpose(1, 0, 2)[::-1]),
+                    np.ascontiguousarray(over_a.reshape(shape).T[::-1]),
+                ))
+            rgb = np.clip(composite(rgb / 255.0, stack) * 255.0, 0, 255).astype(np.uint8)
         if transparent_below is not None:
             # Background that stays opaque is a black slab in front of the
             # mesh. Dropping it out is what lets a slice sit INSIDE a brain
             # rather than in front of one.
-            alpha = np.where(picture > int(transparent_below), 255, 0).astype(np.uint8)
+            keep = picture > int(transparent_below)
+            if fill is None:
+                alpha = np.where(keep, 255, 0).astype(np.uint8)
+            else:
+                # Paint the dropped-out part in the scene's own background
+                # instead of clearing it. Nothing about the data changes; the
+                # slice just stops showing whatever is behind it, so it reads as
+                # a solid plate rather than a translucent film. Still an alpha
+                # channel, all-opaque, because the texture format cannot change
+                # between renders without rebuilding the actor.
+                rgb = np.where(keep[..., None], rgb, np.asarray(fill, np.uint8))
+                alpha = np.full(picture.shape, 255, np.uint8)
             rgb = np.dstack([rgb, alpha])
         return quad, pv.Texture(np.ascontiguousarray(rgb)), self.world_for(axis, index)
+
+    # Slices are stored per axis so that fanning through one reads a few
+    # kilobytes. Rebuilding the whole array is the opposite access pattern, so
+    # it is a separate call with its own guard rather than something the slice
+    # path does by accident: the 100 um backdrop is 4.3 GB on disk and would
+    # not fit in memory as a dense array.
+    MAX_VOLUME_VOXELS = 300_000_000
+
+    def volume(self):
+        """The whole array, assembled from the axis-0 slices.
+
+        Backdrops are quantised to uint8 when they are built, so this is the
+        anatomy at display precision, not the source scan's values. That is the
+        right precision for meshing an isosurface or shading a surface by its
+        own anatomy; a statistical map still wants its original NIfTI.
+        """
+        n = int(np.prod(self.shape))
+        if n > self.MAX_VOLUME_VOXELS:
+            raise MemoryError(
+                f"{Path(self.path).name} is {n / 1e9:.1f} G voxels; build a "
+                f"coarser backdrop (mm=) before meshing it")
+        out = np.empty(self.shape, dtype=np.uint8)
+        for i in range(self.shape[0]):
+            out[i] = self.slice(0, i)
+        return out
 
     def close(self):
         self._store.close()

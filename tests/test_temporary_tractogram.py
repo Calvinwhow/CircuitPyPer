@@ -6,6 +6,7 @@ from scipy.io import savemat
 from calvin_utils.neuroimaging_utils.tract_utils.temporary_tractogram import (
     TemporaryTractogram,
 )
+from calvin_utils.neuroimaging_utils.tract_utils.fiber_io import FiberIO
 
 
 def test_temporary_tractogram_lifetime(tmp_path):
@@ -64,6 +65,38 @@ def test_temporary_vector_fib_npy_uses_atlas_and_filters(tmp_path):
         min_abs_value=1.0,
     ) as tractogram:
         temp_dir = tractogram.tck_path.parent
+        assert tractogram.n_input_fibers == 3
+        assert tractogram.n_fibers == 1
+        np.testing.assert_allclose(tractogram.vals, [3.0])
+
+    assert not temp_dir.exists()
+
+
+def test_temporary_values_npy_uses_atlas_and_filters(tmp_path):
+    geometry_path = tmp_path / "statistics.fib.npy"
+    atlas_path = tmp_path / "atlas.npz"
+    fibers = np.empty(3, dtype=object)
+    fibers[0] = np.asarray([[0, 0, 0], [1, 0, 0]], dtype=np.float32)
+    fibers[1] = np.asarray([[0, 0, 0], [0, 1, 0]], dtype=np.float32)
+    fibers[2] = np.asarray([[0, 0, 0], [0, 0, 1]], dtype=np.float32)
+    geometry = np.empty(3, dtype=object)
+    for index, (fiber, value) in enumerate(zip(fibers, (3.0, -2.0, 0.5))):
+        geometry[index] = np.column_stack(
+            [fiber, np.full(len(fiber), value, dtype=np.float32)]
+        )
+    np.save(geometry_path, geometry, allow_pickle=True)
+    np.savez(atlas_path, fibers=fibers)
+    values_path = FiberIO.write_values_companion(geometry_path, atlas_path)
+    description_path = FiberIO.values_description_path(values_path)
+
+    with TemporaryTractogram(
+        description_path,
+        temp_root=tmp_path,
+        sign="positive",
+        min_abs_value=1.0,
+    ) as tractogram:
+        temp_dir = tractogram.tck_path.parent
+        assert tractogram.tck_path.name == "statistics.tck"
         assert tractogram.n_input_fibers == 3
         assert tractogram.n_fibers == 1
         np.testing.assert_allclose(tractogram.vals, [3.0])

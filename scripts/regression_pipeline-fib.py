@@ -36,7 +36,7 @@ from calvin_utils.permutation_analysis_utils.statsmodels_palm import CalvinStats
 from calvin_utils.permutation_analysis_utils.voxelwise_regression import VoxelwiseRegression
 from calvin_utils.permutation_analysis_utils.voxelwise_regression_prep import RegressionPrep
 from calvin_utils.neuroimaging_utils.output_functions import NeuroimageFileOutporter
-import circuit_pyper.scripts.circuit_viewer_orchestrator as circuit_viewer_orchestrator
+# import circuit_pyper.scripts.circuit_viewer_orchestrator as circuit_viewer_orchestrator
 
 
 # =============================================================================
@@ -47,36 +47,40 @@ import circuit_pyper.scripts.circuit_viewer_orchestrator as circuit_viewer_orche
 # Input/output paths.
 INPUT_PATH = "/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/results/optimzation/optimized_master_list_filtered_HigherIsWorse.csv" # Form: "/path/to/input.csv"
 SHEET = None # Specify sheet if using excel (i.e. "Sheet1")
-OUT_DIR = "/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/results/optimization/symptom_on_lhs/fiber_regressions" # Form: "/path/to/output_dir"
+OUT_DIR = "/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/results/optimization/symptom_on_lhs/fiber_regressions_HigherIsWorse" # Form: "/path/to/output_dir"
 MASK_PATH = "/Volumes/OneTouch/resources/Atlas_tck_MNI/Atlas_all30_MNI.npz" # Guerrero fibers use the original TCK-derived MNI geometry; the TRK-derived copy has an incorrect affine offset.
 
 # Model setup.
 
-var_list = [ 'CNRSTotScore','SematicFluencyFailS', 'PhonemicFluencyFailS', 'CategorySwitchFailS', 'DigitSpanForwardFailS', 'DigitSpanBackwardFailS', 'CubeDrawFailS', 'VerbalRecallFailS', 'SimiliarityFailS', 'GoNoGoFailS', 'AffectFailS' ]
-# var_list = [
-#  'Gait', 'HeelToShinTestLeft', 'HeelToShinTestRight', 'FingerToNoseTestLeft', 'FingerToNoseTestRight', 'LimbAtaxia', 'Speech', 'Oculomotor', 'TotalBarsScore',
+var_list = [
+ 'Gait', 'HeelToShinTestLeft', 'HeelToShinTestRight', 'FingerToNoseTestLeft', 'FingerToNoseTestRight', 'LimbAtaxia', 'Speech', 'Oculomotor',
  
-#  'SematicFluencyRawS', 'PhonemicFluencyRawS', 'CategorySwitchRawS', 'VerbalRegSum', 'DigitSpanForwardRawS', 'DigitSpanBackwardRawS', 'CubeDrawRawS', 'VerbalRecallRawS', 'SimiliarityRawS', 'GoNoGoRawS'
+ 'SematicFluencyRawS', 'PhonemicFluencyRawS', 'CategorySwitchRawS', 'VerbalRegSum', 'DigitSpanForwardRawS', 'DigitSpanBackwardRawS', 'CubeDrawRawS', 'VerbalRecallRawS', 'SimiliarityRawS', 'GoNoGoRawS'
 
-'SematicFluencyFailS', 'PhonemicFluencyFailS', 'CategorySwitchFailS', 'DigitSpanForwardFailS', 'DigitSpanBackwardFailS', 'CubeDrawFailS', 'VerbalRecallFailS', 'SimiliarityFailS', 'GoNoGoFailS', 'AffectFailS', 'TotalCCASFailScore', 
+# 'SematicFluencyFailS', 'PhonemicFluencyFailS', 'CategorySwitchFailS', 'DigitSpanForwardFailS', 'DigitSpanBackwardFailS', 'CubeDrawFailS', 'VerbalRecallFailS', 'SimiliarityFailS', 'GoNoGoFailS', 'AffectFailS', 
 
-#  'Sec1ADifficultFocus', 'Sec1AEasilyDistracted', 'Sec1AOntheGo', 'Sec1AFeelsCompelled', 'Sec1AFeelsDriven', 'Sec1BWorries', 'Sec1BRepeats', 'Sec1BMentallyStuck', 
-#  'Sec1BCauseDistress', 'Sec2AActHastily', 'Sec2ARapidChanges', 'Sec2ACryingLaughing', 'Sec2AOverAnxious', 
-#  'Sec2BLackOfPleasure', 'Sec2BNegativeAttitude', 'Sec2BUneasyWithLife', 'Sec2BSadDepressed', 
-#  'Sec3ARepetitiveMovements', 'Sec3ASensoryExp', 'Sec3BSensitive', 'Sec3BOverwhelmed', 
-#  'Sec4ACommunicates', 'Sec4AConcerns', 'Sec4ASeesHearsThings', 
-#  'Sec4BTroubleUnderstand', 'Sec4BDistant', 'Sec4BIndifferent', 
-#  'Sec5AAngry', 'Sec5AUpset', 'Sec5AIntolerant', 'Sec5AArgumentative', 
-#  'Sec5Bimmature', 'Sec5BUnaware', 'Sec5BManner', 'Sec5BTrusting', 
+ 'Sec1ADifficultFocus', 'Sec1AEasilyDistracted', 'Sec1AOntheGo', 'Sec1AFeelsCompelled', 'Sec1AFeelsDriven', 'Sec1BWorries', 'Sec1BRepeats', 'Sec1BMentallyStuck', 
+ 'Sec1BCauseDistress', 'Sec2AActHastily', 'Sec2ARapidChanges', 'Sec2ACryingLaughing', 'Sec2AOverAnxious', 
+ 'Sec2BLackOfPleasure', 'Sec2BNegativeAttitude', 'Sec2BUneasyWithLife', 'Sec2BSadDepressed', 
+ 'Sec3ARepetitiveMovements', 'Sec3ASensoryExp', 'Sec3BSensitive', 'Sec3BOverwhelmed', 
+ 'Sec4ACommunicates', 'Sec4AConcerns', 'Sec4ASeesHearsThings', 
+ 'Sec4BTroubleUnderstand', 'Sec4BDistant', 'Sec4BIndifferent', 
+ 'Sec5AAngry', 'Sec5AUpset', 'Sec5AIntolerant', 'Sec5AArgumentative', 
+ 'Sec5Bimmature', 'Sec5BUnaware', 'Sec5BManner', 'Sec5BTrusting', 
+
 #  'ScoreCol1A', 'ScoreCol1B', 
 #  'ScoreCol2A', 'ScoreCol2B', 
 #  'ScoreCol3A', 'ScoreCol3B', 
 #  'ScoreCol4A', 'ScoreCol4B', 
 #  'ScoreCol5A', 'ScoreCol5B', 
-#  'TotalSection1Score', 'TotalSection2Score', 'TotalSection3Score', 'TotalSection4Score', 'TotalSection5Score', 'CNRSTotColAScore', 'CNRSTotColBScore', 'CNRSTotScore', 
-#  ]
-regressand_list = ["fiber_path_guerrera"]              # On left hand=side of the equation. Often is the outcome variable.         Will run an analysis for each value.
-regressor_list = var_list    # On right hand-side of the equation. Often is the neuroimaging variable.   Will run an analysis for each value. 
+ 
+ #Major Summations
+#  'TotalBarsScore',
+#  'TotalCCASFailScore', 'TotalCCASRawScore',
+#  'CNRSTotScore', 
+ ]
+regressand_list = var_list               # On left hand=side of the equation. Often is the outcome variable.         Will run an analysis for each value.
+regressor_list =  ["fiber_path_guerrera"]   # On right hand-side of the equation. Often is the neuroimaging variable.   Will run an analysis for each value. 
 VOXELWISE_VARS = ["fiber_path_guerrera"]    # Name the variables that are stored in neuroimaging files
 VOXELWISE_INTERACTIONS = []             # If you want interactions, specify them. 
 COVARIATES_LIST = []                    # List of all nuisance variables to adjust for. If you want interactions, make them in your spreadsheet and add them here. Will NOT trigger a new analysis for each value, but will be present in every analysis.
@@ -91,7 +95,7 @@ DATA_TRANSFORM_METHOD = "rank"   # Standardize continuous design/outcome data ac
 INVERT_REGRESSAND = False                # Multiply regressand by -1. Default: False
 
 # Each cluster mean contrasted against the mean of the other two clusters.
-CONTRAST_MATRIX = None
+CONTRAST_MATRIX = [[1]]
 # Regression settings.
 REGRESSION_TYPE = "linear"              # Default linear
 N_PERMUTATIONS = 1000                   # Default 1000

@@ -1,5 +1,6 @@
 import os
 import json
+import hashlib
 import shutil
 import numpy as np
 import nibabel as nib
@@ -10,8 +11,7 @@ from scipy.io import loadmat
 
 
 class FiberFormatConverter:
-    """
-    Convert fiber containers to standard tractogram files.
+    """Convert native/Lead-DBS fiber containers to tractogram files.
 
     Instance methods write TRK using a reference tractogram header. The
     ``convert_leaddbs_mat_to_tck`` class method needs no reference file because
@@ -19,6 +19,26 @@ class FiberFormatConverter:
 
     Fiber objects are shaped like:
         fiber_i = ndarray, shape (n_vertices, 3) or (n_vertices, 4)
+
+    Lightweight native results use a paired-file contract::
+
+        <stem>.fib.values.npy one scalar per canonical atlas fiber
+        <stem>.fib.desc.json  descriptor identifying that atlas and ordering
+
+    ``load_fib_npy`` and ``convert_fib_npy_to_tck`` always require and resolve
+    the descriptor for ``*.fib.values.npy``. The descriptor itself may also be
+    supplied as the input path because it records the values vector location.
+    The loaders verify that the descriptor belongs to the vector, validate its
+    SHA-256,
+    vector, validate its SHA-256, check the atlas file size, and finally require
+    equal atlas/value counts. The relative atlas path is tried before the
+    absolute path so a result tree remains usable after being moved together
+    with its resources. An explicit atlas may identify a relocated copy but
+    does not replace the descriptor.
+
+    Legacy geometry-bearing ``*.fib.npy`` files remain self-contained. Numeric
+    one-dimensional ``*.fib.npy`` files predate the descriptor convention and
+    therefore still require an explicit ``fiber_atlas_path``.
     """
 
     def __init__(self, reference_path):
@@ -116,6 +136,146 @@ class FiberFormatConverter:
         if not len(fiber):
             raise ValueError("Empty fibers cannot be written to TCK.")
         return fiber[:, :3]
+
+    @staticmethod
+    def values_description_path(values_path):
+        """Return the required sibling descriptor for a fiber values file.
+
+        Canonical ``map.fib.values.npy`` and legacy ``map.values.npy`` both map
+        to ``map.fib.desc.json``.
+        """
+        values_path = Path(values_path).expanduser()
+        name = values_path.name
+        if not name.lower().endswith(".values.npy"):
+            raise ValueError(f"Expected a .values.npy path, got: {values_path}")
+        base = name[:-11]
+        if not base.lower().endswith(".fib"):
+            base += ".fib"
+        return values_path.with_name(f"{base}.desc.json")
+
+    @classmethod
+    def values_from_description(cls, description_path):
+        """Resolve the values vector recorded by ``*.fib.desc.json``.
+
+        New descriptors contain absolute and relative paths; the relative path
+        is preferred so a result directory can move as a unit. Older
+        descriptors containing only ``values_file`` remain readable.
+        """
+        description_path = Path(description_path).expanduser().resolve()
+        if not description_path.is_file():
+            raise FileNotFoundError(description_path)
+        description = json.loads(description_path.read_text(encoding="utf-8"))
+        if description.get("schema") != "calvin_utils.fiber_values":
+            raise ValueError(f"Unrecognized fiber descriptor schema: {description_path}")
+        if description.get("schema_version", 1) not in {1, 2}:
+            raise ValueError(f"Unsupported fiber descriptor version: {description_path}")
+
+        values = description.get("values") or {}
+        candidates = []
+        for relative_path in (
+            values.get("relative_path"),
+            description.get("values_relative_path"),
+            description.get("values_file"),
+        ):
+            if relative_path:
+                candidates.append((description_path.parent / relative_path).resolve())
+        for absolute_path in (values.get("path"), description.get("values_path")):
+            if absolute_path:
+                candidates.append(Path(absolute_path).expanduser())
+
+        expected_name = description.get("values_file")
+        expected_size = values.get("size_bytes")
+        for candidate in dict.fromkeys(candidates):
+            if not candidate.is_file():
+                continue
+            if expected_name and candidate.name != expected_name:
+                continue
+            if expected_size is not None and candidate.stat().st_size != expected_size:
+                raise ValueError(
+                    f"Fiber values size does not match {description_path}: {candidate}"
+                )
+            expected_digest = values.get("sha256")
+            if expected_digest:
+                digest = hashlib.sha256()
+                with candidate.open("rb") as values_file:
+                    for chunk in iter(lambda: values_file.read(1024 * 1024), b""):
+                        digest.update(chunk)
+                if digest.hexdigest() != expected_digest:
+                    raise ValueError(
+                        f"Fiber values SHA-256 does not match {description_path}."
+                    )
+            return candidate
+        raise FileNotFoundError(
+            f"The values vector recorded in {description_path} could not be found: "
+            f"{candidates}"
+        )
+
+    @classmethod
+    def atlas_from_values_description(cls, values_path, atlas_override=None):
+        """Resolve and validate the atlas paired with a fiber values vector.
+
+        Validation covers the descriptor schema, paired value filename,
+        value-file SHA-256, recorded atlas size, and atlas existence. The
+        returned path supplies geometry only; ``load_fib_npy`` subsequently
+        verifies that its fiber count equals the vector length.
+
+        ``atlas_override`` may point to a relocated copy of the recorded atlas.
+        It does not replace the descriptor: the descriptor and value checksum
+        are still required, and the override must match the recorded file size.
+
+        Raises
+        ------
+        FileNotFoundError
+            If the descriptor or every recorded atlas location is missing.
+        ValueError
+            If the descriptor is for another vector, has an unknown schema,
+            or fails an integrity check.
+        """
+        values_path = Path(values_path).expanduser().resolve()
+        description_path = cls.values_description_path(values_path)
+        if not description_path.is_file():
+            raise FileNotFoundError(
+                f"Fiber values require the paired descriptor: {description_path}"
+            )
+        description = json.loads(description_path.read_text(encoding="utf-8"))
+        if description.get("schema") != "calvin_utils.fiber_values":
+            raise ValueError(f"Unrecognized fiber descriptor schema: {description_path}")
+        if description.get("schema_version", 1) not in {1, 2}:
+            raise ValueError(f"Unsupported fiber descriptor version: {description_path}")
+        if description.get("values_file") != values_path.name:
+            raise ValueError(
+                f"Descriptor {description_path} belongs to "
+                f"{description.get('values_file')!r}, not {values_path.name!r}."
+            )
+        expected_digest = (description.get("values") or {}).get("sha256")
+        if expected_digest:
+            digest = hashlib.sha256()
+            with values_path.open("rb") as values_file:
+                for chunk in iter(lambda: values_file.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            if digest.hexdigest() != expected_digest:
+                raise ValueError(
+                    f"Fiber values SHA-256 does not match {description_path}."
+                )
+        atlas = description.get("fiber_atlas") or {}
+        candidates = []
+        if atlas_override is not None:
+            candidates.append(Path(atlas_override).expanduser().resolve())
+        if atlas.get("relative_path"):
+            candidates.append((description_path.parent / atlas["relative_path"]).resolve())
+        if atlas.get("path"):
+            candidates.append(Path(atlas["path"]).expanduser())
+        for candidate in candidates:
+            if candidate.is_file():
+                expected_size = atlas.get("size_bytes")
+                if expected_size is not None and candidate.stat().st_size != expected_size:
+                    raise ValueError(
+                        f"Fiber atlas size does not match {description_path}: {candidate}"
+                    )
+                return candidate
+        raise FileNotFoundError(
+            f"The atlas recorded in {description_path} could not be found: {candidates}"
+        )
 
     @classmethod
     def _fibcell_streamlines(cls, value):
@@ -219,12 +379,29 @@ class FiberFormatConverter:
         min_abs_value=None,
         top_percent=None,
     ):
-        """Load and filter a geometry-bearing or vector ``.fib.npy`` result."""
+        """Load and filter a geometry-bearing or value-only fiber result.
+
+        ``fib_path`` may be ``*.fib.desc.json``, a self-contained object-array
+        ``*.fib.npy``, a
+        legacy numeric ``*.fib.npy`` plus explicit ``fiber_atlas_path``, or a
+        canonical ``*.fib.values.npy`` (or legacy ``*.values.npy``) paired with
+        ``*.fib.desc.json``. An explicit atlas may point to a relocated copy,
+        but it does not make the descriptor optional.
+
+        Returns ``(streamlines, selected_values, n_input_fibers)`` after
+        applying ``sign``, ``min_abs_value``, and ``top_percent``. Geometry and
+        value counts must match before filtering.
+        """
         fib_path = Path(fib_path).expanduser()
         if not fib_path.is_file():
             raise FileNotFoundError(fib_path)
-        if not fib_path.name.lower().endswith(".fib.npy"):
-            raise ValueError(f"Expected a .fib.npy input, got: {fib_path}")
+        if fib_path.name.lower().endswith(".fib.desc.json"):
+            fib_path = cls.values_from_description(fib_path)
+        if not fib_path.name.lower().endswith((".fib.npy", ".values.npy")):
+            raise ValueError(
+                "Expected a .fib.desc.json, .fib.values.npy, legacy "
+                f".values.npy, or .fib.npy input, got: {fib_path}"
+            )
 
         stored = np.load(fib_path, allow_pickle=True)
         if stored.dtype == object:
@@ -242,12 +419,16 @@ class FiberFormatConverter:
         else:
             if stored.ndim != 1:
                 raise ValueError(
-                    f"A vector .fib.npy must be one-dimensional, got {stored.shape}."
+                    f"A fiber value vector must be one-dimensional, got {stored.shape}."
                 )
-            if fiber_atlas_path is None:
+            if fib_path.name.lower().endswith(".values.npy"):
+                fiber_atlas_path = cls.atlas_from_values_description(
+                    fib_path, atlas_override=fiber_atlas_path
+                )
+            elif fiber_atlas_path is None:
                 raise ValueError(
-                    "This .fib.npy contains values only. Set TRACT_ATLAS_PATH to "
-                    "the canonical .npz/.npy fiber atlas that supplies its geometry."
+                    "This legacy file contains values only. Set TRACT_ATLAS_PATH "
+                    "to the canonical .npz/.npy fiber atlas that supplies its geometry."
                 )
             streamlines = [
                 cls._as_streamline(fiber)
@@ -351,7 +532,13 @@ class FiberFormatConverter:
         min_abs_value=None,
         top_percent=None,
     ):
-        """Filter a native fiber result and write its selected fibers to TCK."""
+        """Filter a native fiber result and materialize it as TCK.
+
+        Input and atlas-resolution rules are identical to ``load_fib_npy``.
+        TCK stores geometry but not these scalar values, so the returned
+        dictionary includes ``vals`` and per-streamline lengths for callers
+        that need to color or annotate the temporary tractogram.
+        """
         streamlines, values, n_input = cls.load_fib_npy(
             fib_path,
             fiber_atlas_path=fiber_atlas_path,
@@ -443,8 +630,43 @@ class FiberFormatConverter:
         nib.streamlines.save(tractogram, out_path)
         return out_path
 
-    def convert_fiber_file_to_trk(self, fiber_file_path, out_path):
-        fibers = self._load_fibers(fiber_file_path)
+    def convert_fiber_file_to_trk(
+        self,
+        fiber_file_path,
+        out_path,
+        fiber_atlas_path=None,
+        sign="both",
+        min_abs_value=None,
+        top_percent=None,
+    ):
+        """Convert atlas geometry or a native result directly to TrackVis.
+
+        Canonical ``*.fib.values.npy`` or ``*.fib.desc.json`` inputs are
+        resolved through their descriptor, then combined with the atlas only
+        in memory. No
+        intermediate ``*.fib.npy`` is written. The selected statistic is
+        attached as TrackVis per-streamline and per-point ``magnitude`` data.
+        Legacy geometry files and bare atlas containers remain supported.
+        """
+        fiber_file_path = Path(fiber_file_path).expanduser()
+        if fiber_file_path.name.lower().endswith(
+            (".values.npy", ".fib.desc.json")
+        ):
+            streamlines, values, _ = self.load_fib_npy(
+                fiber_file_path,
+                fiber_atlas_path=fiber_atlas_path,
+                sign=sign,
+                min_abs_value=min_abs_value,
+                top_percent=top_percent,
+            )
+            fibers = [
+                np.column_stack(
+                    [fiber, np.full(len(fiber), value, dtype=np.float32)]
+                )
+                for fiber, value in zip(streamlines, values)
+            ]
+        else:
+            fibers = self._load_fibers(fiber_file_path)
         return self.save_trk(fibers, out_path)
 
     def convert_fibers_to_reference_format(self, fibers, out_path):
@@ -466,7 +688,17 @@ class FiberFormatConverter:
 
         for fiber_file_path in fiber_file_paths:
             p = Path(fiber_file_path)
-            stem = p.name[:-4] if p.name.endswith(".npy") else p.stem
+            lower_name = p.name.lower()
+            if lower_name.endswith(".fib.values.npy"):
+                stem = p.name[:-15]
+            elif lower_name.endswith(".values.npy"):
+                stem = p.name[:-11]
+            elif lower_name.endswith(".fib.desc.json"):
+                stem = p.name[:-14]
+            elif lower_name.endswith(".fib.npy"):
+                stem = p.name[:-8]
+            else:
+                stem = p.name[:-4] if lower_name.endswith(".npy") else p.stem
             out_path = os.path.join(out_dir, f"{stem}{suffix}.trk")
             self.convert_fiber_file_to_trk(fiber_file_path, out_path)
             out_paths.append(out_path)
@@ -488,7 +720,7 @@ if __name__ == "__main__":
         "--inputs",
         nargs="+",
         required=True,
-        help="Input fiber files (.npy, .npz, .json)"
+        help="Input fiber files (.fib.desc.json, .fib.values.npy, legacy .fib.npy, .npz, .npy, .json)"
     )
 
     parser.add_argument(

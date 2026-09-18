@@ -47,18 +47,17 @@ import circuit_pyper.scripts.circuit_viewer_orchestrator as circuit_viewer_orche
 # Input/output paths.
 INPUT_PATH = "/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/results/optimzation/optimized_master_list_filtered_HigherIsWorse.csv" # Form: "/path/to/input.csv"
 SHEET = None # Specify sheet if using excel (i.e. "Sheet1")
-OUT_DIR = "/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/results/optimization/symptom_on_lhs/fiber_regressions" # Form: "/path/to/output_dir"
-MASK_PATH = "/Volumes/OneTouch/resources/Atlas_tck_MNI/Atlas_all30_MNI.npz" # Guerrero fibers use the original TCK-derived MNI geometry; the TRK-derived copy has an incorrect affine offset.
+OUT_DIR = "/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/results/optimization/symptom_on_lhs/network_regressions_HigherIsWorse-TestTotalScores" # Form: "/path/to/output_dir"
+MASK_PATH = "/Users/cu135/Software_Local/calvin_utils_project/circuit_pyper/resources/MNI152_T1_2mm_brain_mask.nii" # Guerrero fibers use the" original TCK-derived MNI geometry; the TRK-derived copy has an incorrect affine offset.
 
 # Model setup.
 
-var_list = [ 'CNRSTotScore','SematicFluencyFailS', 'PhonemicFluencyFailS', 'CategorySwitchFailS', 'DigitSpanForwardFailS', 'DigitSpanBackwardFailS', 'CubeDrawFailS', 'VerbalRecallFailS', 'SimiliarityFailS', 'GoNoGoFailS', 'AffectFailS' ]
-# var_list = [
-#  'Gait', 'HeelToShinTestLeft', 'HeelToShinTestRight', 'FingerToNoseTestLeft', 'FingerToNoseTestRight', 'LimbAtaxia', 'Speech', 'Oculomotor', 'TotalBarsScore',
+var_list = [
+#  'Gait', 'HeelToShinTestLeft', 'HeelToShinTestRight', 'FingerToNoseTestLeft', 'FingerToNoseTestRight', 'LimbAtaxia', 'Speech', 'Oculomotor',
  
 #  'SematicFluencyRawS', 'PhonemicFluencyRawS', 'CategorySwitchRawS', 'VerbalRegSum', 'DigitSpanForwardRawS', 'DigitSpanBackwardRawS', 'CubeDrawRawS', 'VerbalRecallRawS', 'SimiliarityRawS', 'GoNoGoRawS'
 
-'SematicFluencyFailS', 'PhonemicFluencyFailS', 'CategorySwitchFailS', 'DigitSpanForwardFailS', 'DigitSpanBackwardFailS', 'CubeDrawFailS', 'VerbalRecallFailS', 'SimiliarityFailS', 'GoNoGoFailS', 'AffectFailS', 'TotalCCASFailScore', 
+# 'SematicFluencyFailS', 'PhonemicFluencyFailS', 'CategorySwitchFailS', 'DigitSpanForwardFailS', 'DigitSpanBackwardFailS', 'CubeDrawFailS', 'VerbalRecallFailS', 'SimiliarityFailS', 'GoNoGoFailS', 'AffectFailS', 
 
 #  'Sec1ADifficultFocus', 'Sec1AEasilyDistracted', 'Sec1AOntheGo', 'Sec1AFeelsCompelled', 'Sec1AFeelsDriven', 'Sec1BWorries', 'Sec1BRepeats', 'Sec1BMentallyStuck', 
 #  'Sec1BCauseDistress', 'Sec2AActHastily', 'Sec2ARapidChanges', 'Sec2ACryingLaughing', 'Sec2AOverAnxious', 
@@ -68,16 +67,21 @@ var_list = [ 'CNRSTotScore','SematicFluencyFailS', 'PhonemicFluencyFailS', 'Cate
 #  'Sec4BTroubleUnderstand', 'Sec4BDistant', 'Sec4BIndifferent', 
 #  'Sec5AAngry', 'Sec5AUpset', 'Sec5AIntolerant', 'Sec5AArgumentative', 
 #  'Sec5Bimmature', 'Sec5BUnaware', 'Sec5BManner', 'Sec5BTrusting', 
+
 #  'ScoreCol1A', 'ScoreCol1B', 
 #  'ScoreCol2A', 'ScoreCol2B', 
 #  'ScoreCol3A', 'ScoreCol3B', 
 #  'ScoreCol4A', 'ScoreCol4B', 
 #  'ScoreCol5A', 'ScoreCol5B', 
-#  'TotalSection1Score', 'TotalSection2Score', 'TotalSection3Score', 'TotalSection4Score', 'TotalSection5Score', 'CNRSTotColAScore', 'CNRSTotColBScore', 'CNRSTotScore', 
-#  ]
-regressand_list = ["fiber_path_guerrera"]              # On left hand=side of the equation. Often is the outcome variable.         Will run an analysis for each value.
-regressor_list = var_list    # On right hand-side of the equation. Often is the neuroimaging variable.   Will run an analysis for each value. 
-VOXELWISE_VARS = ["fiber_path_guerrera"]    # Name the variables that are stored in neuroimaging files
+ 
+ #Major Summations
+ 'TotalBarsScore',
+ 'TotalCCASFailScore', 'TotalCCASRawScore',
+ 'CNRSTotScore', 
+ ]
+regressand_list = var_list               # On left hand=side of the equation. Often is the outcome variable.         Will run an analysis for each value.
+regressor_list = ["connectivity_t_path"]   # On right hand-side of the equation. Often is the neuroimaging variable.   Will run an analysis for each value. 
+VOXELWISE_VARS = ["connectivity_t_path"]    # Name the variables that are stored in neuroimaging files
 VOXELWISE_INTERACTIONS = []             # If you want interactions, specify them. 
 COVARIATES_LIST = []                    # List of all nuisance variables to adjust for. If you want interactions, make them in your spreadsheet and add them here. Will NOT trigger a new analysis for each value, but will be present in every analysis.
 ADD_INTERCEPT = False                  # Three exhaustive cluster indicators require no intercept (avoids perfect collinearity).
@@ -91,7 +95,7 @@ DATA_TRANSFORM_METHOD = "rank"   # Standardize continuous design/outcome data ac
 INVERT_REGRESSAND = False                # Multiply regressand by -1. Default: False
 
 # Each cluster mean contrasted against the mean of the other two clusters.
-CONTRAST_MATRIX = None
+CONTRAST_MATRIX = [[1]]
 # Regression settings.
 REGRESSION_TYPE = "linear"              # Default linear
 N_PERMUTATIONS = 1000                   # Default 1000

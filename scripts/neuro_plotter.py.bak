@@ -6,8 +6,10 @@ from __future__ import annotations
 import argparse
 import html
 import json
+import os
 import sys
 import webbrowser
+from collections.abc import Mapping
 from pathlib import Path
 import nibabel as nib
 import numpy as np
@@ -69,28 +71,9 @@ PLOTS = {
     "cerebellum": "[NIfTI] SUITPy cerebellar flatmap",
 }
 
-MESHES = {
-    "pial": "[surface, mesh] yabplot pial cortex",
-    "midthickness": "[surface, mesh] yabplot midthickness cortex",
-    "white": "[surface, mesh] yabplot white-matter surface",
-    "inflated": "[surface, mesh] yabplot inflated cortex",
-    "very_inflated": "[surface, mesh] yabplot very-inflated cortex",
-    "pial_wholebrain": "[mesh] pial cortex + custom cerebellum + brainstem",
-    "midthickness_wholebrain": "[mesh] midthickness cortex + custom cerebellum + brainstem",
-    "inflated_wholebrain": "[mesh] inflated cortex + custom cerebellum + brainstem",
-    "glass_wholebrain": "[mesh] custom carved hull + custom cerebellum",
-    "plain_wholebrain": "[mesh] custom uncarved hull + custom cerebellum",
-    "aal3_suit_parcels": "[parcel_mesh] custom AAL3 + SUIT, 165 regional meshes",
-    "suit_parcels": "[parcel_mesh] custom SUIT cerebellum, 32 regional meshes",
-    "aal3_subcortical": "[parcel_mesh] yabplot AAL3 subcortical meshes",
-    "aal3_nocer": "[parcel_mesh] yabplot AAL3 subcortical meshes without cerebellum",
-    "aseg": "[parcel_mesh] yabplot FreeSurfer aseg structures",
-    "tian2020_s1": "[parcel_mesh] yabplot Tian 2020 scale 1 structures",
-    "brainnetome_sc": "[parcel_mesh] yabplot Brainnetome subcortical structures",
-    "musus100": "[parcel_mesh] yabplot Melbourne subcortex atlas",
-    "musus100_dbn": "[parcel_mesh] yabplot Melbourne deep-brain nuclei",
-    "musus100_tha": "[parcel_mesh] yabplot Melbourne thalamic nuclei",
-}
+# brains.py is the single source of truth.  Keeping a second hand-written menu
+# here made newly registered meshes invisible to the CLI and broke imports.
+MESHES = {name: spec["what"] for name, spec in _MESH_SPECS.items()}
 
 ATLASES = {
     "aal3": "[surface] AAL3 cortical parcellation",
@@ -146,7 +129,7 @@ VIEWER_SCORE_NONZERO_ONLY = False
 SYMMETRIC_CBAR = False
 
 # Tracts ----------------------------------------------------------------------
-TRACT_ATLAS_PATH = None              # None | canonical .npz/.npy geometry for vector .fib.npy
+TRACT_ATLAS_PATH = None              # None | relocated atlas or legacy vector .fib.npy geometry
 TRACT_SIGN = "positive"             # "both" | "positive" | "negative"
 TRACT_MIN_ABS_VALUE = None           # None | nonnegative number
 TRACT_TOP_PERCENT = None             # None | number in (0, 100]
@@ -318,8 +301,8 @@ FIGURES = [
     # PRESETS["yabplot_xtracts"],
     # PRESETS["yabplot_connectome"],
     PRESETS["suitpy_cerebellar_cortex"],
-    PRESETS["multiplot_pial_wholebrain"],
-    PRESETS["multiplot_parcel_wholebrain"],
+    # PRESETS["multiplot_pial_wholebrain"],
+    # PRESETS["multiplot_parcel_wholebrain"],
 ]
 
 
@@ -332,6 +315,12 @@ def nifti_stem(path):
     name = Path(path).name
     if name.lower().endswith(".fib.npy"):
         return name[:-8]
+    if name.lower().endswith(".fib.values.npy"):
+        return name[:-15]
+    if name.lower().endswith(".values.npy"):
+        return name[:-11]
+    if name.lower().endswith(".fib.desc.json"):
+        return name[:-14]
     if name.endswith(".nii.gz"):
         return name[:-7]
     if name.endswith(".nii"):
@@ -754,8 +743,70 @@ def render_multi_to_formats(figure_dir, basename, spec, views):
     return files
 
 
-def write_index(output_dir, source_nifti, cards):
-    """Write the local PNG/SVG gallery."""
+def write_volume_viewer(nifti_paths, output_path, title="Interactive volumetric maps"):
+    """Write one self-contained nilearn viewer with a map-selection dropdown."""
+    from nilearn import plotting
+
+    from calvin_utils.plotting_utils.html_viewer_selector import HTMLViewerSelector
+
+    named_paths = (
+        nifti_paths.items()
+        if isinstance(nifti_paths, Mapping)
+        else ((None, nifti_path) for nifti_path in nifti_paths)
+    )
+    views = {}
+    for supplied_label, nifti_path in named_paths:
+        nifti_path = Path(nifti_path).expanduser().resolve()
+        if not nifti_path.is_file() or not (
+            nifti_path.name.endswith(".nii") or nifti_path.name.endswith(".nii.gz")
+        ):
+            print(f"[warn] volumetric viewer skipped non-NIfTI input: {nifti_path}")
+            continue
+
+        try:
+            image = nib.load(str(nifti_path))
+            if len(image.shape) != 3:
+                print(
+                    f"[warn] volumetric viewer skipped non-3D NIfTI: "
+                    f"{nifti_path} (shape {image.shape})"
+                )
+                continue
+
+            label = str(supplied_label) if supplied_label is not None else nifti_stem(nifti_path)
+            unique_label = label
+            duplicate = 2
+            while unique_label in views:
+                unique_label = f"{label} ({duplicate})"
+                duplicate += 1
+            views[unique_label] = plotting.view_img(image, title=unique_label)
+        except Exception as exc:
+            print(f"[warn] volumetric viewer could not load {nifti_path}: {exc}")
+
+    if not views:
+        return None
+
+    output_path = Path(output_path).expanduser().resolve()
+    HTMLViewerSelector(views, title=title).save(str(output_path))
+    return output_path
+
+
+def _relative_href(target, output_dir):
+    target = Path(target).expanduser().resolve()
+    output_dir = Path(output_dir).expanduser().resolve()
+    return Path(os.path.relpath(target, start=output_dir)).as_posix()
+
+
+def write_index(
+    output_dir,
+    source_nifti,
+    cards,
+    volume_viewer=None,
+    title=None,
+    gallery_links=None,
+):
+    """Write the interactive volumetric viewer and local figure gallery index."""
+    output_dir = Path(output_dir)
+    page_title = title or f"{nifti_stem(source_nifti)} figures"
     blocks = []
 
     for card in cards:
@@ -764,11 +815,11 @@ def write_index(output_dir, source_nifti, cards):
         if preview is None:
             continue
 
-        preview_rel = Path(preview).relative_to(output_dir).as_posix()
+        preview_rel = _relative_href(preview, output_dir)
         links = []
         for ext in ("svg", "png"):
             if ext in files:
-                rel = Path(files[ext]).relative_to(output_dir).as_posix()
+                rel = _relative_href(files[ext], output_dir)
                 links.append(f'<a href="{html.escape(rel)}">{ext.upper()}</a>')
 
         blocks.append(
@@ -779,20 +830,129 @@ def write_index(output_dir, source_nifti, cards):
 </div>'''
         )
 
+    viewer_block = ""
+    if volume_viewer is not None:
+        viewer_rel = _relative_href(volume_viewer, output_dir)
+        viewer_block = f'''<section class="viewer-card">
+<h2>Interactive volumetric viewer</h2>
+<p>Use the dropdown inside the viewer to inspect each saved NIfTI in volume space.</p>
+<iframe src="{html.escape(viewer_rel, quote=True)}" title="Interactive volumetric viewer"></iframe>
+</section>'''
+
+    gallery_link_items = []
+    for label, target in gallery_links or []:
+        target = Path(target)
+        if not target.is_file():
+            continue
+        target_rel = _relative_href(target, output_dir)
+        gallery_link_items.append(
+            f'<li><a href="{html.escape(target_rel, quote=True)}">'
+            f'{html.escape(str(label))}</a></li>'
+        )
+    gallery_links_block = ""
+    if gallery_link_items:
+        gallery_links_block = (
+            '<section class="card"><h2>Static figure galleries</h2><ul>'
+            + "".join(gallery_link_items)
+            + "</ul></section>"
+        )
+
+    figures_block = ""
+    if blocks:
+        figures_block = (
+            '<h2 class="section-title">Rendered figures</h2><div class="grid">'
+            + "".join(blocks)
+            + "</div>"
+        )
+
     page = f'''<!doctype html>
-<html><head><meta charset="utf-8"><title>{html.escape(nifti_stem(source_nifti))}</title>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{html.escape(page_title)}</title>
 <style>
 body{{font-family:system-ui;margin:36px;max-width:1600px;background:#f4f5f7;color:#17212c}}
 .grid{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:20px}}
-.card{{background:white;padding:20px;border-radius:12px}} img{{width:100%;background:white}}
+.card,.viewer-card{{background:white;padding:20px;border-radius:12px;margin-bottom:20px}}
+.viewer-card iframe{{display:block;width:100%;height:760px;border:1px solid #d7dce2;border-radius:8px;background:white}}
+.section-title{{margin-top:30px}} img{{width:100%;background:white}}
 a{{color:#235c8c}} @media(max-width:900px){{.grid{{grid-template-columns:1fr}}}}
 </style></head><body>
-<h1>{html.escape(nifti_stem(source_nifti))} figures</h1>
-<div class="grid">{"".join(blocks)}</div>
+<h1>{html.escape(page_title)}</h1>
+{viewer_block}
+{gallery_links_block}
+{figures_block}
 </body></html>'''
 
     index_path = output_dir / "index.html"
     index_path.write_text(page, encoding="utf-8")
+    return index_path
+
+
+def discover_rendered_cards(*roots):
+    """Return gallery cards for every existing SVG/PNG below the given roots."""
+    cards_by_stem = {}
+    for root in roots:
+        root = Path(root).expanduser().resolve()
+        if not root.is_dir():
+            continue
+        for image_path in sorted(root.rglob("*")):
+            if not image_path.is_file():
+                continue
+            extension = image_path.suffix.lower().lstrip(".")
+            if extension not in {"svg", "png"}:
+                continue
+            stem_path = image_path.with_suffix("")
+            card = cards_by_stem.setdefault(
+                stem_path,
+                {
+                    "title": " / ".join(
+                        part.replace("_", " ").title()
+                        for part in image_path.relative_to(root).with_suffix("").parts
+                    ),
+                    "files": {},
+                },
+            )
+            card["files"][extension] = image_path
+    return list(cards_by_stem.values())
+
+
+def write_collection_index(
+    output_dir,
+    title,
+    figure_roots,
+    volume_niftis=None,
+):
+    """Index already-rendered figures across existing roots without moving them."""
+    output_dir = Path(output_dir).expanduser().resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    roots = [Path(root).expanduser().resolve() for root in figure_roots]
+    cards = discover_rendered_cards(*roots)
+
+    volume_viewer = None
+    volume_niftis = volume_niftis or []
+    volume_paths = (
+        list(volume_niftis.values())
+        if isinstance(volume_niftis, Mapping)
+        else list(volume_niftis)
+    )
+    if volume_paths:
+        volume_viewer = write_volume_viewer(
+            volume_niftis,
+            output_dir / "volumetric_viewer.html",
+            title=f"{title} volumes",
+        )
+
+    source_for_title = volume_paths[0] if volume_paths else output_dir
+    index_path = write_index(
+        output_dir,
+        source_for_title,
+        cards,
+        volume_viewer=volume_viewer,
+        title=title,
+    )
+    print(
+        f"Collection index: {index_path} "
+        f"({len(cards)} rendered file set{'s' if len(cards) != 1 else ''})"
+    )
     return index_path
 
 
@@ -956,6 +1116,14 @@ def figure_applies_to_source(figure, source_nifti):
     """Return whether a conditional figure should be rendered for this map."""
     if figure.get("fwe_only") and "_fwe_" not in Path(source_nifti).name.lower():
         return False
+    if input_kind(source_nifti) == "tract" and figure.get("overlays") is None:
+        normalized = normalize_plot_spec(figure)
+        if normalized["plot"] not in {
+            "mesh", "surface", "cortical_outline", "parcel_mesh", "vertexwise",
+        }:
+            return False
+        if normalized["project"] is not None:
+            return False
     return True
 
 
@@ -1006,11 +1174,16 @@ def resolve_overlay_paths(overlays, source_nifti):
 
 def input_kind(path):
     name = Path(path).name.lower()
-    if name.endswith((".mat", ".fib.npy", ".tck")):
+    if name.endswith(
+        (".mat", ".fib.npy", ".values.npy", ".fib.desc.json", ".tck")
+    ):
         return "tract"
     if name.endswith((".nii", ".nii.gz")):
         return "nifti"
-    raise ValueError(f"Input must be .nii, .nii.gz, .mat, .fib.npy, or .tck: {path}")
+    raise ValueError(
+        "Input must be .nii, .nii.gz, .mat, .fib.desc.json, "
+        f".fib.values.npy, legacy .fib.npy/.values.npy, or .tck: {path}"
+    )
 
 
 def render_figure(source_nifti, output_dir, spec, cache):
@@ -1083,7 +1256,10 @@ def render_figure(source_nifti, output_dir, spec, cache):
                 "surface, or parcel_mesh visualizer."
             )
         if spec["project"] is not None:
-            raise ValueError("Direct MAT/.fib.npy tract rendering requires project=None.")
+            raise ValueError(
+                "Direct MAT/fiber descriptor/value/tract rendering requires "
+                "project=None."
+            )
         if Path(source_nifti).name.lower().endswith(".tck"):
             converted = dict(spec)
             converted["parcel_path"] = None
@@ -1253,7 +1429,15 @@ def render_figure(source_nifti, output_dir, spec, cache):
     return cards
 
 
-def dispatch(source_nifti, output_dir, figures=None, overrides=None, make_html=MAKE_HTML, open_html=OPEN_HTML):
+def dispatch(
+    source_nifti,
+    output_dir,
+    figures=None,
+    overrides=None,
+    make_html=MAKE_HTML,
+    open_html=OPEN_HTML,
+    volume_viewer=None,
+):
     source_nifti = Path(source_nifti).expanduser().resolve()
     output_dir = Path(output_dir).expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -1263,14 +1447,18 @@ def dispatch(source_nifti, output_dir, figures=None, overrides=None, make_html=M
 
     base = defaults()
     overrides = overrides or {}
-    figures = figures if figures is not None else [{}]
-    figures = [
-        figure for figure in figures
-        if figure_applies_to_source(figure, source_nifti)
-    ]
-
     # Precedence: capital defaults < FIGURES entry < explicit argparse override.
-    specs = [{**base, **figure, **overrides} for figure in figures]
+    figures = figures if figures is not None else [{}]
+    candidates = [{**base, **figure, **overrides} for figure in figures]
+    specs = []
+    for spec in candidates:
+        if figure_applies_to_source(spec, source_nifti):
+            specs.append(spec)
+        else:
+            print(
+                f"Skipping incompatible figure: {name_for(spec)} "
+                f"({input_kind(source_nifti)} input)"
+            )
 
     cache = {}
     cards = []
@@ -1281,7 +1469,18 @@ def dispatch(source_nifti, output_dir, figures=None, overrides=None, make_html=M
     if not make_html:
         return cards
 
-    index_path = write_index(output_dir, source_nifti, cards)
+    if volume_viewer is None:
+        volume_viewer = write_volume_viewer(
+            [source_nifti],
+            output_dir / "volumetric_viewer.html",
+            title=f"{nifti_stem(source_nifti)} volumetric view",
+        )
+    index_path = write_index(
+        output_dir,
+        source_nifti,
+        cards,
+        volume_viewer=volume_viewer,
+    )
     print(f"HTML viewer: {index_path}")
 
     if open_html:
@@ -1333,6 +1532,7 @@ def parser():
     add("--projection-kwargs", type=json_dict)
     add("--plot-kwargs", type=json_dict)
     add("--suit-kwargs", type=json_dict)
+    add("--volume-viewer")
 
     p.add_argument("--list", action="store_true", default=argparse.SUPPRESS,
                    help="print plots, meshes, atlases, and presets, then exit")
@@ -1391,6 +1591,7 @@ if __name__ == "__main__":
 
     make_html = args.pop("make_html", MAKE_HTML)
     open_html = args.pop("open_html", OPEN_HTML)
+    volume_viewer = args.pop("volume_viewer", None)
 
     dispatch(
         source_nifti=source_nifti,
@@ -1399,4 +1600,5 @@ if __name__ == "__main__":
         overrides=normalize_overrides(args),
         make_html=make_html,
         open_html=open_html,
+        volume_viewer=volume_viewer,
     )

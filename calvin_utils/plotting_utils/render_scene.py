@@ -206,8 +206,28 @@ def resolve_scale(values, cmap=None, clim=None, color=RED, symmetric=None):
             lo, hi = float(finite.min()), float(finite.max())
             clim = (lo, hi) if hi > lo else (lo, lo + 1.0)
 
+    # Entering the limits backwards means "invert this scale" -- the natural way
+    # to ask for it, and the only thing a reversed pair could sensibly mean.
+    # Swapping the numbers silently would throw the request away.
+    invert = float(clim[0]) > float(clim[1])
+    if invert:
+        clim = (clim[1], clim[0])
+
     if cmap is None:
-        cmap = diverging_cmap() if symmetric else ramp_cmap(color)
+        # The overlay's colour decides the POSITIVE tail either way. It used to
+        # be thrown away the moment the data carried both signs, so every
+        # two-signed map -- every t-map -- came out in the same blue/white/red
+        # whatever swatch was picked. Two overlays then looked identical, which
+        # reads as the top one having replaced the bottom one.
+        cmap = diverging_cmap(high=color) if symmetric else ramp_cmap(color)
     elif isinstance(cmap, str) and cmap.startswith("#"):
         cmap = diverging_cmap(high=cmap) if symmetric else ramp_cmap(cmap)
+    elif isinstance(cmap, str):
+        # A name can be matplotlib's or one of MRIcroGL's .clut files, so that
+        # a figure and the volume view it came from agree about what red means.
+        from calvin_utils.plotting_utils.palettes import resolve_palette
+
+        cmap = resolve_palette(cmap, fallback_color=color)
+    if invert:
+        cmap = cmap.reversed()
     return cmap, clim

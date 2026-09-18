@@ -31,6 +31,9 @@ if not hasattr(np, "maximum_sctype"):
 import nibabel as nib
 from tqdm import tqdm
 
+from calvin_utils.neuroimaging_utils.tract_utils.fiber_converter import (
+    FiberFormatConverter,
+)
 from calvin_utils.neuroimaging_utils.tract_utils.fiber_intersection import FiberVoxelIndexer
 
 
@@ -53,8 +56,11 @@ class TractDensity:
     Inputs
     ------
     fiber_path:
-        Fiber geometry source. Supported inputs are ``.fib.npy`` regression
-        outputs or Calvin internal ``.npz`` atlas files.
+        Canonical ``*.fib.desc.json`` descriptor or ``*.fib.values.npy``
+        result, legacy ``.fib.npy`` result, or Calvin internal ``.npz`` atlas
+        file. A descriptor resolves both its values and geometry; a values
+        result resolves its sibling descriptor. Both validate the vector
+        checksum and recorded atlas before rasterization.
 
         A ``.fib.npy`` regression output is an object array where each fiber is
         ``N x 4`` and column 4 contains the fiber statistic.
@@ -73,9 +79,15 @@ class TractDensity:
         Output ``.nii`` or ``.nii.gz`` path.
 
     values_path / values:
-        Optional one-value-per-fiber vector. Use this when converting an atlas
-        plus separate regression values. Ignored for ``.fib.npy`` if ``values``
-        is not explicitly provided.
+        Optional one-value-per-fiber vector when ``fiber_path`` is an atlas.
+        A standard regression result should instead be passed directly as
+        ``fiber_path=<stem>.fib.desc.json`` (or ``*.fib.values.npy``) so the
+        pair is validated and its atlas is resolved automatically.
+
+        Vector element ``i`` must correspond to atlas fiber ``i``; lengths are
+        checked before rasterization. The descriptor is not modified. Values
+        are ignored for geometry-bearing ``*.fib.npy`` unless ``values`` is
+        explicitly supplied as an override.
 
     fiberset:
         ``"positive"``, ``"negative"``, or ``"both"``. Matches Lead-DBS
@@ -164,9 +176,15 @@ class TractDensity:
             raise FileNotFoundError(f"reference_nifti_path does not exist: {self.reference_nifti_path}")
         if self.values_path is not None and not self.values_path.exists():
             raise FileNotFoundError(f"values_path does not exist: {self.values_path}")
-        if not (self.fiber_path.name.endswith(".fib.npy") or self.fiber_path.suffix.lower() == ".npz"):
+        if not (
+            self.fiber_path.name.endswith(
+                (".fib.npy", ".values.npy", ".fib.desc.json")
+            )
+            or self.fiber_path.suffix.lower() == ".npz"
+        ):
             raise ValueError(
-                "TractDensity requires a Calvin .npz fiber atlas or a regression .fib.npy output. "
+                "TractDensity requires a .fib.desc.json/.fib.values.npy pair, "
+                "Calvin .npz fiber atlas, or legacy .fib.npy output. "
                 "Convert external tract files first with FiberAtlasConverter."
             )
         if self.fiberset not in {"both", "positive", "pos", "negative", "neg"}:
@@ -183,6 +201,29 @@ class TractDensity:
         if self.fiber_path.name.endswith(".fib.npy"):
             self.fibers, fiber_values = self._load_fib_npy(self.fiber_path)
             self.loaded_values = fiber_values if self.values is None else self.values
+            return
+
+        values_result_path = None
+        if self.fiber_path.name.endswith(".fib.desc.json"):
+            values_result_path = FiberFormatConverter.values_from_description(
+                self.fiber_path
+            )
+        elif self.fiber_path.name.endswith(".values.npy"):
+            values_result_path = self.fiber_path
+
+        if values_result_path is not None:
+            atlas_path = FiberFormatConverter.atlas_from_values_description(
+                values_result_path
+            )
+            self.fibers = [
+                FiberFormatConverter._as_streamline(fiber)
+                for fiber in FiberFormatConverter._load_fibers(atlas_path)
+            ]
+            self.loaded_values = (
+                self.values
+                if self.values is not None
+                else self._load_values(values_result_path)
+            )
             return
 
         indexer = FiberVoxelIndexer(reference_nifti_path=str(self.reference_nifti_path))

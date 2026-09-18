@@ -17,10 +17,10 @@ class HTMLViewerSelector:
         """
         Convert a nilearn/IPython-style HTML object into an HTML string.
         """
-        if hasattr(view, "_repr_html_"):
-            return view._repr_html_()
         if hasattr(view, "get_standalone"):
             return view.get_standalone()
+        if hasattr(view, "_repr_html_"):
+            return view._repr_html_()
         if hasattr(view, "html"):
             value = view.html
             return value() if callable(value) else value

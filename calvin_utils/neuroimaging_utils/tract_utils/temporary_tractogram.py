@@ -9,7 +9,26 @@ from calvin_utils.neuroimaging_utils.tract_utils.fiber_converter import (
 
 
 class TemporaryTractogram:
-    """Materialize a MAT or native fiber result as TCK within a context."""
+    """Materialize a MAT or native fiber result as a temporary TCK.
+
+    Supported sources are Lead-DBS ``.mat``, self-contained ``*.fib.npy``, and
+    lightweight ``*.fib.values.npy``/``*.fib.desc.json`` pairs. The descriptor
+    can be passed directly and is used to locate and validate both the values
+    and canonical geometry atlas automatically. ``fiber_atlas_path`` may point
+    to a relocated copy of the described atlas and remains necessary for legacy
+    numeric ``*.fib.npy``; it never makes the values descriptor optional.
+
+    The values vector and descriptor are not temporary and are never modified.
+    Only the derived TCK is placed in a temporary directory, which is removed
+    on context exit or conversion failure. Selected scalar values remain
+    available through ``vals`` and ``point_values()`` because TCK itself does
+    not preserve per-fiber statistics.
+
+    Use as a context manager so cleanup is deterministic::
+
+        with TemporaryTractogram("map.fib.desc.json") as tractogram:
+            render(tractogram.tck_path, data=tractogram.point_values())
+    """
 
     def __init__(
         self,
@@ -36,6 +55,12 @@ class TemporaryTractogram:
         self._directory = None
 
     def create(self):
+        """Create the temporary TCK and return ``self``.
+
+        Descriptor and atlas integrity are validated by
+        ``FiberFormatConverter`` before a values vector is materialized.
+        Repeated calls during the same context return the existing result.
+        """
         if self._directory is not None:
             return self
 
@@ -45,9 +70,21 @@ class TemporaryTractogram:
         )
         try:
             name = self.source_path.name
-            stem = name[:-8] if name.lower().endswith(".fib.npy") else self.source_path.stem
+            lower_name = name.lower()
+            if lower_name.endswith(".fib.npy"):
+                stem = name[:-8]
+            elif lower_name.endswith(".fib.values.npy"):
+                stem = name[:-15]
+            elif lower_name.endswith(".values.npy"):
+                stem = name[:-11]
+            elif lower_name.endswith(".fib.desc.json"):
+                stem = name[:-14]
+            else:
+                stem = self.source_path.stem
             out_path = Path(self._directory.name) / f"{stem}.tck"
-            if name.lower().endswith(".fib.npy"):
+            if lower_name.endswith(
+                (".fib.npy", ".values.npy", ".fib.desc.json")
+            ):
                 result = FiberFormatConverter.convert_fib_npy_to_tck(
                     self.source_path,
                     out_path,
@@ -66,7 +103,9 @@ class TemporaryTractogram:
                 )
             else:
                 raise ValueError(
-                    f"TemporaryTractogram requires .fib.npy or .mat, got: {self.source_path}"
+                    "TemporaryTractogram requires .fib.desc.json, "
+                    ".fib.values.npy, legacy .fib.npy/.values.npy, or .mat, "
+                    f"got: {self.source_path}"
                 )
         except Exception:
             self.cleanup()
@@ -85,6 +124,7 @@ class TemporaryTractogram:
             self._directory = None
 
     def point_values(self):
+        """Repeat each selected fiber value once per streamline vertex."""
         if self.vals is None:
             return None
         return np.repeat(self.vals, self.idx)

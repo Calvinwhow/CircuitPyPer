@@ -30,6 +30,10 @@ import nibabel as nib
 from nibabel.streamlines import Tractogram
 from scipy.io import savemat
 
+from calvin_utils.neuroimaging_utils.tract_utils.fiber_converter import (
+    FiberFormatConverter,
+)
+
 
 class FiberResultVisualizer:
     """
@@ -39,29 +43,47 @@ class FiberResultVisualizer:
 
         from calvin_utils.permutation_analysis_utils.voxelwise_regression import VoxelwiseRegression
 
-    When ``RegressionPrep`` used fiber inputs, ``VoxelwiseRegression`` writes
-    statistical maps through ``FiberIO``. Those files are currently saved as
-    object-array ``*.fib.npy`` files containing one array per fiber:
+    When ``RegressionPrep`` uses fiber inputs, ``VoxelwiseRegression`` writes
+    statistical maps through ``FiberIO`` as an inseparable lightweight pair::
 
-        fiber_i.shape == (n_vertices_i, 4)
-        columns: x, y, z, statistic_value
+        <stem>.fib.values.npy one float32 statistic per canonical atlas fiber
+        <stem>.fib.desc.json  atlas identity, ordering, counts, and provenance
+
+    A ``*.fib.values.npy`` contains no streamline coordinates. Element ``i`` is
+    meaningful only as the value for fiber ``i`` in the descriptor's atlas.
+    Keep the vector and descriptor together. Repeating all atlas vertices in
+    ``<stem>.fib.npy`` is unnecessary for normal regression output because the
+    descriptor identifies the geometry. Such self-contained files remain a
+    readable, opt-in legacy representation with arrays shaped
+    ``(n_vertices_i, 4)`` (x, y, z, statistic).
 
     Expected regression output names include:
 
-        contrast_tval_0.fib.npy
-        contrast_tval_FWE_0.fib.npy
-        contrast_pval_FWE_0.fib.npy
-        beta_predictor_0.fib.npy
-        R2_vals.fib.npy
+        contrast_tval_0.fib.values.npy
+        contrast_tval_0.fib.desc.json
+        contrast_tval_FWE_0.fib.values.npy
+        contrast_tval_FWE_0.fib.desc.json
+        contrast_pval_FWE_0.fib.values.npy
+        beta_predictor_0.fib.values.npy
+        R2_vals.fib.values.npy
 
-    This exporter can also take:
+    Accepted input modes
+    --------------------
 
-    1. ``values_path`` as a plain ``.npy`` vector of shape ``(n_fibers,)`` plus
-       ``fiber_atlas_path`` pointing to a canonical atlas ``.npz`` with a
-       ``fibers`` key.
-    2. ``values`` directly as a numpy-like vector plus ``fiber_atlas_path``.
-    3. ``fiber_atlas_path`` alone, when the goal is to export a fiber atlas for
-       visual inspection rather than visualize regression values.
+    1. A geometry-bearing ``*.fib.npy`` needs no separate atlas.
+    2. A ``*.fib.desc.json`` entry point resolves both its values vector and
+       atlas. Passing the paired ``*.fib.values.npy`` works identically. The
+       descriptor's value hash and atlas file size are validated before
+       geometry is loaded.
+    3. Any plain one-dimensional ``.npy`` may be used with an explicit
+       ``fiber_atlas_path``.
+    4. ``values`` may be supplied directly with ``fiber_atlas_path``.
+    5. ``fiber_atlas_path`` alone exports an unweighted atlas for inspection.
+
+    For a ``*.fib.values.npy`` result, an explicitly supplied
+    ``fiber_atlas_path`` may identify a relocated copy of the atlas, but it
+    does not replace the descriptor. In every mode, the number and order of
+    values must exactly match the atlas fibers.
 
     Main output
     -----------
@@ -205,6 +227,11 @@ class FiberResultVisualizer:
         self.result = None
 
     def run(self):
+        """Load, validate, select, and export the requested fiber result.
+
+        For ``*.fib.values.npy`` or ``*.fib.desc.json``, this includes resolving
+        and validating the complete pair before any output is produced.
+        """
         self.validate_inputs()
         self.prepare_output_dir()
         self.resolve_output_name()
@@ -242,7 +269,16 @@ class FiberResultVisualizer:
             return
         if self.values_path is not None:
             name = self.values_path.name
-            self.output_name = name[:-8] if name.endswith(".fib.npy") else self.values_path.stem
+            if name.endswith(".fib.npy"):
+                self.output_name = name[:-8]
+            elif name.endswith(".fib.values.npy"):
+                self.output_name = name[:-15]
+            elif name.endswith(".values.npy"):
+                self.output_name = name[:-11]
+            elif name.endswith(".fib.desc.json"):
+                self.output_name = name[:-14]
+            else:
+                self.output_name = self.values_path.stem
         elif self.fiber_atlas_path is not None:
             name = self.fiber_atlas_path.name
             self.output_name = name[:-4] if name.endswith(".npz") else self.fiber_atlas_path.stem
@@ -250,6 +286,21 @@ class FiberResultVisualizer:
             self.output_name = "fiber_result"
 
     def load_fibers_and_values(self):
+        """Resolve geometry and aligned values for all supported input modes.
+
+        ``*.fib.desc.json`` and described ``*.fib.values.npy`` inputs obtain
+        geometry and values from the pair. Legacy ``*.fib.npy`` inputs obtain
+        both from the object array itself. Plain vectors require
+        ``fiber_atlas_path``.
+        """
+        if (
+            self.values_path is not None
+            and self.values_path.name.lower().endswith(".fib.desc.json")
+        ):
+            self.values_path = FiberFormatConverter.values_from_description(
+                self.values_path
+            )
+
         if self._values_path_is_fib_npy():
             self.fibers, loaded_values = self._load_fib_npy(self.values_path)
             self.values = loaded_values if self.values is None else self.values
@@ -259,8 +310,20 @@ class FiberResultVisualizer:
             self.fiber_atlas_path = self.values_path
             self.values_path = None
 
+        if (
+            self.values_path is not None
+            and self.values_path.name.lower().endswith(".values.npy")
+        ):
+            self.fiber_atlas_path = FiberFormatConverter.atlas_from_values_description(
+                self.values_path,
+                atlas_override=self.fiber_atlas_path,
+            )
+
         if self.fiber_atlas_path is None:
-            raise ValueError("fiber_atlas_path is required when values_path is not a .fib.npy geometry file.")
+            raise ValueError(
+                "fiber_atlas_path is required when values_path is not a "
+                ".fib.npy geometry file or a described .fib.values.npy file."
+            )
         self.fibers = self._load_atlas_fibers(self.fiber_atlas_path)
         if self.values is None:
             self.values = (

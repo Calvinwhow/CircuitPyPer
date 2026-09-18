@@ -48,7 +48,7 @@ Supported multi-map geometries are:
 | `plot` | Result |
 |---|---|
 | `parcel_mesh` | Colors the regional set selected by `mesh` |
-| `mesh` | Draws NIfTIs as isosurfaces and `.mat`, `.fib.npy`, or `.tck` inputs as streamlines inside the selected `mesh` |
+| `mesh` | Draws NIfTIs as isosurfaces and `.mat`, `.fib.desc.json`, `.fib.values.npy`, legacy `.fib.npy`, or `.tck` inputs as streamlines inside the selected `mesh` |
 
 Older `volume` and `tracts` plot values still normalize to `mesh`.
 
@@ -61,7 +61,7 @@ and yabplot sets such as `aseg` or `tian2020_s1`.
 
 | Field | Meaning | Default |
 |---|---|---|
-| `path` | Input NIfTI, `.mat`, `.fib.npy`, or `.tck` | required |
+| `path` | Input NIfTI, `.mat`, `.fib.desc.json`, `.fib.values.npy`, legacy `.fib.npy`, or `.tck` | required |
 | `label` | Legend text | filename |
 | `color` | Matplotlib color or hex | required |
 | `threshold` | Magnitude cutoff or percentile such as `"95%"` | `"95%"` |
@@ -87,12 +87,22 @@ than one anatomical view.
 
 Use the same `plot` and `mesh` keys as NIfTI inputs. The file extension selects
 streamline rendering automatically; there is no separate `tract_mesh`. Each MAT
-or `.fib.npy` file is converted to a temporary TCK, rendered, and deleted after
+or fiber descriptor/value file is converted to a temporary TCK, rendered, and deleted after
 all requested views and formats are complete.
 
 `threshold` is an absolute statistic cutoff for fiber overlays. `top_percent`
 can be set globally with `TRACT_TOP_PERCENT` or per overlay. A geometry-bearing
-`.fib.npy` needs nothing else. A one-dimensional `.fib.npy` value vector needs
-`TRACT_ATLAS_PATH` (or an overlay-level `fiber_atlas_path`) pointing to its
-canonical `.npz`/`.npy` fiber atlas. Lead-DBS FTR and discriminative-fiber MAT
-files are read directly.
+`.fib.npy` needs nothing else. A lightweight `.fib.values.npy` requires its
+paired `.fib.desc.json`; the descriptor can itself be used as the input path.
+It records relative and absolute paths to both the values vector and atlas.
+`TRACT_ATLAS_PATH` (or overlay-level `fiber_atlas_path`) can point
+to a relocated copy of the atlas but does not replace that descriptor. Legacy
+one-dimensional `.fib.npy` vectors still require an explicit canonical
+`.npz`/`.npy` fiber atlas. Lead-DBS FTR and discriminative-fiber MAT files are
+read directly.
+
+Fiber regression output writes each `<name>.fib.values.npy` together with
+`<name>.fib.desc.json`. The descriptor records the canonical atlas (absolute
+and relative paths), atlas/value counts, ordering, dtype, SHA-256, mask/fill
+behavior, and source geometry file. When that descriptor is present,
+`TRACT_ATLAS_PATH` is optional because the atlas is resolved automatically.

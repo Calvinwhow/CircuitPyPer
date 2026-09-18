@@ -65,7 +65,10 @@ __all__ = [
 ]
 
 
-GLASS_MESH_DIR = Path(__file__).resolve().parents[2] / "resources" / "neuro_plotter_resources"
+# One source of truth: the same directory brains.RESOURCE_DIR resolved, so an
+# application that redirects the resources gets both the prebuilt meshes and the
+# parcellations from its own copy rather than half from each.
+from calvin_utils.plotting_utils.brains import RESOURCE_DIR as GLASS_MESH_DIR
 CEREBRUM_MESH = GLASS_MESH_DIR / "glass_cerebrum.vtk"
 CEREBELLUM_MESH = GLASS_MESH_DIR / "glass_cerebellum.vtk"
 # Uncarved counterpart of CEREBRUM_MESH: the same smooth hull with nothing
@@ -163,15 +166,65 @@ def _resolve_piece(name):
     if candidate.suffix and candidate.exists():
         return "file", candidate
 
-    shipped = GLASS_MESH_DIR / f"{name}.vtk"
-    if shipped.exists():
-        return "file", shipped
+    # Every folder under resources/meshes is searched, not just this one, so a
+    # set of surfaces can be dropped in as its own directory and used by name
+    # without being copied into the main pile or registered by full path.
+    for folder in MESH_SEARCH_PATH:
+        for suffix in MESH_SUFFIXES:
+            shipped = folder / f"{name}{suffix}"
+            if shipped.is_file():
+                return "file", shipped
+        # A directory is a hemisphere pair (L.vtk / R.vtk) rather than a single
+        # surface; build_bmesh routes its members by their own names.
+        grouped = folder / name
+        if grouped.is_dir():
+            return "dir", grouped
 
-    available = sorted(q.stem for q in GLASS_MESH_DIR.glob("*.vtk"))
+    available = sorted(
+        {q.stem for folder in MESH_SEARCH_PATH for suffix in MESH_SUFFIXES
+         for q in folder.glob(f"*{suffix}")}
+        | {q.name for folder in MESH_SEARCH_PATH for q in folder.iterdir()
+           if q.is_dir() and q.name != "parcellations"})
     raise ValueError(
         f"{name!r} is neither a cortical surface {BMESH_NAMES}, a prebuilt mesh "
         f"{available}, nor an existing file path."
     )
+
+
+MESH_SUFFIXES = (".vtk", ".vtp", ".ply", ".stl", ".obj")
+# The pile this package ships, then any sibling folder someone has added.
+MESH_SEARCH_PATH = tuple(
+    [GLASS_MESH_DIR]
+    + sorted(q for q in GLASS_MESH_DIR.parent.iterdir()
+             if q.is_dir() and q != GLASS_MESH_DIR)
+) if GLASS_MESH_DIR.parent.is_dir() else (GLASS_MESH_DIR,)
+
+
+def _side_from_stem(stem):
+    """Which hemisphere a file inside a group belongs to, or None.
+
+    A pair is written either as ``thing_L`` / ``thing_R`` or, in the Lead-DBS
+    sets, as bare ``L`` / ``R``. Without the bare spelling those get cut at the
+    midline as if they were whole brains, which quietly halves each hemisphere.
+    """
+    lowered = stem.lower()
+    if lowered in ("l", "lh", "left"):
+        return "left"
+    if lowered in ("r", "rh", "right"):
+        return "right"
+    # Names that say a side in words or as a dotted segment -- brainMeshRight,
+    # surf.rh.ply. Without these a genuinely one-sided mesh is cut at x = 0 and
+    # a sliver of it is filed under the other hemisphere.
+    parts = set(lowered.replace("-", ".").replace("_", ".").split("."))
+    if lowered.endswith("left") or {"lh", "left"} & parts:
+        return "left"
+    if lowered.endswith("right") or {"rh", "right"} & parts:
+        return "right"
+    if stem.upper().endswith("_L"):
+        return "left"
+    if stem.upper().endswith("_R"):
+        return "right"
+    return None
 
 
 MIDLINE_OFFSET = 0.08
@@ -265,11 +318,26 @@ def build_bmesh(pieces):
         else:
             # Already-lateral files (…_L.vtk / …_R.vtk) go straight to a side;
             # anything spanning the midline is cut.
+            if kind == "dir":
+                for item in sorted(value.iterdir()):
+                    if item.suffix.lower() not in MESH_SUFFIXES:
+                        continue
+                    side = _side_from_stem(item.stem)
+                    mesh = _read(item, item.stem)
+                    if side == "left":
+                        left.append(mesh)
+                    elif side == "right":
+                        right.append(mesh)
+                    else:
+                        lh, rh = _split_at_midline(mesh.triangulate())
+                        left.append(lh)
+                        right.append(rh)
+                continue
             mesh = _read(value, value.stem)
-            stem = value.stem
-            if stem.endswith("_L"):
+            side = _side_from_stem(value.stem)
+            if side == "left":
                 left.append(mesh)
-            elif stem.endswith("_R"):
+            elif side == "right":
                 right.append(mesh)
             else:
                 lh, rh = _split_at_midline(mesh.triangulate())
