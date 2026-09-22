@@ -18,7 +18,13 @@ What a volume becomes depends on what is in it, and ``split`` says which:
 ``components``  one surface per connected blob above the threshold, which is how
                 a multi-cluster statistical map becomes separately colourable
                 pieces without anyone having to label them first.
-``auto``        ``labels`` when the volume looks like a segmentation (integer
+``volumes``     one surface per volume along the 4th dimension -- the usual
+                layout of a probabilistic or multi-map atlas, one parcel per
+                frame. Each frame is "inside" where its value > iso. Names
+                come from ``names`` or a sidecar labels file (see
+                ``frame_names``), otherwise ``<file>_<index>``.
+``auto``        ``volumes`` for a 4D file with more than one frame; otherwise
+                ``labels`` when the volume looks like a segmentation (integer
                 valued, a handful of distinct values), otherwise ``single``.
 
 Auto exists because getting this wrong is expensive in both directions: running
@@ -34,10 +40,12 @@ from pathlib import Path
 
 import numpy as np
 
-__all__ = ["meshes_from_volume", "volume_summary", "SPLITS", "MAX_LABELS",
+__all__ = ["meshes_from_volume", "volume_summary", "frame_names", "n_frames",
+           "label_table", "read_label_table",
+           "SPLITS", "MAX_LABELS",
            "MIN_VOXELS", "MAX_MESHES"]
 
-SPLITS = ("auto", "single", "labels", "components")
+SPLITS = ("auto", "single", "labels", "components", "volumes")
 
 # Above this many distinct values a volume is not a segmentation, whatever its
 # dtype says; it is a parametric map that happens to be integer-valued, and
@@ -75,7 +83,9 @@ def is_backdrop(path):
     return str(path).lower().endswith(".npz")
 
 
-def _load(path):
+def _load(path, frames=False):
+    """``(data, affine)``. A 4D file gives its first volume unless ``frames``,
+    in which case the whole (x, y, z, t) array comes back."""
     import nibabel as nib
 
     path = Path(path).expanduser()
@@ -83,9 +93,145 @@ def _load(path):
         return read_backdrop_npz(path)
     img = nib.load(str(path))
     data = np.asarray(img.dataobj, dtype=np.float32)
-    if data.ndim > 3:
+    if data.ndim > 4:
+        data = data.reshape(data.shape[:3] + (-1,))
+    if data.ndim == 4 and not frames:
         data = data[..., 0]
     return np.nan_to_num(data, nan=0.0, posinf=0.0, neginf=0.0), np.asarray(img.affine, float)
+
+
+def n_frames(path):
+    """Volumes along the 4th dimension (1 for a 3D file or a backdrop)."""
+    import nibabel as nib
+
+    if is_backdrop(path):
+        return 1
+    shape = nib.load(str(Path(path).expanduser())).shape
+    return int(np.prod(shape[3:])) if len(shape) > 3 else 1
+
+
+LABEL_SIDECARS = (".txt", ".csv", ".tsv", ".lut", ".json")
+
+
+def _is_number(token):
+    try:
+        float(token)
+        return True
+    except ValueError:
+        return False
+
+
+def read_label_table(side):
+    """``[(index or None, name, rgb or None), ...]`` in file order.
+
+    Reads a JSON list / {index: name} object, or a text table with one region
+    per line in any of the usual layouts: ``name``; ``index name``; SUIT /
+    MRIcroGL style ``index r g b name``; FreeSurfer style ``index name r g b a``.
+    Numbers after the index are taken as a colour when there are at least three
+    (0-1 or 0-255). Comment (#) and header lines are skipped.
+    """
+    import json
+
+    side = Path(side)
+    rows = []
+    if side.suffix == ".json":
+        raw = json.loads(side.read_text())
+        if isinstance(raw, dict):
+            for key in sorted(raw, key=lambda k: int(k)):
+                rows.append((int(key), str(raw[key]), None))
+        else:
+            rows = [(None, str(v), None) for v in raw]
+        return rows
+    for line in side.read_text().splitlines():
+        parts = [p for p in line.replace(",", " ").replace("\t", " ").split() if p]
+        if not parts or parts[0].startswith("#"):
+            continue
+        index = int(parts[0]) if parts[0].isdigit() else None
+        rest = parts[1:] if index is not None else parts
+        words = [p for p in rest if not _is_number(p)]
+        numbers = [float(p) for p in rest if _is_number(p)]
+        if not words:
+            continue
+        name = " ".join(words)
+        if index is None and name.lower() in ("name", "label", "region", "index name"):
+            continue                      # a header row
+        rgb = None
+        if len(numbers) >= 3:
+            rgb = numbers[:3]
+            if max(rgb) > 1.0:
+                rgb = [v / 255.0 for v in rgb]
+            rgb = [min(max(v, 0.0), 1.0) for v in rgb]
+        rows.append((index, name, rgb))
+    return rows
+
+
+def _sidecars(path):
+    """Label tables that can describe ``path``, most specific first.
+
+    ``<stem>.<ext>``, ``<stem>_labels.<ext>``, then any table in the same folder
+    whose name the volume's name starts with (BIDS: ``atl-Anatom.lut`` describes
+    ``atl-Anatom_space-MNI_dseg.nii``), then ``labels.<ext>``.
+    """
+    path = Path(path).expanduser()
+    stem = path.name.split(".nii")[0]
+    exact = [path.with_name(f"{stem}{ext}") for ext in LABEL_SIDECARS]
+    exact += [path.with_name(f"{stem}_labels{ext}") for ext in LABEL_SIDECARS]
+    prefix = sorted((p for p in path.parent.iterdir()
+                     if p.suffix.lower() in LABEL_SIDECARS and p.is_file()
+                     and stem.startswith(p.stem) and p not in exact),
+                    key=lambda p: -len(p.stem)) if path.parent.is_dir() else []
+    generic = [path.with_name(f"labels{ext}") for ext in LABEL_SIDECARS]
+    return [p for p in exact + prefix + generic if p.is_file()]
+
+
+def label_table(path):
+    """The first readable sidecar table for ``path``, or ``[]``."""
+    for side in _sidecars(path):
+        try:
+            rows = read_label_table(side)
+        except (OSError, ValueError, KeyError):
+            continue
+        if rows:
+            return rows
+    return []
+
+
+def frame_names(path, count):
+    """``(names, colours)`` for the frames of a 4D atlas.
+
+    Frame i takes the i-th row of the sidecar table (see ``label_table``);
+    frames it does not cover are named ``<stem>_<index>``. ``colours`` is a list
+    of rgb triples, or None when the table carries no colours.
+    """
+    stem = Path(path).name.split(".nii")[0]
+    rows = label_table(path)
+    names = [f"{stem}_{i:03d}" for i in range(count)]
+    colours = [None] * count
+    for i, (_index, name, rgb) in enumerate(rows[:count]):
+        names[i], colours[i] = name, rgb
+    return names, (colours if any(c is not None for c in colours) else None)
+
+
+def _crop(mask, affine, margin=6):
+    """``(mask, affine)`` cut to the mask's bounding box plus ``margin`` voxels.
+
+    Meshing upsamples and blurs the WHOLE array it is given, so a small parcel
+    handed over on a full-brain grid costs as much as the whole brain: a 34-frame
+    atlas took ~70 s, cropped ~5 s. The margin covers the presmoothing kernel.
+    Surfaces agree with uncropped ones to within ~0.6 mm / ~4% area on the SUIT
+    atlas: mesh_from_mask's upsampling places the fine grid up to a quarter
+    voxel off its affine, and where that error falls depends on the array's
+    extent, so cropping moves it slightly rather than adding a new one.
+    """
+    hit = np.argwhere(mask)
+    if not hit.size:
+        return mask, affine
+    lo = np.maximum(hit.min(axis=0) - margin, 0)
+    hi = np.minimum(hit.max(axis=0) + margin + 1, mask.shape)
+    shift = np.eye(4)
+    shift[:3, 3] = lo
+    return (mask[lo[0]:hi[0], lo[1]:hi[1], lo[2]:hi[2]],
+            np.asarray(affine, float) @ shift)
 
 
 def _looks_like_labels(data):
@@ -100,15 +246,18 @@ def _looks_like_labels(data):
 def volume_summary(path):
     """What is in a volume, for the UI to show before anything is meshed."""
     data, _ = _load(path)
+    frames = n_frames(path)
     nonzero = data[data != 0]
     labels = _looks_like_labels(data)
     return {
-        "shape": list(data.shape),
+        "shape": list(data.shape) + ([frames] if frames > 1 else []),
+        "frames": frames,
         "min": float(data.min()), "max": float(data.max()),
         "nonzero": int(nonzero.size),
         "distinct": int(len(np.unique(nonzero))) if nonzero.size else 0,
         "looks_like_labels": bool(labels),
-        "suggested_split": "labels" if labels else "single",
+        "suggested_split": ("volumes" if frames > 1 else
+                            "labels" if labels else "single"),
     }
 
 
@@ -121,9 +270,10 @@ def meshes_from_volume(path, iso=None, split="auto", names=None,
     It defaults to 0, which is what a mask or an already-thresholded map wants.
     For a raw statistical map, set it to the same number you would threshold at.
 
-    Pieces under ``min_voxels`` are dropped and at most ``max_meshes`` of the
-    largest are built; ``info["skipped"]`` and ``info["over_cap"]`` name what did
-    not make it.
+    Pieces under ``min_voxels`` are dropped. ``components`` builds at most
+    ``max_meshes`` of the largest blobs; ``labels`` and ``volumes`` are named
+    regions someone asked for, so they are capped only at MAX_LABELS.
+    ``info["skipped"]`` and ``info["over_cap"]`` name what did not make it.
     """
     from calvin_utils.neuroimaging_utils.nifti_utils.parcel_meshes import (
         mesh_from_mask, sanitize_region_name,
@@ -132,7 +282,12 @@ def meshes_from_volume(path, iso=None, split="auto", names=None,
     if split not in SPLITS:
         raise ValueError(f"split must be one of {SPLITS}, got {split!r}")
 
-    data, affine = _load(path)
+    frames = n_frames(path)
+    if split == "auto" and frames > 1:
+        split = "volumes"
+    data, affine = _load(path, frames=(split == "volumes"))
+    if split == "volumes" and data.ndim == 3:
+        data = data[..., None]           # a 3D file is a one-frame stack
     iso = 0.0 if iso is None else float(iso)
     options = dict(DEFAULT_SMOOTHING, **{k: v for k, v in smoothing.items()
                                          if v is not None})
@@ -140,12 +295,31 @@ def meshes_from_volume(path, iso=None, split="auto", names=None,
     if split == "auto":
         split = "labels" if _looks_like_labels(data) else "single"
 
-    masks = {}
-    if split == "labels":
+    masks, colours = {}, {}
+    if split == "volumes":
+        if isinstance(names, (list, tuple)):
+            labels_for, rgb_for = list(names), None
+        else:
+            labels_for, rgb_for = frame_names(path, data.shape[3])
+        for index in range(data.shape[3]):
+            name = sanitize_region_name(str(labels_for[index])) or f"frame_{index:03d}"
+            while name in masks:
+                name += "_"
+            masks[name] = data[..., index] > iso
+            if rgb_for and rgb_for[index] is not None:
+                colours[name] = rgb_for[index]
+    elif split == "labels":
+        table = {} if names else {i: (n, c) for i, n, c in label_table(path) if i is not None}
         for value in np.unique(data[data != 0]):
             label = int(round(float(value)))
-            name = (names or {}).get(label, f"label_{label}")
-            masks[sanitize_region_name(str(name))] = data == value
+            if names:
+                name = names.get(label, f"label_{label}")
+            else:
+                name = table.get(label, (f"label_{label}", None))[0]
+            name = sanitize_region_name(str(name))
+            masks[name] = data == value
+            if label in table and table[label][1] is not None:
+                colours[name] = table[label][1]
     elif split == "components":
         from scipy import ndimage
 
@@ -162,16 +336,23 @@ def meshes_from_volume(path, iso=None, split="auto", names=None,
     sized = [(name, mask, int(mask.sum())) for name, mask in masks.items()]
     too_small = [name for name, _, n in sized if n < int(min_voxels)]
     sized = [item for item in sized if item[2] >= int(min_voxels)]
-    sized.sort(key=lambda item: -item[2])
-    over_cap = [name for name, _, _ in sized[int(max_meshes):]]
-    masks = {name: mask for name, mask, _ in sized[:int(max_meshes)]}
+    cap = int(max_meshes) if split == "components" else MAX_LABELS
+    if split == "components":
+        sized.sort(key=lambda item: -item[2])     # largest first, then capped
+    over_cap = [name for name, _, _ in sized[cap:]]
+    masks = {name: mask for name, mask, _ in sized[:cap]}
 
     meshes, skipped = {}, list(too_small)
     for name, mask in masks.items():
-        surface = mesh_from_mask(mask, affine, verbose=verbose, **options)
+        small, small_affine = _crop(mask, affine)
+        surface = mesh_from_mask(small, small_affine, verbose=verbose, **options)
         if surface is None or not surface.n_points:
             skipped.append(name)      # too small or too thin to close a surface
             continue
+        if name in colours:
+            # Carried on the mesh so the atlas's own colour survives into the
+            # figure; renderers read it back from field_data["atlas_rgb"].
+            surface.field_data["atlas_rgb"] = np.asarray(colours[name], float)
         meshes[name] = surface
 
     if not meshes:
