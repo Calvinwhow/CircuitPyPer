@@ -62,16 +62,39 @@ OUT_ROOT = os.environ.get("SCA_OUT_ROOT", SCA_ROOT)
 # cluster_regression_input.csv are rewritten back to this prefix so the
 # regression pipeline can find the maps on the real filesystem.
 DEVICE_SCA_ROOT = os.environ.get("SCA_DEVICE_ROOT", "")
-MASK_PATH = str(CIRCUIT_PYPER_DIR / "resources" / "MNI152_T1_2mm_brain_mask.nii")
+# Masks, per modality. Like regression_pipeline.py, this is an opaque path --
+# GiiNiiFileImport picks the backend from the file it is asked to read, so
+# nothing here knows or cares what a fiber is.
+VOLUME_MASK = str(CIRCUIT_PYPER_DIR / "resources" / "MNI152_T1_2mm_brain_mask.nii")
+FIBER_ATLAS = os.environ.get(
+    "FIBER_ATLAS", "/Volumes/OneTouch/resources/Atlas_tck_MNI/Atlas_all30_MNI.npz")
 
 # Which result trees to cluster, and the image each analysis contributes.
-MODALITIES = ["network", "vlsm", "fiber"]
+MODALITIES = [m for m in os.environ.get("ONLY_MODALITIES", "network,vlsm,fiber").split(",") if m]
 TREE_DIRNAME = {                        # <SCA_ROOT>/<dirname>/<var>-on-<x>/regression/
-    "network": "network_regressions",
-    "vlsm": "vlsm_regressions",
-    "fiber": "fiber_regressions",
+    "network": os.environ.get("SCA_TREE_NETWORK", "network_regressions"),
+    "vlsm": os.environ.get("SCA_TREE_VLSM", "vlsm_regressions"),
+    "fiber": os.environ.get("SCA_TREE_FIBER", "fiber_regressions"),
 }
-FILE_TARGET = "contrast_tval_0.nii.gz"  # uncorrected t-map per symptom
+# The map each analysis contributes, and the mask to read it against. One entry
+# per modality; both are passed straight through to the importer.
+FILE_TARGET = {
+    "network": os.environ.get("FILE_TARGET_NETWORK", "contrast_tval_0.nii.gz"),
+    "vlsm": os.environ.get("FILE_TARGET_VLSM", "contrast_tval_0.nii.gz"),
+    "fiber": os.environ.get("FILE_TARGET_FIBER", "contrast_tval_0.fib.npy"),
+}
+MASK_PATH = {
+    "network": os.environ.get("MASK_NETWORK", VOLUME_MASK),
+    "vlsm": os.environ.get("MASK_VLSM", VOLUME_MASK),
+    "fiber": os.environ.get("MASK_FIBER", FIBER_ATLAS),
+}
+
+# Column name for the map path in cluster_regression_input.csv. Whatever the
+# regression config names in VOXELWISE_VARS; it holds paths, not a file type.
+PATH_COLUMN = os.environ.get("PATH_COLUMN", "Image_File_Path")
+
+# Suffix appended to the tree name to name its output folder.
+CLUSTER_SUFFIX = os.environ.get("CLUSTER_SUFFIX", "_clusters")
 
 # Symptom -> domain. Anything not named here falls through to the CNRS
 # neuropsychiatric battery, which is the emotional domain.
@@ -97,7 +120,9 @@ DOMAIN_ORDER = ["motor", "cognitive", "emotional"]
 # 0.79 (fiber); with it, 1.00 everywhere. The flipped set is exactly the
 # cognitive domain, so the cognitive cluster in particular depends on this sign
 # convention being the right one.
-COLS_TO_FLIP = ["Raw", "VerbalRegSum"]
+# On the HigherIsWorse spreadsheet every score already runs the same way, so the
+# flip must be turned OFF (COLS_TO_FLIP="") or it re-inverts the cognitive maps.
+COLS_TO_FLIP = [c for c in os.environ.get("COLS_TO_FLIP", "Raw,VerbalRegSum").split(",") if c]
 
 # Aggregate scores are sums of items already in the set. Keeping them makes the
 # emotional domain 53 of 72 maps and it fragments: measured at FINAL_PARAMS,
@@ -114,16 +139,18 @@ AGGREGATE_PATTERNS = [
 ]
 
 # What to do: "sweep" searches, "final" runs FINAL_PARAMS, "both" does each in turn.
-MODE = "final"
+MODE = os.environ.get("CLUSTER_MODE", "final")
 
 # Parameter grid. UMAP is refit once per (metric, n_components, n_neighbors,
 # min_dist) and every min_cluster_size is then scored off that one embedding,
 # so min_cluster_size is nearly free -- widen it before widening the others.
-SWEEP_METRIC = ["cosine", "correlation", "euclidean"]
-SWEEP_N_COMPONENTS = [3]
-SWEEP_N_NEIGHBORS = [5, 8, 10, 12, 15, 20, 25, 30]
-SWEEP_MIN_DIST = [0.0, 0.01, 0.05, 0.1, 0.25]
-SWEEP_MIN_CLUSTER_SIZE = [3, 4, 5, 6, 8, 10]
+# Each of these can be narrowed from the environment so a long sweep can be run
+# in chunks (one metric per invocation, say) instead of one unbounded job.
+SWEEP_METRIC = [str(x) for x in os.environ.get("SWEEP_METRIC", "cosine,correlation,euclidean").split(",") if x]
+SWEEP_N_COMPONENTS = [int(x) for x in os.environ.get("SWEEP_N_COMPONENTS", "3").split(",") if x]
+SWEEP_N_NEIGHBORS = [int(x) for x in os.environ.get("SWEEP_N_NEIGHBORS", "5,8,10,12,15,20,25,30").split(",") if x]
+SWEEP_MIN_DIST = [float(x) for x in os.environ.get("SWEEP_MIN_DIST", "0.0,0.01,0.05,0.1,0.25").split(",") if x]
+SWEEP_MIN_CLUSTER_SIZE = [int(x) for x in os.environ.get("SWEEP_MIN_CLUSTER_SIZE", "3,4,5,6,8,10").split(",") if x]
 
 REQUIRED_N_CLUSTERS = 3                 # exactly three, noise excluded
 MAX_NOISE_FRACTION = 0.50               # reject runs that call most maps noise
@@ -133,8 +160,11 @@ MAX_NOISE_FRACTION = 0.50               # reject runs that call most maps noise
 # cluster-by-domain table (accuracy 1.00, zero noise) in all three modalities,
 # so the sweep exists to map how wide that plateau is, not to rescue a bad fit.
 FINAL_PARAMS = dict(
-    n_components=3, n_neighbors=12, min_dist=0.0,
-    metric="cosine", min_cluster_size=5,
+    n_components=int(os.environ.get("FINAL_N_COMPONENTS", 3)),
+    n_neighbors=int(os.environ.get("FINAL_N_NEIGHBORS", 12)),
+    min_dist=float(os.environ.get("FINAL_MIN_DIST", 0.0)),
+    metric=os.environ.get("FINAL_METRIC", "cosine"),
+    min_cluster_size=int(os.environ.get("FINAL_MIN_CLUSTER_SIZE", 5)),
 )
 
 # Fixed BrainUmap arguments, straight from the notebook.
@@ -171,8 +201,8 @@ def load_modality(modality):
     giinii = GiiNiiFileImport(
         import_path=import_path,
         file_column=None,
-        file_pattern=FILE_TARGET,
-        mask_path=MASK_PATH,
+        file_pattern=FILE_TARGET[modality],
+        mask_path=MASK_PATH[modality],
     )
     nimg_df = giinii.run()
 
@@ -358,7 +388,7 @@ def choose_shared_parameters(sweep_df):
 
 
 def out_dir_for(modality):
-    return Path(OUT_ROOT) / f"{TREE_DIRNAME[modality]}_clusters"
+    return Path(OUT_ROOT) / f"{TREE_DIRNAME[modality]}{CLUSTER_SUFFIX}"
 
 
 def run_final(modality, nimg_df, symptoms, domains, params):
@@ -381,7 +411,7 @@ def run_final(modality, nimg_df, symptoms, domains, params):
         "cluster_label": labels,
         "cluster_domain": [result["mapping"].get(int(l), "noise") for l in labels],
         "cluster_probability": umapper.cluster_probabilities,
-        "nifti_path": [str(c) for c in nimg_df.columns],
+        "map_path": [str(c) for c in nimg_df.columns],
     })
     assignments["agrees_with_domain"] = (
         assignments["domain"] == assignments["cluster_domain"]
@@ -409,9 +439,9 @@ def write_regression_input(out_dir, assignments):
     table = assignments[assignments["cluster_label"] >= 0].copy()
 
     rows = pd.DataFrame({
-        "Nifti_File_Path": [
+        PATH_COLUMN: [
             str(p).replace(str(SCA_ROOT), DEVICE_SCA_ROOT) if DEVICE_SCA_ROOT else str(p)
-            for p in table["nifti_path"]
+            for p in table["map_path"]
         ],
         "symptom": table["symptom"].to_numpy(),
         "domain": table["domain"].to_numpy(),

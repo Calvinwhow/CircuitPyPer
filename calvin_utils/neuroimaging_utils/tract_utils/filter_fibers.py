@@ -42,7 +42,7 @@ class filter_fibers:
     a dataframe containing patient NIfTI paths, builds a voxel index for a shared
     fiber atlas, samples every patient NIfTI against that atlas, and writes:
 
-    1. one ``.npy`` vector per patient, shape ``(n_fibers,)``
+    1. one ``.fib.npy`` vector and ``.fib.json`` descriptor per patient
     2. an optional cohort matrix, shape ``(n_patients, n_fibers)``
     3. a manifest CSV/JSON tying dataframe rows to generated fiber vectors
 
@@ -89,11 +89,12 @@ class filter_fibers:
 
     Return value
     ------------
-    ``run()`` returns a copy of the input dataframe with a new
-    ``fiber_profile_path`` column. Full run metadata remains available through
+    ``run()`` returns a copy of the input dataframe with new ``fiber_path`` and
+    ``fiber_json_path`` columns. Full run metadata remains available through
     ``get_result()`` or ``self.result`` after ``run()`` completes:
 
-        ``profile_paths``: list of per-patient ``.npy`` files
+        ``profile_paths``: list of per-patient ``.fib.npy`` files
+        ``profile_descriptor_paths``: matching per-patient ``.fib.json`` files
         ``matrix``: stacked ``float32`` matrix, shape ``(n_patients, n_fibers)``
         ``matrix_path``: path to saved matrix, or None
         ``manifest_csv``: path to saved manifest CSV
@@ -148,6 +149,7 @@ class filter_fibers:
         self.indexer = None
         self.mapper = None
         self.profile_paths = []
+        self.profile_descriptor_paths = []
         self.matrix = None
         self.matrix_path = None
         self.manifest_csv = None
@@ -208,7 +210,11 @@ class filter_fibers:
         )
 
     def build_mapper(self):
-        self.mapper = FiberConnectivity(fiber_indexer=self.indexer, mode=self.mode)
+        self.mapper = FiberConnectivity(
+            fiber_indexer=self.indexer,
+            mode=self.mode,
+            fiber_atlas_path=self.fiber_atlas_path,
+        )
 
     def _get_fname(self, nifti_path):
         fiber_dir = Path(nifti_path).parents[1] / "fibers"      # make a parallel dir
@@ -232,8 +238,9 @@ class filter_fibers:
             nifti_path = Path(nifti_path)
             vector = self.mapper.generate_connectivity_profile(nifti_path=str(nifti_path), binarize=self.binarize, threshold=self.threshold)
             fname = self._get_fname(nifti_path)
-            np.save(fname, vector.astype(np.float32))
+            descriptor_path = self.mapper.save_profile(vector, fname)
             self.profile_paths.append(fname)
+            self.profile_descriptor_paths.append(descriptor_path)
             vectors.append(vector)
         self.matrix = np.vstack(vectors).astype(np.float32)
 
@@ -245,6 +252,9 @@ class filter_fibers:
 
     def attach_profile_paths_to_df(self):
         self.df["fiber_path"] = [str(path) for path in self.profile_paths]
+        self.df["fiber_json_path"] = [
+            str(path) for path in self.profile_descriptor_paths
+        ]
 
     def save_manifest(self):
         self.manifest_csv = self.out_dir / f"{self.manifest_name}.csv"
@@ -256,6 +266,9 @@ class filter_fibers:
         self.result = {
             "df": self.df,
             "profile_paths": [str(path) for path in self.profile_paths],
+            "profile_descriptor_paths": [
+                str(path) for path in self.profile_descriptor_paths
+            ],
             "matrix": self.matrix,
             "matrix_path": str(self.matrix_path) if self.matrix_path is not None else None,
             "manifest_csv": str(self.manifest_csv),
@@ -285,6 +298,9 @@ class filter_fibers:
             "n_patients": len(self.nifti_paths),
             "n_fibers": int(self.matrix.shape[1]) if self.matrix is not None else None,
             "profile_paths": [str(path) for path in self.profile_paths],
+            "profile_descriptor_paths": [
+                str(path) for path in self.profile_descriptor_paths
+            ],
         }
 
     def _progress(self, iterable, **kwargs):

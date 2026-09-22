@@ -20,25 +20,24 @@ class FiberFormatConverter:
     Fiber objects are shaped like:
         fiber_i = ndarray, shape (n_vertices, 3) or (n_vertices, 4)
 
-    Lightweight native results use a paired-file contract::
+    Native results use a paired-file contract::
 
-        <stem>.fib.values.npy one scalar per canonical atlas fiber
-        <stem>.fib.desc.json  descriptor identifying that atlas and ordering
+        <stem>.fib.npy  one scalar per canonical atlas fiber
+        <stem>.fib.json descriptor identifying that atlas and ordering
 
-    ``load_fib_npy`` and ``convert_fib_npy_to_tck`` always require and resolve
-    the descriptor for ``*.fib.values.npy``. The descriptor itself may also be
-    supplied as the input path because it records the values vector location.
+    ``load_fib_npy`` and ``convert_fib_npy_to_tck`` require and resolve the
+    descriptor for new numeric ``*.fib.npy`` results. The descriptor itself may
+    also be supplied as the input path because it records the values vector.
     The loaders verify that the descriptor belongs to the vector, validate its
-    SHA-256,
-    vector, validate its SHA-256, check the atlas file size, and finally require
-    equal atlas/value counts. The relative atlas path is tried before the
+    SHA-256, check the atlas file size, and finally require equal atlas/value
+    counts. The relative atlas path is tried before the
     absolute path so a result tree remains usable after being moved together
     with its resources. An explicit atlas may identify a relocated copy but
     does not replace the descriptor.
 
-    Legacy geometry-bearing ``*.fib.npy`` files remain self-contained. Numeric
-    one-dimensional ``*.fib.npy`` files predate the descriptor convention and
-    therefore still require an explicit ``fiber_atlas_path``.
+    Legacy ``*.fib.values.npy``/``*.fib.desc.json`` pairs and self-contained
+    geometry-bearing ``*.fib.npy`` files remain readable. Bare one-dimensional
+    ``*.fib.npy`` files also remain readable with an explicit atlas.
     """
 
     def __init__(self, reference_path):
@@ -64,6 +63,8 @@ class FiberFormatConverter:
             return "trk"
         if suffix == ".tck":
             return "tck"
+        if suffix == ".trx":
+            return "trx"
         if suffix == ".fib":
             return "fib"
         if suffix == ".fibfilt":
@@ -82,6 +83,7 @@ class FiberFormatConverter:
     def _load_fibers(path):
         """
         Load saved fibers from:
+        - .trk/.tck/.trx tractogram
         - .npy object array
         - .npz with key 'fibers'
         - .json with key 'fibers'
@@ -91,7 +93,14 @@ class FiberFormatConverter:
         """
         ftype = FiberFormatConverter._identify_file_type(path)
 
-        if ftype == "npy":
+        if ftype in {"trk", "tck", "trx"}:
+            tractogram = nib.streamlines.load(str(path)).tractogram
+            fibers = [
+                np.asarray(streamline, dtype=np.float32)[:, :3]
+                for streamline in tractogram.streamlines
+            ]
+
+        elif ftype == "npy":
             obj = np.load(path, allow_pickle=True)
             if not (isinstance(obj, np.ndarray) and obj.dtype == object):
                 raise ValueError(f"Expected object-array fiber file in {path}")
@@ -141,13 +150,19 @@ class FiberFormatConverter:
     def values_description_path(values_path):
         """Return the required sibling descriptor for a fiber values file.
 
-        Canonical ``map.fib.values.npy`` and legacy ``map.values.npy`` both map
-        to ``map.fib.desc.json``.
+        New ``map.fib.npy`` maps to ``map.fib.json``. Legacy
+        ``map.fib.values.npy`` and ``map.values.npy`` continue to map to
+        ``map.fib.desc.json``.
         """
         values_path = Path(values_path).expanduser()
         name = values_path.name
-        if not name.lower().endswith(".values.npy"):
-            raise ValueError(f"Expected a .values.npy path, got: {values_path}")
+        lower_name = name.lower()
+        if lower_name.endswith(".fib.npy"):
+            return values_path.with_name(f"{name[:-4]}.json")
+        if not lower_name.endswith(".values.npy"):
+            raise ValueError(
+                f"Expected a .fib.npy or .values.npy path, got: {values_path}"
+            )
         base = name[:-11]
         if not base.lower().endswith(".fib"):
             base += ".fib"
@@ -155,7 +170,7 @@ class FiberFormatConverter:
 
     @classmethod
     def values_from_description(cls, description_path):
-        """Resolve the values vector recorded by ``*.fib.desc.json``.
+        """Resolve the values vector recorded by a fiber JSON descriptor.
 
         New descriptors contain absolute and relative paths; the relative path
         is preferred so a result directory can move as a unit. Older
@@ -381,12 +396,11 @@ class FiberFormatConverter:
     ):
         """Load and filter a geometry-bearing or value-only fiber result.
 
-        ``fib_path`` may be ``*.fib.desc.json``, a self-contained object-array
-        ``*.fib.npy``, a
-        legacy numeric ``*.fib.npy`` plus explicit ``fiber_atlas_path``, or a
-        canonical ``*.fib.values.npy`` (or legacy ``*.values.npy``) paired with
-        ``*.fib.desc.json``. An explicit atlas may point to a relocated copy,
-        but it does not make the descriptor optional.
+        ``fib_path`` may be a new ``*.fib.json``/``*.fib.npy`` pair, a legacy
+        ``*.fib.desc.json``/``*.fib.values.npy`` pair, a self-contained
+        geometry-bearing ``*.fib.npy``, or a bare numeric ``*.fib.npy`` plus an
+        explicit ``fiber_atlas_path``. An explicit atlas may point to a
+        relocated copy recorded by a descriptor.
 
         Returns ``(streamlines, selected_values, n_input_fibers)`` after
         applying ``sign``, ``min_abs_value``, and ``top_percent``. Geometry and
@@ -395,12 +409,12 @@ class FiberFormatConverter:
         fib_path = Path(fib_path).expanduser()
         if not fib_path.is_file():
             raise FileNotFoundError(fib_path)
-        if fib_path.name.lower().endswith(".fib.desc.json"):
+        if fib_path.name.lower().endswith((".fib.json", ".fib.desc.json")):
             fib_path = cls.values_from_description(fib_path)
         if not fib_path.name.lower().endswith((".fib.npy", ".values.npy")):
             raise ValueError(
-                "Expected a .fib.desc.json, .fib.values.npy, legacy "
-                f".values.npy, or .fib.npy input, got: {fib_path}"
+                "Expected a .fib.json, .fib.npy, legacy .fib.desc.json/"
+                f".fib.values.npy, or .values.npy input, got: {fib_path}"
             )
 
         stored = np.load(fib_path, allow_pickle=True)
@@ -421,14 +435,19 @@ class FiberFormatConverter:
                 raise ValueError(
                     f"A fiber value vector must be one-dimensional, got {stored.shape}."
                 )
-            if fib_path.name.lower().endswith(".values.npy"):
+            description_path = cls.values_description_path(fib_path)
+            if (
+                fib_path.name.lower().endswith(".values.npy")
+                or description_path.is_file()
+            ):
                 fiber_atlas_path = cls.atlas_from_values_description(
                     fib_path, atlas_override=fiber_atlas_path
                 )
             elif fiber_atlas_path is None:
                 raise ValueError(
-                    "This legacy file contains values only. Set TRACT_ATLAS_PATH "
-                    "to the canonical .npz/.npy fiber atlas that supplies its geometry."
+                    f"Fiber values require the paired descriptor: {description_path}. "
+                    "For a legacy bare vector, explicitly supply the canonical "
+                    ".npz/.npy fiber atlas."
                 )
             streamlines = [
                 cls._as_streamline(fiber)
@@ -641,16 +660,16 @@ class FiberFormatConverter:
     ):
         """Convert atlas geometry or a native result directly to TrackVis.
 
-        Canonical ``*.fib.values.npy`` or ``*.fib.desc.json`` inputs are
-        resolved through their descriptor, then combined with the atlas only
-        in memory. No
-        intermediate ``*.fib.npy`` is written. The selected statistic is
+        New ``*.fib.npy``/``*.fib.json`` and legacy
+        ``*.fib.values.npy``/``*.fib.desc.json`` inputs are resolved through
+        their descriptor, then combined with the atlas only in memory. No
+        intermediate geometry file is written. The selected statistic is
         attached as TrackVis per-streamline and per-point ``magnitude`` data.
         Legacy geometry files and bare atlas containers remain supported.
         """
         fiber_file_path = Path(fiber_file_path).expanduser()
         if fiber_file_path.name.lower().endswith(
-            (".values.npy", ".fib.desc.json")
+            (".fib.npy", ".values.npy", ".fib.json", ".fib.desc.json")
         ):
             streamlines, values, _ = self.load_fib_npy(
                 fiber_file_path,
@@ -693,6 +712,8 @@ class FiberFormatConverter:
                 stem = p.name[:-15]
             elif lower_name.endswith(".values.npy"):
                 stem = p.name[:-11]
+            elif lower_name.endswith(".fib.json"):
+                stem = p.name[:-9]
             elif lower_name.endswith(".fib.desc.json"):
                 stem = p.name[:-14]
             elif lower_name.endswith(".fib.npy"):
@@ -720,7 +741,7 @@ if __name__ == "__main__":
         "--inputs",
         nargs="+",
         required=True,
-        help="Input fiber files (.fib.desc.json, .fib.values.npy, legacy .fib.npy, .npz, .npy, .json)"
+        help="Input fiber files (.fib.json/.fib.npy, legacy .fib.desc.json/.fib.values.npy, .npz, .npy, .json)"
     )
 
     parser.add_argument(

@@ -6,7 +6,7 @@ import os
 import json
 import numpy as np
 import pandas as pd
-
+from scipy.stats import rankdata
 from calvin_utils.file_utils.import_functions import GiiNiiFileImport
 
 class RegressionPrep:
@@ -38,7 +38,8 @@ class RegressionPrep:
         - neuroimaging_interactions (list of str, optional): Interaction terms involving neuroimaging variables.
         - mask_path (str, optional): Optional backend-specific mask argument passed through to importers.
         - exchangeability_block (np.ndarray, optional): 1D array of integers indicating exchangeability blocks.
-        - weights (np.ndarray or list, optional): Positive regression weights.
+        - weights (np.ndarray or list, optional): Nonzero regression weights. A negative
+          weight flips that observation's outcome (x -1) and contributes |w|.
         - data_transform_method (str, optional): 'standardize', 'rank', or None.
 
         Notes:
@@ -57,7 +58,7 @@ class RegressionPrep:
         
         self.exchangeability_block = exchangeability_block
         self.data_transform_method = data_transform_method
-        self.weights_vector = self.get_weights(weights)
+        self.weights_vector, self.outcome_signs = self.get_weights(weights)
         self.formula=formula
 
         if neuroimaging_variables is None:
@@ -97,19 +98,21 @@ class RegressionPrep:
     def get_weights(self, values):
         n_obs = self.design_matrix.shape[0] if hasattr(self, 'design_matrix') else None
         if values is None:
-            _weights = np.ones(n_obs, dtype=float)
-        else:
-            _weights = np.array(values, dtype=float)
-            _weights = _weights / np.sum(_weights)
-            if n_obs is not None and _weights.shape[0] != n_obs:
-                raise ValueError(
-                    f"weights must have same length as number of observations ({n_obs}), got {_weights.shape[0]}"
-                )
-            if np.any(np.isnan(_weights)):
-                raise ValueError("weights must not contain NaNs")
-            if np.any(_weights <= 0):
-                raise ValueError("weights must be positive")
-        return _weights
+            return np.ones(n_obs, dtype=float), None
+        _weights = np.array(values, dtype=float)
+        if n_obs is not None and _weights.shape[0] != n_obs:
+            raise ValueError(
+                f"weights must have same length as number of observations ({n_obs}), got {_weights.shape[0]}"
+            )
+        if np.any(np.isnan(_weights)):
+            raise ValueError("weights must not contain NaNs")
+        if np.any(_weights == 0):
+            raise ValueError("weights must be nonzero")
+        # A negative weight means "use this observation flipped": the outcome is
+        # multiplied by -1 in _get_outcome_data and the regression weight is |w|.
+        signs = np.sign(_weights) if np.any(_weights < 0) else None
+        _weights = np.abs(_weights)
+        return _weights / np.sum(_weights), signs
 
     def _get_neuroimaging_regressors(self):
         neuroimaging_regressors = self._prepare_neuroimaging_terms()
@@ -117,10 +120,12 @@ class RegressionPrep:
 
     def _get_design_tensor(self):
         design_tensor = self._prepare_design_matrix(self.neuroimaging_regressors)
-        return self._clean(design_tensor)
+        return self._clean(design_tensor, keep_categorical=True)
 
     def _get_outcome_data(self):
         outcome_data = self._prepare_outcome_data()
+        if self.outcome_signs is not None:
+            outcome_data = outcome_data * self.outcome_signs[:, None, None]
         return self._clean(outcome_data)
 
     ### I/O ###
@@ -173,24 +178,57 @@ class RegressionPrep:
         return arr
 
     ### Data Preprocessing ###
-    def _clean(self, arr, verbose=False):
+    def _clean(self, arr, verbose=False, keep_categorical=False, max_unique=2):
+        """Handle NaNs, then transform across observations.
+
+        keep_categorical (design only): regressor columns with <= max_unique
+        distinct values across observations -- 0/1 indicators such as cluster
+        membership -- are passed through untransformed. Ranking or z-scoring an
+        indicator centres it, and a set of centred indicators without an
+        intercept is rank-deficient, so per-group contrasts become meaningless.
+        """
         if verbose:
             print(arr.shape)
 
-        arr = self._handle_nans(arr)
-        if self.data_transform_method == 'standardize':
-            arr = self._standardize(arr)
-        if self.data_transform_method == 'rank':
-            arr = self._rank_across_subjects(arr)
+        return self.transform_array(
+            arr,
+            self.data_transform_method,
+            keep_categorical=keep_categorical,
+            max_unique=max_unique,
+        )
+
+    @classmethod
+    def transform_array(cls, arr, data_transform_method, *,
+                        keep_categorical=False, max_unique=2):
+        """Apply the canonical RegressionPrep transform to an array."""
+        if data_transform_method not in {'standardize', 'rank', None}:
+            raise ValueError(
+                "data_transform_method must be 'standardize', 'rank', or None."
+            )
+        arr = cls._handle_nans(arr)
+        original = arr
+        if data_transform_method == 'standardize':
+            arr = cls._standardize(arr)
+        if data_transform_method == 'rank':
+            arr = cls._rank_across_subjects(arr)
+        if keep_categorical and arr is not original and original.ndim == 3:
+            # Only tabular regressors (identical at every location); imaging
+            # regressors are always transformed, whatever their values.
+            for j in range(original.shape[1]):
+                column = original[:, j, :]
+                if (np.all(column == column[:, :1])
+                        and np.unique(column[:, 0]).size <= max_unique):
+                    arr[:, j, :] = column
         return arr
 
-    def _handle_nans(self, arr, value=0):
-        print(arr.shape)
+    @staticmethod
+    def _handle_nans(arr, value=0):
         max_val = np.nanmax(arr)
         min_val = np.nanmin(arr)
         return np.nan_to_num(arr, nan=value, posinf=max_val, neginf=min_val)
 
-    def _standardize(self, data: np.ndarray, axis: int = 0, skip_ordinals: bool = True, max_unique: int = 10):
+    @staticmethod
+    def _standardize(data: np.ndarray, axis: int = 0, skip_ordinals: bool = True, max_unique: int = 10):
         std = data.std(axis=axis, keepdims=True)
         scale_mask = std > 1e-12
 
@@ -204,20 +242,31 @@ class RegressionPrep:
         z = np.where(scale_mask, (data - mean) / (std + 1e-8), data)
         return z
 
-    def _rank_across_subjects(self, arr: np.ndarray) -> np.ndarray:
+    @staticmethod
+    def _rank_across_subjects(arr: np.ndarray, handle_ties: bool = True) -> np.ndarray:
+        """
+        Efficient rank. If perfect tie handling is needed, use scipy.rankdata
+        (slower). For maximum speed, use handle_ties=False--it is perfectly equivalent to the
+        scipy.rankdata algorithm in the absence of ties. In presence of ties, it is approximate.
+        """
         subj = arr.shape[0]
         flat = arr.reshape(subj, -1)
 
-        idx = np.argsort(flat, axis=0, kind='mergesort')
-        ranks = np.empty_like(flat, dtype=np.float32)
-        rows = np.arange(subj, dtype=np.float32)[:, None]
-        ranks[idx, np.arange(flat.shape[1])] = rows + 1
+        if handle_ties:
+            ranks = rankdata(flat, axis=0, method="average").astype(np.float32)
 
-        ranks = ranks - ranks.mean(axis=0, keepdims=True)
+        else:
+            idx = np.argsort(flat, axis=0, kind="mergesort")
+            ranks = np.empty_like(flat, dtype=np.float32)
+            rows = np.arange(subj, dtype=np.float32)[:, None]
+            ranks[idx, np.arange(flat.shape[1])] = rows + 1
 
-        const_mask = np.ptp(flat, axis=0) == 0
-        if const_mask.any():
-            ranks[:, const_mask] = 0
+        ranks -= ranks.mean(axis=0, keepdims=True)
+
+        if not handle_ties:
+            const_mask = np.ptp(flat, axis=0) == 0
+            if const_mask.any():
+                ranks[:, const_mask] = 0
 
         return ranks.reshape(arr.shape)
 

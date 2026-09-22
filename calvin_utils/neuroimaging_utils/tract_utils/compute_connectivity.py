@@ -27,18 +27,21 @@ import nibabel as nib
 from pathlib import Path
 from tqdm import tqdm
 from calvin_utils.neuroimaging_utils.tract_utils.fiber_intersection import FiberVoxelIndexer
+from calvin_utils.neuroimaging_utils.tract_utils.fiber_io import FiberIO
 
 class FiberConnectivity:
     """
     Generate individualized per-fiber connectivity profiles from patient NIfTIs.
 
     Output format:
-        One .npy file per patient, containing a 1D float32 vector of shape (n_fibers,)
+        One ``.fib.npy``/``.fib.json`` pair per patient. The NumPy file is a
+        1D float32 vector of shape ``(n_fibers,)`` and the JSON records its
+        canonical atlas.
 
     That is the format expected by FiberIO._load_single_fiber_values(...).
     """
 
-    def __init__(self, fiber_indexer, mode='max'):
+    def __init__(self, fiber_indexer, mode='max', fiber_atlas_path=None):
         """        
         mode:
             'binary' -> 1 if any hit, else 0
@@ -47,10 +50,19 @@ class FiberConnectivity:
             'sum'    -> sum of voxel values hit by that fiber
         """
         self.fiber_indexer = fiber_indexer
-        self.reference_shape = fiber_indexer.reference_shape
-        self.reference_affine = fiber_indexer.reference_affine
-        self.reference_img = fiber_indexer.reference_img
+        self.reference_shape = (
+            fiber_indexer.reference_shape if fiber_indexer is not None else None
+        )
+        self.reference_affine = (
+            fiber_indexer.reference_affine if fiber_indexer is not None else None
+        )
+        self.reference_img = (
+            fiber_indexer.reference_img if fiber_indexer is not None else None
+        )
         self.mode = mode
+        self.fiber_atlas_path = (
+            Path(fiber_atlas_path) if fiber_atlas_path is not None else None
+        )
 
     def _load_patient_nifti(self, nifti_path):
         img = nib.load(nifti_path)
@@ -225,9 +237,24 @@ class FiberConnectivity:
 
         return stem
 
-    def save_profile(self, fiber_values, out_path):
+    def save_profile(self, fiber_values, out_path, fiber_atlas_path=None):
+        atlas_path = (
+            Path(fiber_atlas_path)
+            if fiber_atlas_path is not None
+            else self.fiber_atlas_path
+        )
+        if atlas_path is None:
+            raise ValueError(
+                "Saving a fiber profile requires fiber_atlas_path so its "
+                ".fib.json descriptor can be written."
+            )
+        out_path = Path(out_path)
+        if not out_path.name.lower().endswith(".fib.npy"):
+            raise ValueError(f"Fiber profile output must end with .fib.npy: {out_path}")
+        out_path.parent.mkdir(parents=True, exist_ok=True)
         fiber_values = np.asarray(fiber_values, dtype=np.float32).flatten()
         np.save(out_path, fiber_values)
+        return FiberIO.write_values_description(out_path, atlas_path)
 
     def save_profiles_from_niftis(
         self,
@@ -238,13 +265,25 @@ class FiberConnectivity:
         suffix='_fiber_connectivity',
         save_matrix=True,
         matrix_name='cohort_fiber_connectivity_matrix.npy',
+        fiber_atlas_path=None,
     ):
         """
-        Write one .npy vector per patient, each shape (n_fibers,).
+        Write one .fib.npy/.fib.json pair per patient, each vector shaped
+        (n_fibers,).
 
         Optional:
             save_matrix=True also writes a stacked matrix shape (n_patients, n_fibers)
         """
+        atlas_path = (
+            Path(fiber_atlas_path)
+            if fiber_atlas_path is not None
+            else self.fiber_atlas_path
+        )
+        if atlas_path is None:
+            raise ValueError(
+                "Saving fiber profiles requires fiber_atlas_path so each "
+                ".fib.json can identify its geometry."
+            )
         os.makedirs(out_dir, exist_ok=True)
 
         matrix = []
@@ -257,9 +296,13 @@ class FiberConnectivity:
             )
             matrix.append(vec)
 
-            stem = self._safe_stem(nifti_path)
-            out_path = os.path.join(out_dir, f"{stem}{suffix}.npy")
-            self.save_profile(vec, out_path)
+            stem = self._safe_stem(nifti_path, bids_style=False)
+            out_path = os.path.join(out_dir, f"{stem}{suffix}.fib.npy")
+            self.save_profile(
+                vec,
+                out_path,
+                fiber_atlas_path=atlas_path,
+            )
 
         if save_matrix:
             mat = np.vstack(matrix).astype(np.float32)
@@ -271,6 +314,7 @@ class FiberConnectivity:
         reference_nifti_path,
         nifti_paths,
         out_dir,
+        mode=None,
         binarize=True,
         threshold=0,
         suffix='_fiber_connectivity',
@@ -280,7 +324,8 @@ class FiberConnectivity:
         matrix_name='fiber_connectivity_matrix.npy',
     ):
         """
-        Convenience wrapper that rebuilds the indexer from tract files and writes patient .npy files.
+        Convenience wrapper that rebuilds the indexer and writes patient
+        .fib.npy/.fib.json pairs.
         """
         self.fiber_indexer = FiberVoxelIndexer.from_fiber_file(
             fiber_file_path=fiber_file_path,
@@ -291,6 +336,9 @@ class FiberConnectivity:
         self.reference_shape = self.fiber_indexer.reference_shape
         self.reference_affine = self.fiber_indexer.reference_affine
         self.reference_img = self.fiber_indexer.reference_img
+        self.fiber_atlas_path = Path(fiber_file_path)
+        if mode is not None:
+            self.mode = mode
 
         self.save_profiles_from_niftis(
             nifti_paths=nifti_paths,
@@ -300,6 +348,7 @@ class FiberConnectivity:
             suffix=suffix,
             save_matrix=save_matrix,
             matrix_name=matrix_name,
+            fiber_atlas_path=fiber_file_path,
         )
 
 if __name__ == "__main__":
@@ -310,7 +359,7 @@ if __name__ == "__main__":
     parser.add_argument("--fiber_file", required=True, help="Path to tract file (.trk/.tck/.npy/etc)")
     parser.add_argument("--reference_nifti", required=True, help="Reference NIfTI defining voxel space")
     parser.add_argument("--niftis", nargs="+", required=True, help="List of patient NIfTI files")
-    parser.add_argument("--out_dir", required=True, help="Output directory for .npy fiber profiles")
+    parser.add_argument("--out_dir", required=True, help="Output directory for .fib.npy/.fib.json fiber profiles")
 
     parser.add_argument("--mode", default="binary", choices=["binary", "max", "mean", "sum"], help="Aggregation mode")
     parser.add_argument("--threshold", type=float, default=0.0, help="Threshold for binarization")

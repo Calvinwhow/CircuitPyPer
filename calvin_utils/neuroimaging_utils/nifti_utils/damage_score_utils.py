@@ -99,7 +99,31 @@ class DamageScorer:
             results['num_in_roi'] = DamageScorer._count_voxels_greater_than_threshold(subject_array, roi_array, threshold=2)
         if 'dice' in metrics:
             results['dice'] = DamageScorer._calculate_dice(subject_array, roi_array)
+        if 'avg_over_roi' in metrics:
+            results['avg_over_roi'] = DamageScorer._calculate_avg_over_roi(subject_array, roi_array)
+        if 'frac_in_roi' in metrics:
+            results['frac_in_roi'] = DamageScorer._calculate_frac_in_roi(subject_array, roi_array)
         return results
+
+    @staticmethod
+    def _calculate_avg_over_roi(subject_array, roi_arr):
+        '''Mean subject value across the WHOLE ROI, zeros included. Unlike
+        avg_in_target this does not divide by the number of non-zero voxels, so
+        a sparsely-involved ROI scores lower than a fully-involved one and the
+        result is independent of ROI size.'''
+        roi = roi_arr > 0
+        if not roi.any():
+            return 0.0
+        return float(np.mean(subject_array[roi]))
+
+    @staticmethod
+    def _calculate_frac_in_roi(subject_array, roi_arr):
+        '''Fraction of the ROI with a non-zero subject value. Scale-free as well
+        as size-free: comparable across images whose units differ.'''
+        roi = roi_arr > 0
+        if not roi.any():
+            return 0.0
+        return float(np.count_nonzero(subject_array[roi]) / np.count_nonzero(roi))
 
     @staticmethod
     def _normalize_metric_name(metric):
@@ -254,6 +278,8 @@ class DamageScorer:
             "avg_in_subject",
             "num_in_roi",
             "dice",
+            "avg_over_roi",
+            "frac_in_roi",
         }
         invalid_metrics = sorted(set(metrics) - valid_metrics)
         if invalid_metrics:

@@ -408,6 +408,30 @@ class VoxelwiseRegression:
             print(f"beta shape: {beta.shape}")         # (p, n_voxels)
             print(f"R2 shape: {R2.shape}")                 # (n_voxels,)
         return beta, t_values, R2, XtX_inv
+
+    @classmethod
+    def fit_linear_tmap(cls, X, Y, contrast=None, weights=None):
+        """Fit an in-memory linear model with the class's standard t-map code."""
+        X = np.asarray(X, dtype=float)
+        Y = np.asarray(Y, dtype=float)
+        if X.ndim == 1:
+            X = X[:, None]
+        if Y.ndim == 1:
+            Y = Y[:, None]
+        if X.ndim != 2 or Y.ndim != 2 or X.shape[0] != Y.shape[0]:
+            raise ValueError("X and Y must be aligned two-dimensional arrays.")
+        model = cls.__new__(cls)
+        model.n_obs, model.n_preds = X.shape
+        model.contrast_matrix = np.asarray(
+            np.ones((1, model.n_preds)) if contrast is None else contrast,
+            dtype=float,
+        )
+        W = np.ones(model.n_obs, dtype=float) if weights is None else np.asarray(weights, dtype=float)
+        if W.shape != (model.n_obs,) or np.any(W <= 0) or not np.isfinite(W).all():
+            raise ValueError("weights must contain one finite positive value per row.")
+        W = W / W.sum()
+        _, t_values, _, _ = model._linear_regression(X, Y, W)
+        return t_values
     
     def align_w(self, w, arr):
         if arr.shape[0] != w.shape[0]:

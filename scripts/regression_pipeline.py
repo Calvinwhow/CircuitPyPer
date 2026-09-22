@@ -35,8 +35,11 @@ if str(SCRIPT_DIR) not in sys.path:
 from calvin_utils.permutation_analysis_utils.statsmodels_palm import CalvinStatsmodelsPalm
 from calvin_utils.permutation_analysis_utils.voxelwise_regression import VoxelwiseRegression
 from calvin_utils.permutation_analysis_utils.voxelwise_regression_prep import RegressionPrep
+from calvin_utils.permutation_analysis_utils.map_damage_cv import (
+    cross_validated_map_damage, load_native_patient_vectors,
+)
 from calvin_utils.neuroimaging_utils.output_functions import NeuroimageFileOutporter
-import circuit_pyper.scripts.circuit_viewer_orchestrator as circuit_viewer_orchestrator
+import circuit_pyper.scripts.neuro_plotter as neuro_plotter
 
 
 # =============================================================================
@@ -99,8 +102,10 @@ RUN_FIGURES = False                      # Delegate result-map visualization to 
 FIGURES_IN_SUBPROCESS = True            # Render each map in a fresh interpreter (frees the OpenGL context).
 SUMMARY_FILENAME = "regression_summary.csv"
 CV = "loocv"                            # None disables CV; "all" runs LOOCV, 2-, 5-, 10-fold, and leave-all-in.
-CV_INDEPENDENT_VAR = "Nifti_File_Path"  # Image column used to predict each current regressand in var_list.
+CV_INDEPENDENT_VAR = "fiber_path_guerrera"  # Patient fiber values scored against each training-fold fiber t map.
 DROP_NANS = True                        # Apply the same row filtering to regression and cross-validation.
+
+_cv_native_vector_cache = {}
 
 
 def _load_analysis_dataframe(regressand, regressor, output_dir):
@@ -166,7 +171,7 @@ def _configured_cv_schemes(n_obs):
     return [scheme for scheme in schemes if not isinstance(scheme, int) or scheme <= n_obs]
 
 
-def _cv_outputs_exist(regression_dir, cv_scheme, n_contrasts):
+def _cv_outputs_exist(regression_dir, cv_scheme, n_contrasts, require_aggregate=True):
     """Return True only when all scatterplots for one CV scheme are present."""
     scatter_dir = Path(regression_dir) / "cross_validations" / "scatterplots"
     label = str(cv_scheme)
@@ -177,7 +182,7 @@ def _cv_outputs_exist(regression_dir, cv_scheme, n_contrasts):
     aggregate_plot = any(
         scatter_dir.glob(f"{label}_voxelwisemodel_aggregate-prediction*scatterplot.svg")
     )
-    return contrast_plots and aggregate_plot
+    return contrast_plots and (aggregate_plot or not require_aggregate)
 
 
 def _regression_outputs_exist(new_out_dir):
@@ -209,7 +214,7 @@ def plot_regression_results(new_out_dir, regression_dir):
 
     volume_viewer = None
     if volume_files:
-        volume_viewer = circuit_viewer_orchestrator.write_volume_viewer(
+        volume_viewer = neuro_plotter.write_volume_viewer(
             volume_files,
             figure_root / "volumetric_viewer.html",
             title="Regression volumetric results",
@@ -220,14 +225,14 @@ def plot_regression_results(new_out_dir, regression_dir):
     ]
 
     for result_file in result_files:
-        out_dir = figure_root / circuit_viewer_orchestrator.nifti_stem(result_file)
+        out_dir = figure_root / neuro_plotter.nifti_stem(result_file)
 
         if not FIGURES_IN_SUBPROCESS:
-            circuit_viewer_orchestrator.dispatch(
+            neuro_plotter.dispatch(
                 source_nifti=result_file,
                 output_dir=out_dir,
-                figures=circuit_viewer_orchestrator.FIGURES,
-                make_html=circuit_viewer_orchestrator.MAKE_HTML,
+                figures=neuro_plotter.FIGURES,
+                make_html=neuro_plotter.MAKE_HTML,
                 open_html=False,
                 volume_viewer=volume_viewer,
             )
@@ -240,7 +245,7 @@ def plot_regression_results(new_out_dir, regression_dir):
         # each time, so the batch length stops mattering.
         command = [
             sys.executable,
-            str(Path(circuit_viewer_orchestrator.__file__).resolve()),
+            str(Path(neuro_plotter.__file__).resolve()),
             "--nifti", str(result_file),
             "--output-dir", str(out_dir),
             "--no-open-html",
@@ -257,12 +262,12 @@ def plot_regression_results(new_out_dir, regression_dir):
     if volume_viewer is not None:
         gallery_links = [
             (
-                circuit_viewer_orchestrator.nifti_stem(result_file),
-                figure_root / circuit_viewer_orchestrator.nifti_stem(result_file) / "index.html",
+                neuro_plotter.nifti_stem(result_file),
+                figure_root / neuro_plotter.nifti_stem(result_file) / "index.html",
             )
             for result_file in result_files
         ]
-        index_path = circuit_viewer_orchestrator.write_index(
+        index_path = neuro_plotter.write_index(
             figure_root,
             volume_files[0],
             cards=[],
@@ -499,6 +504,65 @@ def run_voxelwise_regression(regressand, regressor):
         plot_regression_results(NEW_OUT_DIR, REGRESSION_DIR)
 
 
+def _load_native_cv_vectors(subject_files, mask_path, output_ftype):
+    """Import each patient's native feature vector once across symptom models."""
+    return load_native_patient_vectors(
+        subject_files, mask_path, output_ftype, cache=_cv_native_vector_cache
+    )
+
+
+def _run_inverse_damage_cv(data_df, regressor, regressand, regression,
+                           cv_scheme, subject_files, regression_dir):
+    """Refit the image t map in each fold, then compare native patient vectors."""
+    if (
+        REGRESSION_TYPE != "linear" or DATA_TRANSFORM_METHOD != "rank"
+        or ADD_INTERCEPT or COVARIATES_LIST or WEIGHTS_COL or VOXELWISE_INTERACTIONS
+        or regression.n_preds != 1 or regression.n_contrasts != 1
+        or not np.array_equal(regression.contrast_matrix, np.array([[1]]))
+    ):
+        raise ValueError(
+            "Direct damage CV currently supports the one-predictor, no-intercept, "
+            "unweighted ranked linear regression with contrast [[1]]."
+        )
+    if CV_INDEPENDENT_VAR != regressand:
+        raise ValueError(
+            "For image ~ score regression, CV_INDEPENDENT_VAR must be the image "
+            f"outcome column {regressand!r}."
+        )
+    y_true = pd.to_numeric(data_df[regressor], errors="raise").to_numpy(dtype=float)
+    patient_values = _load_native_cv_vectors(
+        subject_files, regression.mask_path, regression.output_ftype
+    )
+    if patient_values.shape[1] != regression.n_voxels:
+        raise ValueError(
+            f"Patient comparator has {patient_values.shape[1]} features, but "
+            f"the fitted map has {regression.n_voxels}."
+        )
+    damage, fold_numbers = cross_validated_map_damage(
+        patient_values, y_true, cv=cv_scheme
+    )
+    predictions = pd.DataFrame({
+        "patient_id": data_df["subid"].to_numpy() if "subid" in data_df else np.arange(len(data_df)),
+        "fold": fold_numbers,
+        "damage": damage,
+        "observed": y_true,
+    })
+    cv_dir = Path(regression_dir) / "cross_validations"
+    cv_dir.mkdir(parents=True, exist_ok=True)
+    predictions.to_csv(cv_dir / f"{cv_scheme}_contrast_0_predictions.csv", index=False)
+
+    import matplotlib.pyplot as plt
+    from calvin_utils.statistical_utils.scatterplot import simple_scatter
+
+    ax = simple_scatter(
+        predictions, x_col="damage", y_col="observed",
+        dataset_name=f"{cv_scheme}_contrast_0_correlation",
+        out_dir=str(cv_dir), x_label="Native map cosine damage",
+        y_label=regressor, show=False,
+    )
+    plt.close(ax.figure)
+
+
 def run_cross_validation_for_regression(regressand, regressor):
     """Run the configured CV scheme(s) for one completed regression."""
     new_out_dir = os.path.join(OUT_DIR, f"{regressand}-on-{regressor}")
@@ -518,7 +582,6 @@ def run_cross_validation_for_regression(regressand, regressor):
             f"Cross-validation image column {cv_independent_var!r} is not present in {INPUT_PATH}"
         )
 
-    y_true = pd.to_numeric(data_df[regressand], errors="raise")
     subject_files = data_df[cv_independent_var].astype(str)
     missing_files = [path for path in subject_files if not os.path.isfile(path)]
     if missing_files:
@@ -543,16 +606,30 @@ def run_cross_validation_for_regression(regressand, regressor):
     if regression.n_obs < 2:
         raise ValueError(f"Cross-validation for {regressand} requires at least two observations.")
 
+    inverse_image_model = regressand in VOXELWISE_VARS and regressor not in VOXELWISE_VARS
+    y_true = None if inverse_image_model else pd.to_numeric(data_df[regressand], errors="raise")
     for cv_scheme in _configured_cv_schemes(regression.n_obs):
-        if _cv_outputs_exist(regression_dir, cv_scheme, regression.n_contrasts):
+        existing_plot = _cv_outputs_exist(
+            regression_dir, cv_scheme, regression.n_contrasts,
+            require_aggregate=not inverse_image_model,
+        )
+        direct_predictions = (
+            Path(regression_dir) / "cross_validations" /
+            f"{cv_scheme}_contrast_0_predictions.csv"
+        )
+        if existing_plot and (not inverse_image_model or direct_predictions.is_file()):
             print(f"Skipping completed {cv_scheme} CV: {regressand} ~ {cv_independent_var}")
             continue
         print(f"Running {cv_scheme} CV: {regressand} ~ {cv_independent_var}")
-        regression.run_cross_validation(
-            y_true=y_true,
-            subject_files=subject_files,
-            cv=cv_scheme,
-        )
+        if inverse_image_model:
+            _run_inverse_damage_cv(
+                data_df, regressor, regressand, regression,
+                cv_scheme, subject_files, regression_dir,
+            )
+        else:
+            regression.run_cross_validation(
+                y_true=y_true, subject_files=subject_files, cv=cv_scheme,
+            )
 
 
 # =============================================================================

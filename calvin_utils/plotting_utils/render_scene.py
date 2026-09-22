@@ -195,6 +195,7 @@ def resolve_scale(values, cmap=None, clim=None, color=RED, symmetric=None):
     if not finite.size:
         return ramp_cmap(color), (0.0, 1.0)
 
+    chosen = symmetric is None        # auto, rather than asked for outright
     if symmetric is None:
         symmetric = bool((finite > 0).any() and (finite < 0).any())
 
@@ -212,6 +213,17 @@ def resolve_scale(values, cmap=None, clim=None, color=RED, symmetric=None):
     invert = float(clim[0]) > float(clim[1])
     if invert:
         clim = (clim[1], clim[0])
+
+    # A diverging map means "distance from ZERO": its pale midpoint IS zero and
+    # its two tails are the two signs. That only holds when the SCALE straddles
+    # zero. Choosing one off the DATA alone put a two-signed map under a scale
+    # of [0, 2] -- which parks the pale midpoint at 1.0, so mid-range values
+    # wash out to near-white and everything at or below 0 saturates to the far
+    # tail. A perfectly good map then looks like the colours stopped applying.
+    # Only the AUTOMATIC choice is overridden here; asking for diverging
+    # outright still gets it, at whatever limits were asked for.
+    if chosen and symmetric and not (float(clim[0]) < 0.0 < float(clim[1])):
+        symmetric = False
 
     if cmap is None:
         # The overlay's colour decides the POSITIVE tail either way. It used to

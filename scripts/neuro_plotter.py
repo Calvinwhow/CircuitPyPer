@@ -313,6 +313,8 @@ FIGURES = [
 
 def nifti_stem(path):
     name = Path(path).name
+    if name.lower().endswith(".fib.json"):
+        return name[:-9]
     if name.lower().endswith(".fib.npy"):
         return name[:-8]
     if name.lower().endswith(".fib.values.npy"):
@@ -1175,14 +1177,21 @@ def resolve_overlay_paths(overlays, source_nifti):
 def input_kind(path):
     name = Path(path).name.lower()
     if name.endswith(
-        (".mat", ".fib.npy", ".values.npy", ".fib.desc.json", ".tck")
+        (
+            ".mat",
+            ".fib.npy",
+            ".fib.json",
+            ".values.npy",
+            ".fib.desc.json",
+            ".tck",
+        )
     ):
         return "tract"
     if name.endswith((".nii", ".nii.gz")):
         return "nifti"
     raise ValueError(
-        "Input must be .nii, .nii.gz, .mat, .fib.desc.json, "
-        f".fib.values.npy, legacy .fib.npy/.values.npy, or .tck: {path}"
+        "Input must be .nii, .nii.gz, .mat, .fib.json, .fib.npy, "
+        f"legacy .fib.desc.json/.fib.values.npy/.values.npy, or .tck: {path}"
     )
 
 

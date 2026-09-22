@@ -1,13 +1,32 @@
 import os
 import numpy as np
 import pandas as pd
-import forestplot as fp
-from jax import jit
-import jax.numpy as jnp
 from tqdm import tqdm
 from scipy.stats import rankdata, spearmanr
 from calvin_utils.neuroimaging_utils.ccm_utils.npy_utils import DataLoader
-from calvin_utils.neuroimaging_utils.ccm_utils.stat_utils_jax import _rankdata_jax, calculate_spearman_r_map_jax, _calculate_pearson_r_map_jax
+
+# Plotting and JAX acceleration are optional.  The core NumPy/SciPy correlation
+# methods are also used by the fixed-map optimizer, so importing that optimizer
+# should not require either optional package.
+try:
+    import forestplot as fp
+except ImportError:  # pragma: no cover - exercised only without plotting extras
+    fp = None
+
+try:
+    from jax import jit
+    import jax.numpy as jnp
+    from calvin_utils.neuroimaging_utils.ccm_utils.stat_utils_jax import (
+        _rankdata_jax,
+        calculate_spearman_r_map_jax,
+        _calculate_pearson_r_map_jax,
+    )
+except ImportError:  # pragma: no cover - exercised only without JAX extras
+    jit = None
+    jnp = None
+    _rankdata_jax = None
+    calculate_spearman_r_map_jax = None
+    _calculate_pearson_r_map_jax = None
 
 class CorrelationCalculator:
     def __init__(self, method='pearson', verbose=False, use_jax=False, datasets_to_flip = []):
@@ -21,6 +40,9 @@ class CorrelationCalculator:
         self.verbose = verbose
         self.use_jax = use_jax
         self.datasets_to_flip = datasets_to_flip
+
+        if self.use_jax and calculate_spearman_r_map_jax is None:
+            raise ImportError("use_jax=True requires the optional jax package.")
 
     @staticmethod
     def _check_for_nans(array, nanpolicy='remove', verbose=False):
@@ -336,6 +358,10 @@ class MetaConvergenceForestPlot:
         """
         Creates and displays the forest plot.
         """
+        if fp is None:
+            raise ImportError(
+                "Forest plots require the optional forestplot package."
+            )
         ax = fp.forestplot(
             dataframe=self.data,
             estimate=estimate_col,

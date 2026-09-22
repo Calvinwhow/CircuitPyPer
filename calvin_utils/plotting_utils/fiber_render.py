@@ -43,7 +43,7 @@ from calvin_utils.plotting_utils.render_scene import GLASS_ALPHA, RED
 
 __all__ = ["load_fibers", "smooth_streamlines", "tube_fibers", "panel", "hero",
            "FIBER_COLOR", "LINE_WIDTH", "TUBE_RADIUS", "TUBE_SIDES",
-           "FIBER_MATERIAL"]
+           "FIBER_MATERIAL", "fiber_material"]
 
 FIBER_COLOR = RED
 LINE_WIDTH = 1.5
@@ -80,6 +80,40 @@ def radius_for_width(width):
 FIBER_MATERIAL = dict(specular=0.85, specular_power=60, ambient=0.18, diffuse=0.62)
 
 
+def fiber_material(panel=None):
+    """``FIBER_MATERIAL`` MODULATED by the lighting panel, not replaced by it.
+
+    A fibre is a thin glossy cylinder and a cortical surface is not: fibres want
+    a hot, tight specular (0.85 at power 60) where a surface wants a soft one
+    (0.22 at power 14). Handing fibres the panel's numbers directly dropped them
+    to the surface material, and a bundle that no longer carries a highlight
+    reads as having stopped interacting with the light altogether.
+
+    So the panel is read as a RATIO against its own defaults. At the default
+    settings a fibre renders exactly as it always did; turn the specular slider
+    up and the fibre's own gloss rises in proportion. Every fibre is shaded the
+    same way whether it is painted by an overlay, carries the atlas colour, or
+    is the backdrop under a finding -- the material never depends on how the
+    colour was arrived at.
+    """
+    from calvin_utils.plotting_utils.render_scene import SURFACE_MATERIAL
+
+    out = dict(FIBER_MATERIAL)
+    for key, value in (panel or {}).items():
+        if value is None:
+            continue
+        if key not in out:
+            out[key] = value
+            continue
+        reference = float(SURFACE_MATERIAL.get(key) or 0.0)
+        out[key] = (float(out[key]) * float(value) / reference if reference
+                    else float(value))
+    for key in ("ambient", "diffuse", "specular"):
+        out[key] = min(max(float(out[key]), 0.0), 1.0)
+    out["specular_power"] = min(max(float(out["specular_power"]), 1.0), 128.0)
+    return out
+
+
 # Loading ------------------------------------------------------------------
 ATLAS_SUFFIXES = (".npz", ".npy")
 
@@ -87,8 +121,8 @@ ATLAS_SUFFIXES = (".npz", ".npy")
 def is_atlas(path):
     """Whether this file is fibre GEOMETRY rather than a result.
 
-    ``.fib.npy`` and ``.fib.values.npy`` are results -- values attached to an
-    atlas -- and everything else with these suffixes is the atlas itself.
+    ``.fib.npy`` and legacy ``.fib.values.npy`` are results -- values attached
+    to an atlas -- and everything else with these suffixes is the atlas itself.
     """
     name = str(path).lower()
     if name.endswith((".fib.npy", ".fib.values.npy")):
@@ -118,7 +152,7 @@ def is_descriptor(path):
 
 
 def read_descriptor(path, verify=True):
-    """Resolve a ``.fib.desc.json`` to its atlas and its values file.
+    """Resolve a fiber JSON descriptor to its atlas and values file.
 
     The descriptor is the entry point for a result: it names the atlas the
     values were written against, so a figure never hard-codes an atlas path and
@@ -152,11 +186,17 @@ def read_descriptor(path, verify=True):
             f"{path.name} names an atlas that is not on this machine: "
             f"{atlas_info.get('path')!r} (nor at its recorded relative path)")
 
-    # The name moved from "<stem>.values.npy" to "<stem>.fib.values.npy"; both
-    # spellings are read so results written either side of that still open.
+    # Read the current compact spelling plus both older split-name spellings.
     named = desc.get("values_file") or ""
     stem = named.split(".")[0] if named else path.name.split(".")[0]
-    names = [n for n in (named, f"{stem}.fib.values.npy", f"{stem}.values.npy") if n]
+    names = [
+        n for n in (
+            named,
+            f"{stem}.fib.npy",
+            f"{stem}.fib.values.npy",
+            f"{stem}.values.npy",
+        ) if n
+    ]
 
     # Three places to look, because a descriptor does not always arrive beside
     # its values. A browser drop uploads the one file the user dragged, so the
@@ -207,7 +247,7 @@ def read_descriptor(path, verify=True):
 
 
 def streamline_values(path, count=None):
-    """One value per atlas fibre, from a ``.fib.values.npy`` (or any 1-D array).
+    """One value per atlas fibre, from a ``.fib.npy`` (or any 1-D array).
 
     ``count`` is the number of fibres the atlas holds; a mismatch means the
     values were written against a different atlas, which is worth saying plainly
@@ -297,7 +337,7 @@ def load_fibers(
     path = Path(path).expanduser()
     if is_atlas(path):
         # A bare atlas is geometry and nothing else. Its fibres get no values,
-        # because the values live in separate .fib.values.npy files that are
+        # because values live in separate .fib.npy result files that are
         # layered on afterwards -- one bundle of streamlines, many findings
         # painted onto it, rather than a new copy of the geometry per finding.
         from calvin_utils.neuroimaging_utils.tract_utils.fiber_converter import (
@@ -307,7 +347,7 @@ def load_fibers(
         streamlines = [FiberFormatConverter._as_streamline(f)
                        for f in FiberFormatConverter._load_fibers(path)]
         values = np.zeros(len(streamlines), dtype=np.float32)
-    elif path.name.lower().endswith(".fib.npy"):
+    elif path.name.lower().endswith((".fib.npy", ".values.npy")) or is_descriptor(path):
         streamlines, values, _ = FiberFormatConverter.load_fib_npy(
             path, fiber_atlas_path=fiber_atlas_path, sign=sign,
             min_abs_value=min_abs_value, top_percent=top_percent,

@@ -11,12 +11,12 @@ from calvin_utils.neuroimaging_utils.tract_utils.fiber_converter import (
 class TemporaryTractogram:
     """Materialize a MAT or native fiber result as a temporary TCK.
 
-    Supported sources are Lead-DBS ``.mat``, self-contained ``*.fib.npy``, and
-    lightweight ``*.fib.values.npy``/``*.fib.desc.json`` pairs. The descriptor
-    can be passed directly and is used to locate and validate both the values
-    and canonical geometry atlas automatically. ``fiber_atlas_path`` may point
-    to a relocated copy of the described atlas and remains necessary for legacy
-    numeric ``*.fib.npy``; it never makes the values descriptor optional.
+    Supported sources are Lead-DBS ``.mat``, new
+    ``*.fib.npy``/``*.fib.json`` pairs, legacy self-contained ``*.fib.npy``,
+    and legacy ``*.fib.values.npy``/``*.fib.desc.json`` pairs. A descriptor can
+    be passed directly and locates and validates both the values and canonical
+    geometry atlas. ``fiber_atlas_path`` remains available for bare legacy
+    numeric ``*.fib.npy`` files and relocated described atlases.
 
     The values vector and descriptor are not temporary and are never modified.
     Only the derived TCK is placed in a temporary directory, which is removed
@@ -26,7 +26,7 @@ class TemporaryTractogram:
 
     Use as a context manager so cleanup is deterministic::
 
-        with TemporaryTractogram("map.fib.desc.json") as tractogram:
+        with TemporaryTractogram("map.fib.json") as tractogram:
             render(tractogram.tck_path, data=tractogram.point_values())
     """
 
@@ -77,13 +77,15 @@ class TemporaryTractogram:
                 stem = name[:-15]
             elif lower_name.endswith(".values.npy"):
                 stem = name[:-11]
+            elif lower_name.endswith(".fib.json"):
+                stem = name[:-9]
             elif lower_name.endswith(".fib.desc.json"):
                 stem = name[:-14]
             else:
                 stem = self.source_path.stem
             out_path = Path(self._directory.name) / f"{stem}.tck"
             if lower_name.endswith(
-                (".fib.npy", ".values.npy", ".fib.desc.json")
+                (".fib.npy", ".fib.json", ".values.npy", ".fib.desc.json")
             ):
                 result = FiberFormatConverter.convert_fib_npy_to_tck(
                     self.source_path,
@@ -103,8 +105,8 @@ class TemporaryTractogram:
                 )
             else:
                 raise ValueError(
-                    "TemporaryTractogram requires .fib.desc.json, "
-                    ".fib.values.npy, legacy .fib.npy/.values.npy, or .mat, "
+                    "TemporaryTractogram requires .fib.json/.fib.npy, legacy "
+                    ".fib.desc.json/.fib.values.npy, .values.npy, or .mat, "
                     f"got: {self.source_path}"
                 )
         except Exception:

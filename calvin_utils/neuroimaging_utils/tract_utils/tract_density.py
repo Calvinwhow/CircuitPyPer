@@ -56,14 +56,15 @@ class TractDensity:
     Inputs
     ------
     fiber_path:
-        Canonical ``*.fib.desc.json`` descriptor or ``*.fib.values.npy``
-        result, legacy ``.fib.npy`` result, or Calvin internal ``.npz`` atlas
-        file. A descriptor resolves both its values and geometry; a values
-        result resolves its sibling descriptor. Both validate the vector
-        checksum and recorded atlas before rasterization.
+        Canonical ``*.fib.json`` descriptor or ``*.fib.npy`` result, a legacy
+        ``*.fib.desc.json``/``*.fib.values.npy`` pair or geometry-bearing
+        ``*.fib.npy``, or a Calvin internal ``.npz`` atlas. A descriptor
+        resolves both its values and geometry and validates the vector checksum
+        and recorded atlas before rasterization.
 
-        A ``.fib.npy`` regression output is an object array where each fiber is
-        ``N x 4`` and column 4 contains the fiber statistic.
+        New ``.fib.npy`` output is a one-dimensional value vector. A legacy
+        geometry-bearing file is an object array where each fiber is ``N x 4``
+        and column 4 contains the fiber statistic.
 
         A ``.npz`` atlas should contain a ``fibers`` key. If ``values_path`` or
         ``values`` is not provided, every fiber receives value 1.
@@ -81,8 +82,8 @@ class TractDensity:
     values_path / values:
         Optional one-value-per-fiber vector when ``fiber_path`` is an atlas.
         A standard regression result should instead be passed directly as
-        ``fiber_path=<stem>.fib.desc.json`` (or ``*.fib.values.npy``) so the
-        pair is validated and its atlas is resolved automatically.
+        ``fiber_path=<stem>.fib.json`` (or ``*.fib.npy``) so the pair is
+        validated and its atlas is resolved automatically.
 
         Vector element ``i`` must correspond to atlas fiber ``i``; lengths are
         checked before rasterization. The descriptor is not modified. Values
@@ -178,13 +179,14 @@ class TractDensity:
             raise FileNotFoundError(f"values_path does not exist: {self.values_path}")
         if not (
             self.fiber_path.name.endswith(
-                (".fib.npy", ".values.npy", ".fib.desc.json")
+                (".fib.npy", ".fib.json", ".values.npy", ".fib.desc.json")
             )
             or self.fiber_path.suffix.lower() == ".npz"
         ):
             raise ValueError(
-                "TractDensity requires a .fib.desc.json/.fib.values.npy pair, "
-                "Calvin .npz fiber atlas, or legacy .fib.npy output. "
+                "TractDensity requires a .fib.json/.fib.npy pair, a legacy "
+                ".fib.desc.json/.fib.values.npy pair, a Calvin .npz fiber "
+                "atlas, or a legacy geometry-bearing .fib.npy. "
                 "Convert external tract files first with FiberAtlasConverter."
             )
         if self.fiberset not in {"both", "positive", "pos", "negative", "neg"}:
@@ -199,16 +201,18 @@ class TractDensity:
 
     def load_fibers_and_values(self):
         if self.fiber_path.name.endswith(".fib.npy"):
-            self.fibers, fiber_values = self._load_fib_npy(self.fiber_path)
-            self.loaded_values = fiber_values if self.values is None else self.values
-            return
+            stored = np.load(self.fiber_path, allow_pickle=True)
+            if stored.dtype == object:
+                self.fibers, fiber_values = self._load_fib_npy(self.fiber_path)
+                self.loaded_values = fiber_values if self.values is None else self.values
+                return
 
         values_result_path = None
-        if self.fiber_path.name.endswith(".fib.desc.json"):
+        if self.fiber_path.name.endswith((".fib.json", ".fib.desc.json")):
             values_result_path = FiberFormatConverter.values_from_description(
                 self.fiber_path
             )
-        elif self.fiber_path.name.endswith(".values.npy"):
+        elif self.fiber_path.name.endswith((".fib.npy", ".values.npy")):
             values_result_path = self.fiber_path
 
         if values_result_path is not None:

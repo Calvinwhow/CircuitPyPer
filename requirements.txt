@@ -46,6 +46,7 @@ vtk
 pydicom
 yabplot
 pyvista
+typing_extensions>=4.10.0
 # scikit-image is only needed to rebuild the glass meshes, not to plot them
 
 # Additional requirements for the project

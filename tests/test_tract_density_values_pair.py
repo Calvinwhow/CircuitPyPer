@@ -5,16 +5,17 @@ from calvin_utils.neuroimaging_utils.tract_utils.fiber_io import FiberIO
 from calvin_utils.neuroimaging_utils.tract_utils.tract_density import TractDensity
 
 
-def test_tract_density_resolves_described_values_pair(tmp_path):
+def test_tract_density_resolves_new_fib_pair(tmp_path):
     fibers = np.empty(2, dtype=object)
     fibers[0] = np.asarray([[1, 1, 1], [2, 1, 1]], dtype=np.float32)
     fibers[1] = np.asarray([[1, 2, 1], [2, 2, 1]], dtype=np.float32)
     atlas_path = tmp_path / "atlas.npz"
     np.savez(atlas_path, fibers=fibers)
 
-    values_path = tmp_path / "statistic.fib.values.npy"
+    values_path = tmp_path / "statistic.fib.npy"
     np.save(values_path, np.asarray([2.0, -1.0], dtype=np.float32))
     description_path = FiberIO.write_values_description(values_path, atlas_path)
+    assert description_path.name == "statistic.fib.json"
 
     reference_path = tmp_path / "reference.nii.gz"
     nib.save(

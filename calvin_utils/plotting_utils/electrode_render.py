@@ -157,9 +157,38 @@ def _walk(node, handle=None):
         return np.array(node)
     if hasattr(node, "_fieldnames"):
         return {k: _walk(getattr(node, k)) for k in node._fieldnames}
+    # loadmat hands back a PLAIN DICT at the top level, whose values are the
+    # mat_structs. Without this branch the walk stopped at that dict and every
+    # struct under it came through unconverted, so "reco" was a mat_struct and
+    # the markers lookup found nothing -- "has no markers; not a
+    # reconstruction?" on a perfectly good reconstruction.
+    if isinstance(node, dict):
+        return {k: _walk(v) for k, v in node.items()
+                if not str(k).startswith("__")}
     if isinstance(node, np.ndarray) and node.dtype == object:
         return [_walk(x) for x in node.ravel()]
     return node
+
+
+def _text(value):
+    """A MATLAB char array, bytes, or nested 1-element array, as a str."""
+    while isinstance(value, (list, tuple)) and len(value) == 1:
+        value = value[0]
+    if isinstance(value, np.ndarray):
+        if value.dtype.kind in "SU":
+            flat = value.ravel()
+            return str(flat[0]) if flat.size == 1 else "".join(
+                str(x) for x in flat)
+        if value.size == 1:
+            return _text(value.ravel()[0])
+        # A v7.3 char array arrives as uint16 code points.
+        try:
+            return "".join(chr(int(c)) for c in value.ravel())
+        except (TypeError, ValueError):
+            return ""
+    if isinstance(value, bytes):
+        return value.decode(errors="replace")
+    return "" if value is None else str(value)
 
 
 def read_markers(path):
@@ -207,13 +236,22 @@ def read_markers(path):
     if isinstance(markers, dict):
         markers = [markers]
 
-    elmodel = data.get("elmodel") or reco.get("elmodel") if isinstance(reco, dict) else None
-    if isinstance(elmodel, (list, np.ndarray)):
-        elmodel = np.asarray(elmodel).ravel()[0]
-    if isinstance(elmodel, bytes):
-        elmodel = elmodel.decode()
-    if isinstance(elmodel, np.ndarray):
-        elmodel = "".join(chr(int(c)) for c in elmodel.ravel())
+    # The model name lives PER LEAD, in reco.props(i).elmodel -- not at the top
+    # level. Two leads in one file can be different models, and reading one
+    # name for both would place the wrong contacts on one side.
+    props = reco.get("props") if isinstance(reco, dict) else None
+    if isinstance(props, dict):
+        props = [props]
+    models = [_text(p.get("elmodel")) for p in (props or [])
+              if isinstance(p, dict)]
+    models = [m for m in models if m]
+    fallback = ""
+    for holder in (reco if isinstance(reco, dict) else {}, data):
+        if isinstance(holder, dict) and holder.get("elmodel") is not None:
+            fallback = _text(holder["elmodel"])
+            break
+    if not models and fallback:
+        models = [fallback]
 
     out = []
     for i, entry in enumerate(markers):
@@ -226,8 +264,10 @@ def read_markers(path):
             continue
         if any(len(v) != 3 or not np.isfinite(v).all() for v in fids.values()):
             continue
+        model = models[i] if i < len(models) else (models[0] if models
+                                                   else fallback)
         out.append({"side": ["R", "L"][i] if i < 2 else str(i), **fids,
-                    "elmodel": elmodel})
+                    "elmodel": model or None})
     if not out:
         raise ValueError(f"{path.name} has no usable markers")
     return out

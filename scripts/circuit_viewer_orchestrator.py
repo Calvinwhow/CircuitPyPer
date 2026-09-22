@@ -226,7 +226,7 @@ def nifti_stem(path):
     """A stable stem for NIfTI and canonical fiber result names."""
     name = Path(path).name
     for suffix in (
-        ".fib.values.npy", ".fib.desc.json", ".fib.npy", ".values.npy",
+        ".fib.values.npy", ".fib.desc.json", ".fib.npy", ".fib.json", ".values.npy",
         ".nii.gz", ".nii",
     ):
         if name.lower().endswith(suffix):
@@ -239,13 +239,13 @@ def input_kind(path):
     if name.endswith((".nii", ".nii.gz")):
         return "nifti"
     if name.endswith((
-        ".mat", ".tck", ".trk", ".fib.npy", ".fib.values.npy",
-        ".fib.desc.json", ".values.npy", ".npz",
+        ".mat", ".tck", ".trk", ".fib.npy", ".fib.json",
+        ".fib.values.npy", ".fib.desc.json", ".values.npy", ".npz",
     )):
         return "fiber"
     raise ValueError(
         "Input must be a NIfTI or fiber result "
-        "(.mat/.tck/.trk/.fib.npy/.fib.values.npy/.fib.desc.json/.npz): "
+        "(.mat/.tck/.trk/.fib.npy/.fib.json/legacy .fib.values.npy/.fib.desc.json/.npz): "
         f"{path}"
     )
 

@@ -347,14 +347,15 @@ def main(argv: list[str] | None = None) -> int:
         out_dir = out_root / _safe_name(predictor)
         out_dir.mkdir(parents=True, exist_ok=True)
 
-        canonical_result = out_dir / "contrast_tval_0.fib.values.npy"
+        canonical_result = out_dir / "contrast_tval_0.fib.npy"
+        canonical_descriptor = out_dir / "contrast_tval_0.fib.json"
+        legacy_split_result = out_dir / "contrast_tval_0.fib.values.npy"
         old_values_result = out_dir / "contrast_tval_0.values.npy"
-        canonical_descriptor = out_dir / "contrast_tval_0.fib.desc.json"
-        legacy_result = out_dir / "contrast_tval_0.fib.npy"
+        legacy_descriptor = out_dir / "contrast_tval_0.fib.desc.json"
         if args.skip_existing and (
             (canonical_result.exists() and canonical_descriptor.exists())
-            or (old_values_result.exists() and canonical_descriptor.exists())
-            or legacy_result.exists()
+            or (legacy_split_result.exists() and legacy_descriptor.exists())
+            or (old_values_result.exists() and legacy_descriptor.exists())
         ):
             print(f"[skip existing] {predictor}")
             continue

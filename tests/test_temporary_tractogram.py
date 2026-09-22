@@ -56,11 +56,11 @@ def test_temporary_vector_fib_npy_uses_atlas_and_filters(tmp_path):
     fibers[2] = np.asarray([[0, 0, 0], [0, 0, 1]], dtype=np.float32)
     np.save(values_path, np.asarray([3.0, -2.0, 0.5], dtype=np.float32))
     np.savez(atlas_path, fibers=fibers)
+    FiberIO.write_values_description(values_path, atlas_path)
 
     with TemporaryTractogram(
         values_path,
         temp_root=tmp_path,
-        fiber_atlas_path=atlas_path,
         sign="positive",
         min_abs_value=1.0,
     ) as tractogram:
@@ -96,7 +96,7 @@ def test_temporary_values_npy_uses_atlas_and_filters(tmp_path):
         min_abs_value=1.0,
     ) as tractogram:
         temp_dir = tractogram.tck_path.parent
-        assert tractogram.tck_path.name == "statistics.tck"
+        assert tractogram.tck_path.name == "statistics_values.tck"
         assert tractogram.n_input_fibers == 3
         assert tractogram.n_fibers == 1
         np.testing.assert_allclose(tractogram.vals, [3.0])

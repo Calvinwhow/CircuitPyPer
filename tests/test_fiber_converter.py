@@ -1,3 +1,7 @@
+import hashlib
+import json
+import os
+
 import nibabel as nib
 import numpy as np
 from scipy.io import savemat
@@ -13,6 +17,33 @@ FIBERS = [
     np.asarray([[7, 8, 9], [10, 11, 12], [13, 14, 15]], dtype=np.float32),
 ]
 VALUES = np.asarray([2.5, -1.25], dtype=np.float32)
+
+
+def _write_legacy_description(values_path, atlas_path):
+    values_path = values_path.resolve()
+    atlas_path = atlas_path.resolve()
+    descriptor_path = values_path.with_name(
+        f"{values_path.name[:-11]}.desc.json"
+    )
+    descriptor_path.write_text(json.dumps({
+        "schema": "calvin_utils.fiber_values",
+        "schema_version": 2,
+        "values_file": values_path.name,
+        "values_path": str(values_path),
+        "values_relative_path": values_path.name,
+        "fiber_atlas": {
+            "path": str(atlas_path),
+            "relative_path": os.path.relpath(atlas_path, values_path.parent),
+            "size_bytes": atlas_path.stat().st_size,
+        },
+        "values": {
+            "path": str(values_path),
+            "relative_path": values_path.name,
+            "size_bytes": values_path.stat().st_size,
+            "sha256": hashlib.sha256(values_path.read_bytes()).hexdigest(),
+        },
+    }))
+    return descriptor_path
 
 
 def _assert_conversion(result):
@@ -107,7 +138,7 @@ def test_values_descriptor_accepts_relocated_atlas_override(tmp_path):
     relocated_atlas = tmp_path / "relocated" / "atlas.npz"
     np.save(values_path, VALUES)
     np.savez(original_atlas, fibers=np.asarray(FIBERS, dtype=object))
-    FiberIO.write_values_description(values_path, original_atlas)
+    _write_legacy_description(values_path, original_atlas)
     relocated_atlas.parent.mkdir()
     original_atlas.rename(relocated_atlas)
 
@@ -120,8 +151,8 @@ def test_values_descriptor_accepts_relocated_atlas_override(tmp_path):
     np.testing.assert_array_equal(values, VALUES)
 
 
-def test_convert_values_pair_directly_to_trk(tmp_path):
-    values_path = tmp_path / "result.fib.values.npy"
+def test_convert_new_values_pair_directly_to_trk(tmp_path):
+    values_path = tmp_path / "result.fib.npy"
     atlas_path = tmp_path / "atlas.npz"
     reference_path = tmp_path / "reference.tck"
     output_path = tmp_path / "result.trk"
@@ -141,6 +172,7 @@ def test_convert_values_pair_directly_to_trk(tmp_path):
         FiberFormatConverter.values_from_description(description_path)
         == values_path.resolve()
     )
+    assert description_path.name == "result.fib.json"
     loaded = nib.streamlines.load(output_path).tractogram
     assert len(loaded.streamlines) == 2
     np.testing.assert_allclose(loaded.streamlines[0], FIBERS[0])

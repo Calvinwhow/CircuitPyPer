@@ -204,7 +204,13 @@ class GiiNiiFileImport:
             return 'nii'
         if suffixes[-2:] == ['.gii', '.gz'] or suffixes[-1:] == ['.gii']:
             return 'gii'
-        if suffixes[-2:] == ['.fib', '.npy']:
+        if (
+            suffixes[-2:] in (['.fib', '.npy'], ['.fib', '.json'])
+            or suffixes[-3:] in (
+                ['.fib', '.values', '.npy'],
+                ['.fib', '.desc', '.json'],
+            )
+        ):
             return 'fiber'
         if suffixes[-1:] == ['.npy']:
             return 'npy'

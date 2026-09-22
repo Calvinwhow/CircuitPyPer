@@ -119,6 +119,18 @@ class NeuroimageFileOutporter:
                 ),
                 key=natural_key,
             )
+            # Fiber output writes an ordinary map plus a ``*_symmetric``
+            # presentation variant. Broad parameter patterns such as
+            # ``beta_predictor_[0-9]*`` must not load both as independent model
+            # coefficients. Keep the ordinary set unless symmetry was asked
+            # for explicitly; direct ``*_symmetric`` patterns still work.
+            if "_symmetric" not in name:
+                ordinary = [
+                    path for path in matches
+                    if not self.io.native_map_stem(path).endswith("_symmetric")
+                ]
+                if ordinary:
+                    matches = ordinary
             if not matches:
                 raise FileNotFoundError(
                     f"No native map matching '{name}' was found in {directory}."
