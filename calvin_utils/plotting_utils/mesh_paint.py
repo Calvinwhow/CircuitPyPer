@@ -41,6 +41,7 @@ import pyvista as pv
 __all__ = [
     "sample_nifti", "paint_vertices", "parcel_stats", "parcel_interiors",
     "paint_parcels", "select_regions", "load_parcels", "coarsen", "STATS",
+    "outline_lines",
 ]
 
 STATS = ("max", "mean_nonzero", "mean", "min", "sum")
@@ -388,3 +389,71 @@ def fill_gaps(mesh, values, passes=3):
             break
         values[reachable] = total[reachable] / count[reachable]
     return values
+
+
+# -- outlines ---------------------------------------------------------------
+_OUTLINE_MASKS = {}
+
+
+def _outline_mask(nifti, sign, absolute, threshold, max_value, smooth_vox):
+    """The selected voxels as a 0/1 volume, blurred by ``smooth_vox`` voxels.
+
+    Selection is exactly ``_select``: whatever a fill overlay with the same
+    settings would paint is inside, everything else is outside. The blur only
+    rounds the voxel staircase so a traced edge reads as a boundary rather than
+    as the grid; it moves the edge by well under a voxel for sigma <= 1.
+    """
+    data, affine = _volume(nifti)
+    if hasattr(nifti, "affine"):
+        stamp = id(nifti)
+    else:
+        try:
+            stamp = os.path.getmtime(str(Path(nifti).expanduser()))
+        except OSError:
+            stamp = 0.0
+    key = (str(nifti), stamp, sign, bool(absolute), threshold,
+           max_value, float(smooth_vox or 0.0))
+    if key not in _OUTLINE_MASKS:
+        chosen = _select(data.ravel(), sign=sign, absolute=absolute,
+                         threshold=threshold, max_value=max_value)
+        mask = np.isfinite(chosen).reshape(data.shape).astype(np.float32)
+        if smooth_vox:
+            from scipy.ndimage import gaussian_filter
+
+            mask = gaussian_filter(mask, float(smooth_vox))
+        if len(_OUTLINE_MASKS) > 8:
+            _OUTLINE_MASKS.clear()
+        _OUTLINE_MASKS[key] = mask
+    return _OUTLINE_MASKS[key], affine
+
+
+def outline_lines(mesh, nifti, sign="both", absolute=False, threshold=None,
+                  max_value=None, smooth_vox=1.0, lift_mm=0.3):
+    """Lines on ``mesh`` tracing the edge of a volume's selected region.
+
+    The 0/1 selection (see ``_outline_mask``) is sampled trilinearly at every
+    vertex and contoured at 0.5, so the line runs across the surface where the
+    region starts. Lines are lifted ``lift_mm`` along the vertex normals so they
+    sit on the surface instead of flickering into it. Returns an empty PolyData
+    when nothing on this mesh is selected.
+    """
+    from scipy.ndimage import map_coordinates
+
+    mask, affine = _outline_mask(nifti, sign, absolute, threshold, max_value,
+                                 smooth_vox)
+    surf = mesh.extract_surface() if not isinstance(mesh, pv.PolyData) else mesh
+    surf = surf.triangulate()
+    pts = np.asarray(surf.points, float)
+    vox = np.linalg.inv(affine) @ np.c_[pts, np.ones(len(pts))].T
+    inside = map_coordinates(mask, vox[:3], order=1, mode="constant", cval=0.0)
+    if not (inside.max() > 0.5 > inside.min()):
+        return pv.PolyData()
+    surf = surf.copy(deep=False)
+    surf.point_data["_inside"] = inside
+    if lift_mm:
+        surf = surf.compute_normals(point_normals=True, cell_normals=False,
+                                    split_vertices=False, auto_orient_normals=False)
+    lines = surf.contour([0.5], scalars="_inside")
+    if lift_mm and lines.n_points and "Normals" in lines.point_data:
+        lines.points = lines.points + lift_mm * np.asarray(lines.point_data["Normals"])
+    return lines
