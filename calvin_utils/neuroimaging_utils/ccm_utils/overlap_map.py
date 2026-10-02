@@ -151,6 +151,8 @@ class OverlapMap:
 
     def _binarize(self, flatten_niftis, threshold):
         """Binarize the flattened NIfTI data according to absolute thresholding. """
+        if threshold is None:
+            return flatten_niftis
         binary_map = np.zeros_like(flatten_niftis, dtype=int)
         binary_map[flatten_niftis >= threshold] = 1
         binary_map[flatten_niftis <= -threshold] = -1

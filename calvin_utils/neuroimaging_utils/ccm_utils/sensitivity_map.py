@@ -4,33 +4,40 @@ import pandas as pd
 import nibabel as nib
 from calvin_utils.neuroimaging_utils.ccm_utils.overlap_map import OverlapMap
 
-class OverlapMapDF(OverlapMap):
-    def __init__(self, df_dict, mask_path: str | None = None, out_dir: str | None = None, **kwargs):
+class SensitivityMap(OverlapMap):
+    def __init__(self, df, mask_path: str | None = None, out_dir: str | None = None, **kwargs):
         '''
         Basic overwrite of OverlapMap that allows a dataframe [shape: (observations, voxels)] to be passed. 
         Read in from calvin_utils.neuroimaging_utils.ccm_utils.overlap_map import OverlapMap for more info. 
+        Generates overlap maps and average maps.
         '''
         super().__init__(data_loader=None, mask_path=mask_path, out_dir=out_dir, **kwargs)
-        self.df_dict = self._get_dict_data(df_dict)
+        self.df = self._get_dict_data(df)
         
     ### Setter/Getter ###
     def _get_dict_data(self, data):
         if isinstance(data, pd.DataFrame):
             return {"df": data}
-        else:
-            return data
             
-    ### Core Logic Overwrite ###
+    ### Core Logic ###
+    def generate_average_maps(self):
+        out = {}
+        for name, df in self.df.items():
+            bin_ = self._binarize(df.values.astype(np.float32), self.threshold)
+            avg_ = np.mean(bin_, axis=1)
+            out[name] = avg_
+        return out
+    
     def generate_overlap_maps(self):
         out = {}
-        for name, df in self.df_dict.items():
+        for name, df in self.df.items():
             bin_ = self._binarize(df.values.astype(np.float32), self.threshold)
             out[name] = bin_.sum(0).astype(np.float32)
         return out
 
     def generate_stepwise_maps(self):
         out = {}
-        for name, df in self.df_dict.items():
+        for name, df in self.df.items():
             n_subj = len(df)
             bin_ = self._binarize(df.values.astype(np.float32), self.threshold)
             pct = bin_.sum(0) / n_subj * 100
@@ -43,7 +50,7 @@ class OverlapMapDF(OverlapMap):
         mask_img = nib.load(self.mask_path)
         arr = arr.reshape(mask_img.get_fdata().shape)
         img = nib.Nifti1Image(arr, affine=mask_img.affine)
-        self._visualize_map(img,title=file_name)
+        # self._visualize_map(img,title=file_name)
         if self.out_dir is not None:
             os.makedirs(self.out_dir, exist_ok=True)
             out_path = os.path.join(self.out_dir, f'threshold_{int(self.threshold)}_{file_name}')
@@ -55,11 +62,13 @@ class OverlapMapDF(OverlapMap):
         '''Overridden run function'''
         overlap = self.generate_overlap_maps()
         stepwise = self.generate_stepwise_maps()
+        average = self.generate_average_maps()
 
         if self.out_dir and self.mask_path:
             self.save_maps(overlap,   suffix='_n_overlap')
             self.save_maps(stepwise, suffix='_percent_overlap_stepwise')
+            self.save_maps(average, suffix='_average')
         elif self.out_dir and not self.mask_path:
-            print("‣ No mask_path supplied → skipping NIfTI export.")
+            print("No mask_path supplied. Skipping NIfTI export.")
 
         return overlap, stepwise

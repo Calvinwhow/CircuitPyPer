@@ -121,8 +121,8 @@ ATLAS_SUFFIXES = (".npz", ".npy")
 def is_atlas(path):
     """Whether this file is fibre GEOMETRY rather than a result.
 
-    ``.fib.npy`` and legacy ``.fib.values.npy`` are results -- values attached
-    to an atlas -- and everything else with these suffixes is the atlas itself.
+    ``.fib.npy`` and ``.fib.values.npy`` are results -- values attached to an
+    atlas -- and everything else with these suffixes is the atlas itself.
     """
     name = str(path).lower()
     if name.endswith((".fib.npy", ".fib.values.npy")):
@@ -152,7 +152,7 @@ def is_descriptor(path):
 
 
 def read_descriptor(path, verify=True):
-    """Resolve a fiber JSON descriptor to its atlas and values file.
+    """Resolve a ``.fib.desc.json`` to its atlas and its values file.
 
     The descriptor is the entry point for a result: it names the atlas the
     values were written against, so a figure never hard-codes an atlas path and
@@ -186,17 +186,11 @@ def read_descriptor(path, verify=True):
             f"{path.name} names an atlas that is not on this machine: "
             f"{atlas_info.get('path')!r} (nor at its recorded relative path)")
 
-    # Read the current compact spelling plus both older split-name spellings.
+    # The name moved from "<stem>.values.npy" to "<stem>.fib.values.npy"; both
+    # spellings are read so results written either side of that still open.
     named = desc.get("values_file") or ""
     stem = named.split(".")[0] if named else path.name.split(".")[0]
-    names = [
-        n for n in (
-            named,
-            f"{stem}.fib.npy",
-            f"{stem}.fib.values.npy",
-            f"{stem}.values.npy",
-        ) if n
-    ]
+    names = [n for n in (named, f"{stem}.fib.values.npy", f"{stem}.values.npy") if n]
 
     # Three places to look, because a descriptor does not always arrive beside
     # its values. A browser drop uploads the one file the user dragged, so the
@@ -247,7 +241,7 @@ def read_descriptor(path, verify=True):
 
 
 def streamline_values(path, count=None):
-    """One value per atlas fibre, from a ``.fib.npy`` (or any 1-D array).
+    """One value per atlas fibre, from a ``.fib.values.npy`` (or any 1-D array).
 
     ``count`` is the number of fibres the atlas holds; a mismatch means the
     values were written against a different atlas, which is worth saying plainly
@@ -337,7 +331,7 @@ def load_fibers(
     path = Path(path).expanduser()
     if is_atlas(path):
         # A bare atlas is geometry and nothing else. Its fibres get no values,
-        # because values live in separate .fib.npy result files that are
+        # because the values live in separate .fib.values.npy files that are
         # layered on afterwards -- one bundle of streamlines, many findings
         # painted onto it, rather than a new copy of the geometry per finding.
         from calvin_utils.neuroimaging_utils.tract_utils.fiber_converter import (
@@ -347,7 +341,7 @@ def load_fibers(
         streamlines = [FiberFormatConverter._as_streamline(f)
                        for f in FiberFormatConverter._load_fibers(path)]
         values = np.zeros(len(streamlines), dtype=np.float32)
-    elif path.name.lower().endswith((".fib.npy", ".values.npy")) or is_descriptor(path):
+    elif path.name.lower().endswith(".fib.npy"):
         streamlines, values, _ = FiberFormatConverter.load_fib_npy(
             path, fiber_atlas_path=fiber_atlas_path, sign=sign,
             min_abs_value=min_abs_value, top_percent=top_percent,
@@ -473,7 +467,14 @@ def prune_streamlines(poly, gates):
     plane in world millimetres, addressed the same way a mesh section is, so a
     gate can be typed from a coordinate someone read off a slice.
 
-    ``mode`` is "through" to require the crossing or "avoid" to forbid it.
+    A gate is either a PLANE -- ``{axis, at}`` -- or a VOLUME:
+    ``{kind: "volume", nifti, threshold}``, which is an ROI read straight off a
+    NIfTI. A streamline is inside the volume where ``|value| > threshold``, so a
+    binary mask at threshold 0 means "any non-zero voxel" and a t-map at 2 means
+    either tail. Both kinds live in the same list and AND together, so "through
+    this cluster, avoiding the midline" is one volume gate and one plane gate.
+
+    ``mode`` is "through" to require the hit or "avoid" to forbid it.
     """
     import pyvista as pv
 
@@ -482,6 +483,22 @@ def prune_streamlines(poly, gates):
         return poly
 
     points = np.asarray(poly.points, float)
+
+    # Each volume gate is resolved ONCE over every point in the layer -- a
+    # single vectorised sample, not one per streamline -- and the per-streamline
+    # test below is then just an index into a boolean array. Nearest neighbour,
+    # because an ROI is categorical: interpolating a mask invents values on its
+    # boundary that are in neither the inside nor the outside.
+    inside = {}
+    for gi, gate in enumerate(gates):
+        if gate.get("kind") == "volume" and gate.get("nifti"):
+            from calvin_utils.plotting_utils.mesh_paint import sample_nifti
+
+            sampled = np.asarray(
+                sample_nifti(points, gate["nifti"], order=0), float)
+            cut = float(gate.get("threshold") or 0.0)
+            inside[gi] = np.abs(sampled) > cut
+
     lines = poly.lines
     kept, mapped, order = [], {}, []
     cursor = i = 0
@@ -490,9 +507,12 @@ def prune_streamlines(poly, gates):
         ids = lines[i + 1:i + 1 + n]
         run = points[ids]
         ok = True
-        for gate in gates:
-            axis = "xyz".index(gate["axis"])
-            hit = crosses_plane(run, axis, gate["at"])
+        for gi, gate in enumerate(gates):
+            if gi in inside:
+                hit = bool(inside[gi][ids].any())
+            else:
+                axis = "xyz".index(gate["axis"])
+                hit = crosses_plane(run, axis, gate["at"])
             if gate.get("mode", "through") == "through":
                 ok = ok and hit
             else:

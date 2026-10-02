@@ -46,15 +46,28 @@ from calvin_utils.statistical_utils.scatterplot import SimpleScatterPlotWrapper
 
 
 # Input/output paths.
-INPUT_PATH = "/Volumes/OneTouch/01x_Dhand_RCPStrokes/results/prediction_by_schmahmann/test_inputs/rcp_test_motor.csv"  # "/path/to/input.csv" or "/path/to/input.xlsx"
+INPUT_PATH = "/Volumes/OneTouch/01x_Dhand_RCPStrokes/metadata/master.csv"  # "/path/to/input.csv" or "/path/to/input.xlsx"
 SHEET = None  # Specify sheet if using excel, e.g. "Sheet1".
-OUT_DIR = '/Volumes/OneTouch/01x_Dhand_RCPStrokes/results/prediction_by_schmahmann/motor_predictions'
+OUT_DIR = '/Volumes/OneTouch/01x_Dhand_RCPStrokes/results/prediction_by_schmahmann/predictions/cognitive'
 MASK_PATH = "/Users/cu135/Software_Local/calvin_utils_project/circuit_pyper/resources/MNI152_T1_2mm_brain_mask.nii"
 
 # Symptom setup.
-SYMPTOM_COLUMN = "FingerToNoseTestRight"  # Spreadsheet column to predict. Run one symptom at a time.
-NIFTI_COL = "rcp_lesion_2mm_path"  # Column containing patient neuroimaging files.
-Y_LABEL = "Motor Deficits (BARS)"  # Defaults to SYMPTOM_COLUMN. Example: "Memory Outcome"
+SYMPTOM_COLUMN_DICT = {"bars__limb_ataxia": "Limb Ataxia (BARS)",  # {"Spreadsheet column to predict": "y-axis label"}.
+                    "cnrs__Sec5AAngry": "Emotional Dysregulation (CNRS)",
+                    "ccas__SematicFluencyRawS": "Cognitive Dysfunction (CCAS)",
+                    "ccas__PhonemicFluencyRawS": "ccas__PhonemicFluencyRawS",
+                    "ccas__CategorySwitchRawS": "ccas__CategorySwitchRawS",
+                    "ccas__DigitSpanForwardRawS": "ccas__DigitSpanForwardRawS",
+                    "ccas__DigitSpanBackwardRawS": "ccas__DigitSpanBackwardRawS",
+                    "ccas__CubeDrawRawS": "ccas__CubeDrawRawS",
+                    "ccas__VerbalRecallRawS": "ccas__VerbalRecallRawS",
+                    "ccas__SimiliarityRawS": "ccas__SimiliarityRawS",
+                    "ccas__GoNoGoRawS": "ccas__GoNoGoRawS",
+                    "ccas__TotalCCASRawScoreEntered": "ccas__TotalCCASRawScoreEntered",
+                    "ccas__TotalCCASFailScore": "ccas__TotalCCASFailScore"}
+
+
+NIFTI_COL = "Nifti_File_Path"  # Column containing patient neuroimaging files.
 
 # CategorySwitchRawS	CubeDrawRawS	DigitSpanBackwardRawS	DigitSpanForwardRawS	GoNoGoRawS	PhonemicFluencyRawS	SematicFluencyRawS	SimiliarityRawS	VerbalRecallRawS	CCASTotal	Memory	Executive	Language	Visuospatial
 
@@ -62,12 +75,31 @@ Y_LABEL = "Motor Deficits (BARS)"  # Defaults to SYMPTOM_COLUMN. Example: "Memor
 # Names are derived from filenames. Optional explicit names are also supported:
 # MAPS_TO_PREDICT = [("Memory map", "/path/to/map.nii.gz")]
 MAPS_TO_PREDICT = [
-    ("Motor Map Atrophy Cluster", "/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/results/optimization/symptom_on_lhs/vlsm_regressions_clusters/cluster_regression_identity_standardized/Nifti_File_Path-on-cluster_motor-cluster_cognitive-cluster_emotional/regression/contrast_tval_FWE_0_HigherIsWorse.nii.gz"),
-    ("Motor Map Network Cluster", "/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/results/optimization/symptom_on_lhs/network_regressions_clusters/cluster_regression_identity_standardized/Nifti_File_Path-on-cluster_motor-cluster_cognitive-cluster_emotional/regression/contrast_tval_0.nii.gz"),
-    ("Motor Map Fiber Cluster", "/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/results/optimization/symptom_on_lhs/fiber_regressions_clusters/cluster_regression_identity_standardized/Fiber_File_Path-on-cluster_motor-cluster_cognitive-cluster_emotional/regression/contrast_tval_0.nii.gz"),
-    ("Motor Map",     "/Volumes/OneTouch/01x_Dhand_RCPStrokes/results/prediction_by_schmahmann/fixed_map_transfer/allMaps_motor/final_model/optimized_map.nii.gz"),
-    ("Cognitive Map", "/Volumes/OneTouch/01x_Dhand_RCPStrokes/results/prediction_by_schmahmann/fixed_map_transfer/allMaps_cognitive/final_model/optimized_map.nii.gz"),
-    ("Emotional Map", "/Volumes/OneTouch/01x_Dhand_RCPStrokes/results/prediction_by_schmahmann/fixed_map_transfer/allMaps_emotional/final_model/optimized_map.nii.gz"),
+    ("Motor Map Optimal",           "/Volumes/OneTouch/01x_Dhand_RCPStrokes/results/prediction_by_schmahmann/fixed_map_transfer/allMaps_motor/final_model/optimized_map.nii.gz"),
+    ("Cognitive Map Optimal",       "/Volumes/OneTouch/01x_Dhand_RCPStrokes/results/prediction_by_schmahmann/fixed_map_transfer/allMaps_cognitive/final_model/optimized_map.nii.gz"),
+    ("Emotional Map Optimal",       "/Volumes/OneTouch/01x_Dhand_RCPStrokes/results/prediction_by_schmahmann/fixed_map_transfer/allMaps_emotional/final_model/optimized_map.nii.gz"),
+    
+    ("Motor Map Finland",           "/Users/cu135/Partners HealthCare Dropbox/Calvin Howard/studies/raynor_network_mapping/data/finland_maps/LimbAtaxia_vs_NoLimbAtaxia_Baseline_tstat1.nii.gz"),
+    ("Cognitive Map Finland",       '/Users/cu135/Partners HealthCare Dropbox/Calvin Howard/studies/raynor_network_mapping/data/finland_maps/Total_Followup_MoCA_tstat1.nii.gz'),
+    ("Emotional Map Finland",       '/Users/cu135/Partners HealthCare Dropbox/Calvin Howard/studies/raynor_network_mapping/data/finland_maps/Total_Followup_GAD7_tstat1.nii.gz'),
+    
+    ("Nettekoven Motor Maps",       '/Users/cu135/Partners HealthCare Dropbox/Calvin Howard/studies/raynor_network_mapping/data/nettekoven_maps/rois/resampled_cerebellum_roi_1-4_to_17-20_bilateral.nii.gz'),
+    ("Nettekoven Action Maps",      '/Users/cu135/Partners HealthCare Dropbox/Calvin Howard/studies/raynor_network_mapping/data/nettekoven_maps/rois/resampled_cerebellum_roi_5-7_to_21-23_bilateral.nii.gz'),
+    ("Nettekoven Demand Maps",      '/Users/cu135/Partners HealthCare Dropbox/Calvin Howard/studies/raynor_network_mapping/data/nettekoven_maps/rois/resampled_cerebellum_roi_8-11_to_24-27_bilateral.nii.gz'),
+    ("Nettekoven Sociolinguistic Maps", '/Users/cu135/Partners HealthCare Dropbox/Calvin Howard/studies/raynor_network_mapping/data/nettekoven_maps/rois/resampled_cerebellum_roi_12-16_to_28-32_bilateral.nii.gz'),
+    
+    ("Motor Map Atrophy Cluster",   "/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/results/optimization/symptom_on_lhs/vlsm_regressions_clusters/cluster_regression_identity_standardized/Nifti_File_Path-on-cluster_motor-cluster_cognitive-cluster_emotional/regression/contrast_tval_FWE_0.nii.gz"),
+    ("Motor Map Network Cluster",   "/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/results/optimization/symptom_on_lhs/network_regressions_clusters/cluster_regression_identity_standardized/Nifti_File_Path-on-cluster_motor-cluster_cognitive-cluster_emotional/regression/contrast_tval_0.nii.gz"),
+    ("Motor Map Fiber Cluster",     "/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/results/optimization/symptom_on_lhs/fiber_regressions_clusters/cluster_regression_identity_standardized/Fiber_File_Path-on-cluster_motor-cluster_cognitive-cluster_emotional/regression/contrast_tval_0.nii.gz"),
+    
+    ("Cognitive Map Atrophy Cluster",   "/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/results/optimization/symptom_on_lhs/vlsm_regressions_clusters/cluster_regression_identity_standardized/Nifti_File_Path-on-cluster_motor-cluster_cognitive-cluster_emotional/regression/contrast_tval_FWE_1.nii.gz"),
+    ("Cognitive Map Network Cluster",   "/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/results/optimization/symptom_on_lhs/network_regressions_clusters/cluster_regression_identity_standardized/Nifti_File_Path-on-cluster_motor-cluster_cognitive-cluster_emotional/regression/contrast_tval_1.nii.gz"),
+    ("Cognitive Map Fiber Cluster",     "/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/results/optimization/symptom_on_lhs/fiber_regressions_clusters/cluster_regression_identity_standardized/Fiber_File_Path-on-cluster_motor-cluster_cognitive-cluster_emotional/regression/contrast_tval_1.nii.gz"),
+    
+    ("Emotional Map Atrophy Cluster",   "/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/results/optimization/symptom_on_lhs/vlsm_regressions_clusters/cluster_regression_identity_standardized/Nifti_File_Path-on-cluster_motor-cluster_cognitive-cluster_emotional/regression/contrast_tval_FWE_2.nii.gz"),
+    ("Emotional Map Network Cluster",   "/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/results/optimization/symptom_on_lhs/network_regressions_clusters/cluster_regression_identity_standardized/Nifti_File_Path-on-cluster_motor-cluster_cognitive-cluster_emotional/regression/contrast_tval_2.nii.gz"),
+    ("Emotional Map Fiber Cluster",     "/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/results/optimization/symptom_on_lhs/fiber_regressions_clusters/cluster_regression_identity_standardized/Fiber_File_Path-on-cluster_motor-cluster_cognitive-cluster_emotional/regression/contrast_tval_2.nii.gz"),
+    
 ]
 
 # Optional preprocessing.
@@ -482,12 +514,12 @@ def is_variable_vector(arr):
 class MapPredictionAnalysis:
     """Top-level workflow: prep data, predict outcomes with maps, plot scatterplots."""
 
-    def __init__(self):
+    def __init__(self, symptom_column, y_label):
         self.preparer = PredictionDataPreparer(
             input_path=INPUT_PATH,
             sheet=SHEET,
             out_dir=OUT_DIR,
-            outcome_col=SYMPTOM_COLUMN,
+            outcome_col=symptom_column,
             nifti_col=NIFTI_COL,
             mask_path=MASK_PATH,
             path_replacements=None,
@@ -502,7 +534,7 @@ class MapPredictionAnalysis:
             mask_path=MASK_PATH,
             similarity=SIMILARITY,
         )
-        self.plotter = PredictionPlotter(y_label=Y_LABEL)
+        self.plotter = PredictionPlotter(y_label=y_label)
 
     def run(self):
         print("Running symptom: ", self.preparer.outcome_col)
@@ -513,7 +545,8 @@ class MapPredictionAnalysis:
 
 
 def main():
-    MapPredictionAnalysis().run()
+    for symptom_column, y_axis_label in SYMPTOM_COLUMN_DICT.items():
+        MapPredictionAnalysis(symptom_column=symptom_column, y_label=y_axis_label).run()
 
 
 if __name__ == "__main__":

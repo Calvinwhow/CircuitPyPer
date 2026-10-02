@@ -34,5 +34,6 @@ def make_2mm(source, reference):
 
 reference = nib.load(REFERENCE)
 
-for source in glob(PATTERNS):
+for source in glob(str(PATTERNS)):
+    source = Path(source)
     make_2mm(source, reference)

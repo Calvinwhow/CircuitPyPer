@@ -36,7 +36,7 @@ from calvin_utils.neuroimaging_utils.nifti_utils.cerebellum_plot import SUITCere
 # =============================================================================
 # Input / output ----------------------------------------------------------------
 
-NIFTI_PATH = Path("/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/results/optimization/symptom_on_lhs/network_regressions_clusters/cluster_regression_identity_standardized/Nifti_File_Path-on-cluster_motor-cluster_cognitive-cluster_emotional/regression/contrast_tval_FWE_0.nii.gz")
+NIFTI_PATH = Path("/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/results/optimization/symptom_on_lhs/network_regressions_clusters/cluster_regression_identity_standardized/Nifti_File_Path-on-cluster_motor-cluster_cognitive-cluster_emotional/regression/contrast_tval_FWE_0_neg_95pct.nii.gz")
 OUTPUT_DIR = NIFTI_PATH.parent / "neuro_plots"
 
 
@@ -119,7 +119,7 @@ MESH_COLOR = "#8d99ae"
 
 # visualization settings ---------------------------------------------------------------
 CMAP = "#c15656"                    # also accepts Matplotlibe LUT names, MRIcroGL LUT names in ./resources/colour_luts, and hex codes.
-VMINMAX = None
+VMINMAX = (0,10)
 THRESHOLD = 0                # Minimum  value plotted
 ABSOLUTE_THRESHOLD = False      # Whether minimum value plotted is an absolute value or not
 STYLE = "default"
@@ -163,7 +163,7 @@ MAKE_GALLERY = True
 MAKE_OVERVIEW = True
 MAKE_INDIVIDUAL_VIEWS = False
 MAKE_HTML = True
-OPEN_HTML = True
+OPEN_HTML = False
 
 # Backend escape hatches --------------------------------------------------------
 
@@ -292,10 +292,10 @@ PRESETS = {
 
 # Select complete recipes here, or set FIGURES=None to use PLOT/MESH/ATLAS.
 FIGURES = [
-    PRESETS["custom_parcel_mesh"],
-    PRESETS["custom_brain_mesh"],
-    PRESETS["glass_brain_mesh"],
-    PRESETS["yabplot_subcortical"],
+    # PRESETS["custom_parcel_mesh"],
+    # PRESETS["custom_brain_mesh"],
+    # PRESETS["glass_brain_mesh"],
+    # PRESETS["yabplot_subcortical"],
     # PRESETS["yabplot_vertexwise"],
     # PRESETS["yabplot_cortical"],
     # PRESETS["yabplot_xtracts"],

@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Nested validation and final fitting for regression-derived component maps.
 
-Map-generating and scoring datasets use the same configuration schema. Supply
-either a DataLoader JSON or a dictionary whose entries define ``csv_path``,
-``nifti_column``, and ``symptom_column``. CSV inputs are packaged by the
-existing CCM regression-data preparer; raw array dictionaries are not accepted.
-Inner folds select weights from rebuilt regression maps. Outer folds test the
-complete map-building and weight-selection procedure on untouched patients.
+Map-generating, fitting, and test datasets use the same configuration schema.
+Supply either a DataLoader JSON or a dictionary whose entries define
+``csv_path``, ``nifti_column``, and ``symptom_column``. CSV inputs are packaged
+by the existing CCM regression-data preparer; raw array dictionaries are not
+accepted. Inner folds select weights from rebuilt regression maps. Outer folds
+test the complete map-building and weight-selection procedure on untouched
+patients. Optional test datasets are an independent cohort, opened only after
+the final map is frozen and scored exactly once.
 """
 
 from __future__ import annotations
@@ -30,6 +32,11 @@ from calvin_utils.neuroimaging_utils.ccm_utils.optimization.nested_cv import (
 from calvin_utils.neuroimaging_utils.ccm_utils.optimization.fixed_pipeline import (
     make_dataset_loader,
 )
+from calvin_utils.neuroimaging_utils.ccm_utils.optimization.test_evaluation import (
+    evaluate_test_datasets,
+    fitting_ids_from_datasets,
+    save_test_evaluation,
+)
 from calvin_utils.neuroimaging_utils.ccm_utils.optimization.visualization import (
     render_optimization_history,
 )
@@ -46,8 +53,10 @@ SUBJECT_COL = None               # Optional default; each entry can set subject_
 
 MAP_DATASETS = {}                # {map_name: {'csv_path': ..., 'nifti_column': ..., 'symptom_column': ...}}
 MAP_MANIFEST_PATH = None         # Existing DataLoader JSON instead of MAP_DATASETS.
-SCORING_DATASETS = {}            # Same CSV dictionary schema; replaces PREDICT_COLS.
-SCORING_MANIFEST_PATH = None     # Existing DataLoader JSON instead of SCORING_DATASETS.
+FITTING_DATASETS = {}            # Same CSV dictionary schema; selects the weights.
+FITTING_MANIFEST_PATH = None     # Existing DataLoader JSON instead of FITTING_DATASETS.
+TEST_DATASETS = {}               # Optional, same schema; scored once on the frozen map.
+TEST_MANIFEST_PATH = None        # Existing DataLoader JSON instead of TEST_DATASETS.
 
 INNER_FOLDS = "loocv"           # Select weights inside each outer-training set.
 OUTER_FOLDS = 5                  # Test the complete fitted pipeline on unseen patients.
@@ -73,9 +82,9 @@ def main():
         # Fold-specific RegressionPrep calls transform only the training rows.
         data_transform_method=None,
     )
-    scoring_loader = make_dataset_loader(
-        out_dir / "prepared_scoring_data", dataset_specs=SCORING_DATASETS,
-        manifest_path=SCORING_MANIFEST_PATH, mask_path=MASK_PATH,
+    fitting_loader = make_dataset_loader(
+        out_dir / "prepared_fitting_data", dataset_specs=FITTING_DATASETS,
+        manifest_path=FITTING_MANIFEST_PATH, mask_path=MASK_PATH,
         subject_col=SUBJECT_COL,
         # Damage is calculated from native patient vectors. Transformation is
         # confined to regression fitting inside each inner/outer training set.
@@ -85,23 +94,24 @@ def main():
     if not output_type:
         raise ValueError("Set MAP_OUTPUT_TYPE when using MAP_MANIFEST_PATH.")
     map_X, map_ids, map_outcomes = map_inputs_from_loader(map_loader)
-    scoring = datasets_from_loader(scoring_loader)
+    fitting = datasets_from_loader(fitting_loader)
 
     outer_results = evaluate_regression_pipeline_outer_cv(
-        map_X, map_ids, map_outcomes, scoring,
+        map_X, map_ids, map_outcomes, fitting,
         inner_folds=INNER_FOLDS, outer_folds=OUTER_FOLDS,
         seed=RANDOM_SEED, data_transform_method=DATA_TRANSFORM_METHOD,
         weight_mode=WEIGHT_INIT_MODE, max_iters=MAX_ITERS,
         score_mode="reference_z",
     )
-    save_nested_cv(out_dir / "outer_validation", *outer_results)
+    if outer_results is not None:
+        save_nested_cv(out_dir / "outer_validation", *outer_results)
 
     # After estimating generalization above, fit the production map on all
     # patients. Its weights are still selected exclusively by inner CV.
     capture_history = STORE_ITERS or RENDER_GIF
     result = fit_weights_with_inner_cv(
         map_X, map_ids, map_outcomes,
-        scoring, inner_folds=INNER_FOLDS, seed=RANDOM_SEED,
+        fitting, inner_folds=INNER_FOLDS, seed=RANDOM_SEED,
         data_transform_method=DATA_TRANSFORM_METHOD,
         weight_mode=WEIGHT_INIT_MODE, max_iters=MAX_ITERS,
         score_mode="reference_z", store_iters=capture_history,
@@ -126,6 +136,23 @@ def main():
                 history_path, final_dir / "optimization.gif", **GIF_OPTIONS
             )
             print(f"Saved optimization GIF to: {gif_path}")
+
+    # The map is frozen above. Test patients are loaded only now and are never
+    # used to build maps, select weights, or calibrate scores.
+    if TEST_DATASETS or TEST_MANIFEST_PATH:
+        test_loader = make_dataset_loader(
+            out_dir / "prepared_test_data", dataset_specs=TEST_DATASETS,
+            manifest_path=TEST_MANIFEST_PATH, mask_path=MASK_PATH,
+            subject_col=SUBJECT_COL, data_transform_method=None,
+        )
+        test = datasets_from_loader(test_loader)
+        test_predictions, test_summary = evaluate_test_datasets(
+            optimized_map, test,
+            fitting_ids=fitting_ids_from_datasets(
+                fitting, map_ids
+            ),
+        )
+        save_test_evaluation(out_dir / "test_evaluation", test_predictions, test_summary)
 
 
 if __name__ == "__main__":

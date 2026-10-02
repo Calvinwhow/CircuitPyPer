@@ -17,7 +17,7 @@ from calvin_utils.neuroimaging_utils.output_functions import NeuroimageFileOutpo
 def load_map_files(map_files, *, mask_path, map_output_type=None):
     """Import native component maps into one ordered feature space."""
     if len(map_files) < 2:
-        raise ValueError("Provide at least two component maps in MAP_FILES.")
+        print("WARNING: Provide at least two component maps in MAP_FILES to run a proper optimization.")
     paths = {name: Path(path).expanduser().resolve() for name, path in map_files.items()}
     for name, path in paths.items():
         if not path.is_file():

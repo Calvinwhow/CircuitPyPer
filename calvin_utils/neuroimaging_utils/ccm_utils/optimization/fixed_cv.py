@@ -111,8 +111,6 @@ def evaluate_fixed_maps_outer_cv(
     If a patient occurs in several scoring datasets, their ID selects the same
     outer-validation fold in all of them. Component maps are never rebuilt.
     """
-    if len(corr_map_dict) < 2:
-        raise ValueError("At least two fixed component maps are required.")
     if max_iters < 1:
         raise ValueError("max_iters must be positive.")
     cohorts = _load_cohorts(
@@ -120,9 +118,10 @@ def evaluate_fixed_maps_outer_cv(
     )
     _project_cohorts(corr_map_dict, cohorts, data_loader)
     all_ids = np.unique(np.concatenate([data["ids"] for data in cohorts.values()]))
-    held_out_sets = assign_id_folds(
-        all_ids, outer_folds, seed=seed, level="outer"
-    )
+    held_out_sets = assign_id_folds( all_ids, outer_folds, seed=seed, level="outer")
+    if held_out_sets is None:
+        print(f"OUTER_FOLDS = {held_out_sets}. Skipping in-data cross-validation.")
+        return None
 
     scores = {name: np.full(len(data["y"]), np.nan) for name, data in cohorts.items()}
     calibrated_scores = {
@@ -133,6 +132,7 @@ def evaluate_fixed_maps_outer_cv(
         for name, data in cohorts.items()
     }
     weight_records = []
+    excluded_folds = {name: 0 for name in cohorts}
     for outer_fold, held_out in enumerate(held_out_sets, start=1):
         train_data = {}
         train_projections = {}
@@ -140,17 +140,25 @@ def evaluate_fixed_maps_outer_cv(
         for name, data in cohorts.items():
             held = np.isin(data["ids"], held_out)
             train = ~held
-            if train.sum() < 3 or np.unique(data["y"][train]).size < 2:
-                raise ValueError(
-                    f"Outer fold {outer_fold} leaves too few varying training outcomes "
-                    f"in scoring dataset {name!r}."
-                )
             held_rows[name] = np.flatnonzero(held)
+            if train.sum() < 3 or np.unique(data["y"][train]).size < 2:
+                # This outcome is constant once this fold is withheld, so it
+                # cannot contribute to the objective here. Exclude it from
+                # THIS fold's weight fitting only; its held-out patients are
+                # still scored below with the map the other outcomes fitted,
+                # so every row is scored exactly once.
+                excluded_folds[name] += 1
+                continue
             train_data[name] = {
                 "niftis": data["X"][train], "indep_var": data["y"][train]
             }
             train_projections[name] = (
                 data["projected"][train], data["y"][train]
+            )
+        if not train_data:
+            raise ValueError(
+                f"Outer fold {outer_fold} leaves no scoring dataset with varying "
+                "training outcomes, so no weights can be fitted."
             )
         optimizer = LocalizationOptimizer(
             corr_map_dict, ArrayLoader(train_data), data_mode="ram",
@@ -212,6 +220,7 @@ def evaluate_fixed_maps_outer_cv(
             "dataset": name, "n_patients": len(data["y"]),
             "n_maps": len(corr_map_dict),
             "n_outer_folds": len(held_out_sets),
+            "n_folds_excluded_from_weight_fitting": excluded_folds[name],
             "outer_cv_spearman_rho": rho,
             "raw_outer_cv_spearman_rho": raw_rho,
         })

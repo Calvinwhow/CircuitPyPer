@@ -251,9 +251,10 @@ def evaluate_regression_pipeline_outer_cv(
     all_ids = np.unique(np.concatenate([
         np.asarray(data["ids"]).astype(str) for data in scoring_datasets.values()
     ]))
-    held_out_sets = assign_id_folds(
-        all_ids, outer_folds, seed=seed, level="outer"
-    )
+    held_out_sets = assign_id_folds(all_ids, outer_folds, seed=seed, level="outer")
+    if held_out_sets is None:
+        print(f"OUTER_FOLDS = {held_out_sets}. Skipping in-data cross-validation.")
+        return None
 
     outer_records = []
     outer_weight_tables = []
@@ -263,6 +264,7 @@ def evaluate_regression_pipeline_outer_cv(
         name: np.zeros(len(data["y"]), dtype=int)
         for name, data in scoring_datasets.items()
     }
+    excluded_folds = {name: 0 for name in scoring_datasets}
 
     for outer_fold, held_out_ids in enumerate(held_out_sets, start=1):
         map_train = ~np.isin(map_ids, held_out_ids)
@@ -280,15 +282,23 @@ def evaluate_regression_pipeline_outer_cv(
             train = ~held
             held_rows[name] = np.flatnonzero(held)
             if train.sum() < 5 or np.unique(np.asarray(data["y"])[train]).size < 2:
-                raise ValueError(
-                    f"Outer fold {outer_fold} leaves too few varying training "
-                    f"patients in scoring dataset {name!r}."
-                )
+                # This outcome is constant once this fold is withheld, so it
+                # cannot contribute to weight selection here. Exclude it from
+                # THIS fold's inner CV only; its held-out patients are still
+                # scored below with the map the other outcomes fitted, so
+                # every row is scored exactly once.
+                excluded_folds[name] += 1
+                continue
             outer_training[name] = {
                 "X": np.asarray(data["X"])[train],
                 "y": np.asarray(data["y"])[train],
                 "ids": ids[train],
             }
+        if len(outer_training) < 1:
+            raise ValueError(
+                f"Outer fold {outer_fold} leaves no scoring dataset with varying "
+                "training patients, so no weights can be selected."
+            )
 
         fitted_map, inner_predictions, inner_summary, weights = (
             fit_weights_with_inner_cv(
@@ -369,6 +379,7 @@ def evaluate_regression_pipeline_outer_cv(
             "dataset": name,
             "n_patients": len(rows),
             "n_outer_folds": len(held_out_sets),
+            "n_folds_excluded_from_weight_fitting": excluded_folds[name],
             "outer_cv_spearman_rho": float(adjusted_rho),
             "raw_outer_cv_spearman_rho": float(raw_rho),
         })

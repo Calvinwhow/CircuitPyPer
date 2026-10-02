@@ -47,7 +47,7 @@ if str(CIRCUIT_PYPER_DIR) not in sys.path:
 
 
 # Input/output paths.
-INPUT_PATH = "/Volumes/HowExp/datasets/02a_Corbetta_Stroke_Lesion/Study_Metadata/3month_arm_1clean.csv" # Form: "/path/to/input.csv" or "/path/to/input.xlsx"
+INPUT_PATH = "/Volumes/HowExp2/datasets/02a_Corbetta_Stroke_Lesion/Study_Metadata/3month_arm_1clean.csv" # Form: "/path/to/input.csv" or "/path/to/input.xlsx"
 SHEET = None                            # Specify sheet if using excel (i.e. "Sheet1")
 OUT_DIR = "/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/results/optimzation/comparisons/corbetta_3mo/gdss_10-cerebellumOnly" # Form: "/path/to/output_dir"
 MASK_PATH = "/Users/cu135/Software_Local/calvin_utils_project/circuit_pyper/resources/MNI152_T1_2mm_brain_mask.nii"
@@ -397,15 +397,27 @@ def map_items(map_dict, label):
 
 
 def comparator_items(map_paths):
-    """Return (derived_name, path) tuples from a simple list of comparator paths."""
+    """Return named comparator maps from paths or explicit ``(name, path)`` pairs."""
     if not isinstance(map_paths, list):
-        raise TypeError("COMPARATOR_MAPS must be a list: ['/path/to/map1.nii.gz', '/path/to/map2.nii.gz']")
+        raise TypeError(
+            "COMPARATOR_MAPS must be a list of paths or (name, path) pairs."
+        )
     if not map_paths:
         raise ValueError("COMPARATOR_MAPS is empty.")
-    return [
-        (Path(str(path)).name.replace(".nii.gz", "_nii_gz").replace(".nii", "_nii"), str(path))
-        for path in map_paths
-    ]
+
+    items = []
+    for item in map_paths:
+        if isinstance(item, (tuple, list)):
+            if len(item) != 2:
+                raise ValueError(
+                    "Each named COMPARATOR_MAPS entry must contain exactly (name, path)."
+                )
+            name, path = item
+        else:
+            path = item
+            name = Path(str(path)).name.replace(".nii.gz", "_nii_gz").replace(".nii", "_nii")
+        items.append((str(name), str(path)))
+    return items
 
 
 def safe_name(value):
@@ -842,6 +854,8 @@ class MapPredictionFigurePlotter:
                 for comparison in candidate_result.comparisons:
                     self._plot_individual_comparison(comparison)
             self._plot_candidate_aggregate(candidate_result)
+            self._plot_candidate_multi_map_anova(candidate_result)
+            
         write_outperformance_reports(self.out_dir)
 
     def _plot_candidate_scatter(self, candidate_result):
@@ -935,7 +949,53 @@ class MapPredictionFigurePlotter:
         os.makedirs(aggregate_dir, exist_ok=True)
         candidate_result.summary_df.to_csv(os.path.join(aggregate_dir, "observed_comparison_summary.csv"), index=False)
         candidate_result.resample_df.to_csv(os.path.join(aggregate_dir, "resampled_comparison_summary.csv"), index=False)
+    
+    def _plot_candidate_multi_map_anova(self, candidate_result):
+        resample_df = candidate_result.resample_df
 
+        if resample_df.empty:
+            return
+
+        aggregate_dir = os.path.join(candidate_result.candidate_out_dir, "aggregate")
+        os.makedirs(aggregate_dir, exist_ok=True)
+
+        candidate_name = candidate_result.candidate_name
+
+        # Candidate bootstrap distribution is repeated once for every comparator.
+        # Take it from the first comparison only.
+        first_old_map = resample_df["old_map"].iloc[0]
+
+        plot_data = {
+            candidate_name: (
+                resample_df.loc[
+                    resample_df["old_map"] == first_old_map,
+                    "new_resampled_stat"
+                ]
+                .reset_index(drop=True)
+            )
+        }
+
+        # Add each comparator as its own distribution.
+        for old_map, group in resample_df.groupby("old_map", sort=False):
+            plot_data[old_map] = (
+                group["old_resampled_stat"]
+                .reset_index(drop=True)
+            )
+
+        plot_df = pd.DataFrame(plot_data)
+
+        plotter = SimpleBoxPlotWrapper(plot_df)
+
+        plotter.plot(
+            columns=list(plot_df.columns),
+            dataset_name="Map Prediction Performance",
+            group_labels=list(plot_df.columns),
+            ylabel="R2" if self.delta_r2 else "r",
+            out_dir=os.path.join(
+                aggregate_dir,
+                "all_map_performance_anova.svg",
+            ),
+        )
 
 def summarize_distribution(values, prefix):
     """Return compact distribution stats for report rows."""

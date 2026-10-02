@@ -5,6 +5,9 @@ import numpy as np
 
 def assign_id_folds(patient_ids, folds, *, seed, level):
     """Return held-out ID arrays, preserving one assignment across outcomes."""
+    if folds is None:
+        return None
+    
     ids = np.unique(np.asarray(patient_ids).astype(str))
     if not len(ids):
         raise ValueError(f"{level} cross-validation needs at least one patient ID.")
