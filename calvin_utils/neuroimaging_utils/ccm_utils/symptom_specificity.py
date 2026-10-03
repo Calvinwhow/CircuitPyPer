@@ -1,5 +1,6 @@
 import os
 import re
+from dataclasses import dataclass
 import pandas as pd
 import numpy as np
 from tqdm import tqdm
@@ -9,6 +10,9 @@ from itertools import combinations, product
 from calvin_utils.plotting_utils.pair_superiority_plot import PairSuperiorityPlot
 from calvin_utils.neuroimaging_utils.ccm_utils.permutation_plot import PermutationVisualizer
 from calvin_utils.neuroimaging_utils.ccm_utils.correlations import run_pearson, run_spearman
+from calvin_utils.neuroimaging_utils.nifti_utils.damage_score_utils import DamageScorer
+from calvin_utils.permutation_analysis_utils.statsmodels_palm import CalvinStatsmodelsPalm
+from calvin_utils.plotting_utils.simple_box_plot import SimpleBoxPlotWrapper
 plt.ion()
 
 
@@ -537,6 +541,232 @@ class SpecificityAnalyzer:
             sort_within_labels=sort_within_labels,
             smooth_by_label=smooth_by_label,
         )                                               # 4 - For each col of X, plot the R-values from step 1, coloured/grouped by y_label. 
+
+
+@dataclass(frozen=True)
+class SpecificityAnalysisResult:
+    """Tables and analyzer produced by :class:`NetworkSpecificityAnalysis`."""
+
+    prepared_data: pd.DataFrame
+    damage_scores: pd.DataFrame
+    observed_correlations: pd.DataFrame
+    group_comparison: pd.DataFrame | None
+    analyzer: SpecificityAnalyzer
+
+
+class NetworkSpecificityAnalysis:
+    """Run the notebook network-specificity workflow from a script config.
+
+    Spreadsheet filtering and neuroimaging import are delegated to
+    :class:`CalvinStatsmodelsPalm`; this class only orchestrates damage scoring,
+    specificity resampling, tabular outputs, and the optional comparison plot.
+    """
+
+    def __init__(
+        self,
+        *,
+        input_path,
+        out_dir,
+        file_column,
+        target_maps_directory,
+        target_map_pattern,
+        mask_path,
+        label_dict,
+        sheet=None,
+        required_columns=None,
+        keep_rows=None,
+        drop_rows=None,
+        path_replacements=None,
+        damage_metric="cosine",
+        correlation="spearman",
+        method="permutation",
+        vectorize=False,
+        absval=False,
+        n_resamples=1000,
+        sort_within_labels=False,
+        smooth_by_label=True,
+        fillna_value=0,
+        target_labels=None,
+        other_labels=None,
+        target_name=None,
+        other_name="Other",
+        draw_comparison_plot=True,
+        comparison_dataset_name=" ",
+        comparison_xlabel=" ",
+        comparison_ylabel=None,
+        comparison_figsize=(4, 6),
+    ):
+        self.input_path = input_path
+        self.out_dir = out_dir
+        self.file_column = file_column
+        self.target_maps_directory = target_maps_directory
+        self.target_map_pattern = target_map_pattern
+        self.mask_path = mask_path
+        self.label_dict = dict(label_dict)
+        self.sheet = sheet
+        configured_required = (
+            [required_columns]
+            if isinstance(required_columns, str)
+            else list(required_columns or [])
+        )
+        self.required_columns = list(
+            dict.fromkeys([file_column, *configured_required])
+        )
+        self.keep_rows = list(keep_rows or [])
+        self.drop_rows = list(drop_rows or [])
+        self.path_replacements = list(path_replacements or [])
+        self.damage_metric = damage_metric
+        self.correlation = correlation
+        self.method = method
+        self.vectorize = vectorize
+        self.absval = absval
+        self.n_resamples = n_resamples
+        self.sort_within_labels = sort_within_labels
+        self.smooth_by_label = smooth_by_label
+        self.fillna_value = fillna_value
+        self.target_labels = target_labels
+        self.other_labels = other_labels
+        self.target_name = target_name
+        self.other_name = other_name
+        self.draw_comparison_plot = draw_comparison_plot
+        self.comparison_dataset_name = comparison_dataset_name
+        self.comparison_xlabel = comparison_xlabel
+        self.comparison_ylabel = comparison_ylabel
+        self.comparison_figsize = comparison_figsize
+        self.analysis_dir = os.path.join(str(out_dir), method)
+
+    def prepare_data(self):
+        """Return the filtered spreadsheet and subject-by-map score table."""
+        os.makedirs(self.analysis_dir, exist_ok=True)
+        palm = CalvinStatsmodelsPalm(
+            input_csv_path=self.input_path,
+            output_dir=self.out_dir,
+            sheet=self.sheet,
+        )
+        replacements = (
+            {self.file_column: self.path_replacements}
+            if self.path_replacements
+            else None
+        )
+        data_df = palm.prepare_spreadsheet_data(
+            required_columns=self.required_columns,
+            keep_rows=self.keep_rows,
+            drop_rows=self.drop_rows,
+            path_replacements=replacements,
+        )
+
+        subject_df = palm.import_neuroimaging_data(
+            file_column=self.file_column,
+            mask_path=self.mask_path,
+            process_special_values=False,
+        )
+        target_df = palm.import_neuroimaging_data(
+            import_path=self.target_maps_directory,
+            file_pattern=self.target_map_pattern,
+            mask_path=self.mask_path,
+            process_special_values=False,
+        )
+
+        damage_scorer = DamageScorer(self.mask_path, subject_df, target_df)
+        damage_df = damage_scorer.calculate_damage_scores(self.damage_metric)
+        damage_df = damage_scorer.sort_dataframes_by_index(damage_df)
+
+        if len(damage_df) != len(data_df):
+            raise ValueError(
+                "Imported subject images and prepared spreadsheet rows do not match: "
+                f"{len(damage_df)} images for {len(data_df)} rows."
+            )
+
+        data_df = data_df.reset_index(drop=True).fillna(self.fillna_value)
+        damage_df = damage_df.reset_index(drop=True).fillna(self.fillna_value)
+        data_df.to_csv(
+            os.path.join(self.analysis_dir, "prepared_spreadsheet.csv"), index=False
+        )
+        damage_output = damage_df.copy()
+        damage_output.insert(0, "subject", data_df[self.file_column].to_numpy())
+        damage_output.to_csv(
+            os.path.join(self.analysis_dir, "damage_scores.csv"), index=False
+        )
+        return data_df, damage_df
+
+    def run(self):
+        """Execute specificity resampling and return all generated tables."""
+        data_df, damage_df = self.prepare_data()
+        analyzer = SpecificityAnalyzer(
+            X=damage_df,
+            Y=data_df,
+            y_labels=self.label_dict,
+            correlation=self.correlation,
+            method=self.method,
+            vectorize=self.vectorize,
+            out_dir=self.analysis_dir,
+            absval=self.absval,
+        )
+        analyzer.run(
+            n_resamples=self.n_resamples,
+            sort_within_labels=self.sort_within_labels,
+            smooth_by_label=self.smooth_by_label,
+        )
+
+        observed = analyzer.extract_r_values_long()
+        observed.to_csv(
+            os.path.join(self.analysis_dir, "observed_correlations.csv"), index=False
+        )
+
+        comparison = None
+        if self.target_labels is not None:
+            comparison = analyzer.extract_group_comparison_r_values(
+                target_labels=self.target_labels,
+                other_labels=self.other_labels,
+                target_name=self.target_name,
+                other_name=self.other_name,
+            )
+            comparison.to_csv(
+                os.path.join(self.analysis_dir, "group_comparison_r_values.csv"),
+                index=False,
+            )
+            if self.draw_comparison_plot:
+                target_name = self.target_name
+                if target_name is None:
+                    labels = (
+                        [self.target_labels]
+                        if isinstance(self.target_labels, str)
+                        else list(self.target_labels)
+                    )
+                    target_name = "+".join(str(label) for label in labels)
+                if len(analyzer.cols) == 1:
+                    plot_columns = [(target_name, self.other_name)]
+                    group_labels = None
+                else:
+                    plot_columns = [
+                        (
+                            (measurement, target_name),
+                            (measurement, self.other_name),
+                        )
+                        for measurement in analyzer.cols
+                    ]
+                    group_labels = [str(measurement) for measurement in analyzer.cols]
+                SimpleBoxPlotWrapper(comparison).plot(
+                    columns=plot_columns,
+                    group_labels=group_labels,
+                    pair_names=[target_name, self.other_name],
+                    dataset_name=self.comparison_dataset_name,
+                    xlabel=self.comparison_xlabel,
+                    ylabel=(
+                        self.comparison_ylabel
+                        or f"Correlation ({self.correlation.title()})"
+                    ),
+                    figsize=self.comparison_figsize,
+                    out_dir=self.analysis_dir,
+                )
+
+        return SpecificityAnalysisResult(
+            prepared_data=data_df,
+            damage_scores=damage_df,
+            observed_correlations=observed,
+            group_comparison=comparison,
+            analyzer=analyzer,
+        )
 
 
 def get_column_labels(df):

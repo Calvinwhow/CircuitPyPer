@@ -1,3 +1,5 @@
+import os
+
 from calvin_utils.permutation_analysis_utils.palm_utils import CalvinPalm
 import patsy
 import seaborn as sns
@@ -6,6 +8,144 @@ import statsmodels.api as sm
 import numpy as np
 from tqdm import tqdm
 import pandas as pd
+from scipy.stats import rankdata
+
+class SpreadsheetDataLoader:
+    """Expose one prepared spreadsheet as the CCM ``DataLoader`` interface.
+
+    This adapter replaces the script-local loaders formerly duplicated by the
+    map-prediction launchers. Neuroimaging files are imported through the
+    package's existing :class:`GiiNiiFileImport`, while outcomes and covariates
+    retain spreadsheet row order.
+    """
+
+    def __init__(
+        self,
+        data_df,
+        outcome_col,
+        nifti_col,
+        mask_path=None,
+        covariates_list=None,
+        data_transform_method="standardize",
+        dataset_name=None,
+    ):
+        self.data_df = data_df.reset_index(drop=True)
+        self.outcome_col = outcome_col
+        self.nifti_col = nifti_col
+        self.mask_path = mask_path
+        self.covariates_list = list(covariates_list or [])
+        self.data_transform_method = data_transform_method
+        self.dataset_name = dataset_name or outcome_col
+        self.dataset_paths_dict = {self.dataset_name: {"source": "spreadsheet"}}
+        self.dataset_names_list = [self.dataset_name]
+        self._dataset_cache = None
+
+    def load_dataset(self, dataset_name, nifti_type="niftis", mmap_mode=None):
+        """Return images, outcome, and covariates for the configured dataset."""
+        del mmap_mode  # Accepted for compatibility with the package DataLoader API.
+        if dataset_name not in self.dataset_paths_dict:
+            raise KeyError(f"Unknown dataset: {dataset_name}")
+        if self._dataset_cache is None:
+            self._dataset_cache = self._load_dataset()
+
+        data = {
+            "niftis": self._dataset_cache["niftis"],
+            "indep_var": self._dataset_cache["indep_var"],
+            "covariates": self._dataset_cache["covariates"],
+        }
+        if nifti_type == "niftis_ranked":
+            data["niftis"] = self._rank_niftis(data["niftis"])
+        elif nifti_type != "niftis":
+            raise ValueError("nifti_type must be 'niftis' or 'niftis_ranked'")
+        return data
+
+    def _load_dataset(self):
+        niftis = self._load_and_mask_niftis(self.data_df[self.nifti_col])
+        indep_var = (
+            pd.to_numeric(self.data_df[self.outcome_col], errors="raise")
+            .to_numpy(dtype=float)[:, np.newaxis]
+        )
+
+        if self.covariates_list:
+            covariates = (
+                self.data_df[self.covariates_list]
+                .apply(pd.to_numeric, errors="raise")
+                .to_numpy(dtype=float)
+            )
+        else:
+            covariates = np.empty((len(self.data_df), 0), dtype=float)
+
+        niftis = self._transform_niftis(niftis)
+        indep_var = self._transform_outcome(indep_var)
+        niftis, indep_var, covariates = self._handle_nans(
+            niftis, indep_var, covariates
+        )
+        return {
+            "niftis": niftis,
+            "indep_var": indep_var,
+            "covariates": covariates,
+        }
+
+    def _load_and_mask_niftis(self, nifti_paths):
+        from calvin_utils.file_utils.import_functions import GiiNiiFileImport
+
+        if isinstance(nifti_paths, pd.Series):
+            nifti_paths = nifti_paths.astype(str)
+        imported = GiiNiiFileImport(
+            import_path=nifti_paths,
+            file_pattern=None,
+            file_column=None,
+            process_special_values=False,
+            transpose=True,
+            mask_path=self.mask_path,
+        ).run()
+        return imported.to_numpy(dtype=float, copy=False)
+
+    def _transform_niftis(self, niftis):
+        if self.data_transform_method == "standardize":
+            mean = np.nanmean(niftis, axis=0, keepdims=True)
+            std = np.nanstd(niftis, axis=0, keepdims=True)
+            return (niftis - mean) / (std + 1e-8)
+        if self.data_transform_method == "rank":
+            return self._rank_niftis(niftis)
+        return niftis
+
+    def _transform_outcome(self, indep_var):
+        if self.data_transform_method == "standardize":
+            return (indep_var - np.nanmean(indep_var, axis=0, keepdims=True)) / (
+                np.nanstd(indep_var, axis=0, keepdims=True) + 1e-8
+            )
+        if self.data_transform_method == "rank":
+            return rankdata(indep_var.flatten())[:, np.newaxis]
+        return indep_var
+
+    @staticmethod
+    def _rank_niftis(arr):
+        return np.apply_along_axis(rankdata, 0, arr)
+
+    @staticmethod
+    def _handle_nans(*arrs, value=0):
+        processed = []
+        for arr in arrs:
+            if arr.size == 0:
+                processed.append(arr)
+                continue
+            finite = arr[np.isfinite(arr)]
+            if finite.size == 0:
+                processed.append(
+                    np.nan_to_num(arr, nan=value, posinf=value, neginf=value)
+                )
+                continue
+            processed.append(
+                np.nan_to_num(
+                    arr,
+                    nan=value,
+                    posinf=np.nanmax(finite),
+                    neginf=np.nanmin(finite),
+                )
+            )
+        return tuple(processed)
+
 
 class CalvinStatsmodelsPalm(CalvinPalm):
     """
@@ -21,6 +161,109 @@ class CalvinStatsmodelsPalm(CalvinPalm):
         """
         data_df = super().read_data()
         return data_df
+
+    def prepare_spreadsheet_data(
+        self,
+        *,
+        data_df=None,
+        required_columns=None,
+        keep_rows=None,
+        drop_rows=None,
+        path_replacements=None,
+        invert_columns=None,
+        fillna=None,
+    ):
+        """Read and apply the row preparation shared by script workflows.
+
+        Parameters use the same conventions as the edit-at-the-top scripts:
+        ``keep_rows`` contains ``(column, value)`` pairs, ``drop_rows`` contains
+        ``(column, condition, value)`` triples accepted by
+        :meth:`drop_rows_based_on_value`, and ``path_replacements`` may be a
+        mapping of column names to ``(old, new)`` replacement pairs.
+        """
+        data_df = (
+            self.read_and_display_data().copy()
+            if data_df is None
+            else data_df.copy()
+        )
+
+        for column, replacements in dict(path_replacements or {}).items():
+            for old, new in replacements:
+                data_df[column] = data_df[column].astype(str).str.replace(
+                    old, new, regex=False
+                )
+
+        for column, value in keep_rows or []:
+            before = len(data_df)
+            data_df = data_df[data_df[column] == value].copy()
+            print(f"Keeping {column} == {value}: {len(data_df)} of {before} rows")
+
+        for column in invert_columns or []:
+            print(f"Multiplying {column} by -1")
+            data_df[column] = pd.to_numeric(data_df[column], errors="raise") * -1
+
+        self.df = data_df
+        if required_columns:
+            columns = (
+                [required_columns]
+                if isinstance(required_columns, str)
+                else list(required_columns)
+            )
+            self.drop_nans_from_columns(columns)
+
+        for column, condition, value in drop_rows or []:
+            self.drop_rows_based_on_value(column, condition, value)
+
+        if fillna is not None:
+            self.df = self.df.fillna(fillna)
+        return self.df
+
+    def import_neuroimaging_data(
+        self,
+        *,
+        file_column=None,
+        import_path=None,
+        file_pattern=None,
+        mask_path="default",
+        process_special_values=False,
+        transpose=False,
+        **importer_kwargs,
+    ):
+        """Import an image column or a file pattern with ``GiiNiiFileImport``.
+
+        When ``import_path`` is omitted, the current prepared dataframe and
+        ``file_column`` are used. This keeps spreadsheet filtering and image
+        ordering in one reusable object.
+        """
+        from calvin_utils.file_utils.import_functions import GiiNiiFileImport
+
+        if import_path is None:
+            if self.df is None:
+                raise ValueError(
+                    "Read or prepare the spreadsheet before importing a file column."
+                )
+            if file_column is None:
+                raise ValueError("file_column is required when import_path is omitted.")
+            if file_column not in self.df.columns:
+                raise ValueError(f"{file_column!r} is not a spreadsheet column.")
+            import_path = self.df[file_column]
+
+        if isinstance(import_path, pd.Series):
+            import_path = import_path.astype(str)
+
+        return GiiNiiFileImport(
+            import_path=import_path,
+            file_column=(
+                file_column
+                if isinstance(import_path, (str, os.PathLike))
+                else None
+            ),
+            file_pattern=file_pattern,
+            process_special_values=process_special_values,
+            transpose=transpose,
+            mask_path=mask_path,
+            **importer_kwargs,
+        ).run()
     
     def _dmatrix_fallback(self, formula, data_df, voxelwise_variable_list=None, add_intercept=True, voxelwise_interaction_terms=None):
         voxelwise_variable_list = voxelwise_variable_list or []
@@ -86,7 +329,9 @@ class CalvinStatsmodelsPalm(CalvinPalm):
                 lhs = left.split(' + ')
                 rhs = right.split(' + ')
                 y = data_df[lhs]
-                x = data_df[rhs]
+                x = data_df[rhs].copy()
+                if add_intercept and 'Intercept' not in x.columns:
+                    x.insert(0, 'Intercept', 1.0)
                 return y, x
         except:
             print("Could not get a simple outcome and design matrix. Continuing with old code.")

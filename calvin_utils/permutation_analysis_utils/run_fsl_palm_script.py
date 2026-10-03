@@ -1,29 +1,12 @@
 from __future__ import print_function
 import os
-import sys
-import shutil
 import numpy as np
 import pandas as pd
-from tqdm import tqdm
-from matplotlib import pyplot as plt
-from nimlab import software as sf
-from nimlab import datasets as nimds
-from nilearn import image, plotting
-import io
-import os
-import shutil
-import os.path
+from nilearn import image
 from time import time
 import subprocess
 import getpass
-from termcolor import cprint
-from nilearn import image
-from nimlab import datasets as ds
-from nimlab import configuration as config
-import pandas as pd
-from IPython.core.getipython import get_ipython
 
-MNI_brain_mask = nimds.get_img("MNI152_T1_2mm_brain_mask")
 
 def process_nifti_paths(csv_file_path):
     # Load the required packages
@@ -39,7 +22,7 @@ def process_nifti_paths(csv_file_path):
         if match:
             # If found, remove non-numeric characters and return the numeric part
             return ''.join(filter(str.isdigit, match.group()))
-        
+
         # If 'subject' or 'sub-' is not found in the total path, extract the basename and find the number in it
         else:
             # Extract the file name from the file path
@@ -50,7 +33,7 @@ def process_nifti_paths(csv_file_path):
             if match:
                 return match.group()
             else:
-                return pd.np.nan
+                return np.nan
 
     # Load the data
     nifti_paths = pd.read_csv(csv_file_path, header=None, names=['nifti_path'])
@@ -82,7 +65,10 @@ def add_prefix_to_numeric_cols(data_df, prefix='var_'):
     Returns:
     - DataFrame with modified column names.
     """
-    new_columns = {col: prefix + col if col[0].isdigit() else col for col in data_df.columns}
+    new_columns = {
+        col: prefix + str(col) if str(col)[0].isdigit() else str(col)
+        for col in data_df.columns
+    }
     data_df = data_df.rename(columns=new_columns)
     return data_df
 
@@ -131,41 +117,6 @@ def create_design_matrix(formula_vars, data_df, subject_id_column):
     design_matrix.index.rename('subject_id', inplace=True)
 
     return design_matrix
-
-out_dir = '/PHShome/cu135/permutation_tests/fsl_palm/age_on_grey_matter_effect'
-path_to_clinical_data = '/PHShome/cu135/datasets/ad_dns/grey_matter_damage_score_and_outcomes.csv'
-clinical_df = preprocess_colnames_for_regression(pd.read_csv(path_to_clinical_data))
-
-# Define the explanatory variable formula
-# Each variable must be defined as 'Q("var_1"). Interactions are defined as 'Q("var_1"):'Q("var_2")
-formula_vars = [
-'Age'
-]
-# Define the column containing th subject id
-subject_id_column = 'Patient___CDR__ADAS'
-
-
-# Create the design matrix#----------------------------------------------------------------
-design_matrix = create_design_matrix(formula_vars, clinical_df, subject_id_column)
-# Display the design matrix
-final_design_matrix = design_matrix
-
-#----------------------------------------------------------------DO NOT TOUCH----------------------------------------------------------------
-nifti_path_csv = '/PHShome/cu135/memory/file_paths/paths_to_grey_matter.csv'
-ordered_image_list, nifti_df = process_nifti_paths(nifti_path_csv)
-
-#This will generate a basic contrast matrix for you to copy into a cell and edit
-contrast_matrix = np.array([[1], [-1]])
-print(contrast_matrix)
-print('The above contrast matrix is useful to assess if your given explanatory varialbe is significantly different from the slope (ie is a significant coefficient)')
-print('Copy it into the cell below and edit it for more control over your analysis.')
-contrast_matrix = contrast_matrix
-#----------------------------------------------------------------DO NOT EDIT!----------------------------------------------------------------
-# https://github.com/nimlab/documentation/wiki/PALM-Analyses
-contrast_df = pd.DataFrame(data=contrast_matrix, columns=final_design_matrix.columns)
-contrast_df.to_csv(os.path.join(out_dir, 'contrast_matrix.csv'))
-print("This is a basic contrast matrix set up to evaluate the significance of each variable. \n Please modify it to assess specific hypotheses.")
-
 
 DEFAULT_MASK = "MNI152_T1_2mm_brain_mask_dil"
 try:
@@ -224,7 +175,7 @@ def calvins_call_palm(
     iterations : int
         Number of permutations to run
     voxelwise_evs : list of tuples
-        Each tuple contains: 
+        Each tuple contains:
             file: The file with one voxelwise EV.
             evpos: The column number (position) of this EV in the design matrix.
     eb : pd.DataFrame, optional
@@ -258,6 +209,14 @@ def calvins_call_palm(
     None
 
     """
+    try:
+        from nimlab import configuration as config
+        from nimlab import datasets as ds
+    except ImportError as exc:
+        raise ImportError("calvins_call_palm requires the optional 'nimlab' package") from exc
+
+    os.makedirs(working_directory, exist_ok=True)
+    os.makedirs(output_directory, exist_ok=True)
     config.verify_software(["palm_path"])
     # Concatenate input files
     print("concatenating input...")
@@ -326,7 +285,7 @@ def calvins_call_palm(
         for voxelwise_ev in voxelwise_evs:
             file, evpos = voxelwise_ev
             palm_cmd += ["-evperdat", file, str(evpos)]
-    
+
     print("Calling PALM with following command:")
     print(" ".join(palm_cmd))
     start = time()
@@ -354,15 +313,27 @@ def calvins_call_palm(
         )
 
     if not dryrun:
-        ipython = get_ipython()
-        ipython.system(" ".join(cmd))
+        try:
+            from IPython.core.getipython import get_ipython
+            ipython = get_ipython()
+        except ImportError:
+            ipython = None
+        if ipython is not None:
+            ipython.system(" ".join(cmd))
+        else:
+            subprocess.run(cmd, check=True)
     end = time()
 
     print("\n")
 
     print("Time elapsed: " + str(round(end - start)) + " seconds")
-    
+
 def text2vest(input_file, output_file):
+    try:
+        from nimlab import configuration as config
+    except ImportError as exc:
+        raise ImportError("text2vest requires the optional 'nimlab' package") from exc
+
     config.verify_software(["fsl_path"])
     process = subprocess.Popen(
         [f"{config.software['fsl_path']}/bin/Text2Vest", input_file, output_file],
@@ -371,8 +342,8 @@ def text2vest(input_file, output_file):
     )
     stdout, stderr = process.communicate()
     if stdout:
-        raise Exception("Error in text2vest: " + stdout)
-        
+        raise RuntimeError("Error in text2vest: " + stdout.decode(errors="replace"))
+
 def build_cluster_submit_string(
     directory,
     cluster_name,
@@ -416,6 +387,12 @@ def build_cluster_submit_string(
     Raises:
         ValueError: Unrecognized cluster
     """
+    try:
+        from nimlab import configuration as config
+    except ImportError as exc:
+        raise ImportError(
+            "build_cluster_submit_string requires the optional 'nimlab' package"
+        ) from exc
 
     if cluster_name in config.clusters.keys():
         cluster_config = config.clusters[cluster_name]
@@ -491,51 +468,95 @@ def build_cluster_submit_string(
             f"Cluster option '{cluster_name}' not recognized! Available options are {list(config.clusters.keys())}"
         )
 
-# Edit this according to documentation page
-cluster_username = 'cu135'
-cluster_email = 'choward12@bwh.harvard.edu'
-number_of_permutations=2
 
-#----------------------------------------------------------------DO NOT TOUCH----------------------------------------------------------------
-working_dir = os.path.join(out_dir, "palm_config")
-if not os.path.exists(working_dir):
-    os.makedirs(working_dir)
-    
-output_dir = os.path.join(out_dir, "palm_results")
-if not os.path.exists(output_dir):
-    os.makedirs(output_dir)
-    
-# Current best default settings:
-calvins_call_palm(input_imgs=ordered_image_list,
-             design_matrix=final_design_matrix,
-             contrast_matrix=contrast_df,
-             working_directory=working_dir,
-             output_directory=output_dir,
-             iterations=number_of_permutations,
-             accel="tail",
-             voxelwise_evs=None,
-             eb=None,
-             mask="",
-             save_1p=True,
-             logp=False,
-             tfce=False,
-             ise_flag=False,
-             two_tailed_flag=True,
-             corrcon_flag=False,
-             fdr_flag=False,
-             cluster_name="erisone",
-             username=cluster_username,
-             cluster_email=cluster_email,
-             queue="normal",
-             cores="1",
-             memory="6000",
-             dryrun=False,
-             job_name="fsl_palm",
-             job_time="",
-             num_nodes="",
-             num_tasks="",
-             x11_forwarding="",
-             service_class="",
-             debug=False,
-             extra=""
-    )        
+def main() -> None:
+    """Run the legacy path-configured PALM analysis."""
+    out_dir = '/PHShome/cu135/permutation_tests/fsl_palm/age_on_grey_matter_effect'
+    os.makedirs(out_dir, exist_ok=True)
+    path_to_clinical_data = '/PHShome/cu135/datasets/ad_dns/grey_matter_damage_score_and_outcomes.csv'
+    clinical_df = preprocess_colnames_for_regression(pd.read_csv(path_to_clinical_data))
+
+    # Define the explanatory variable formula
+    # Each variable must be defined as 'Q("var_1"). Interactions are defined as 'Q("var_1"):'Q("var_2")
+    formula_vars = [
+    'Age'
+    ]
+    # Define the column containing th subject id
+    subject_id_column = 'Patient___CDR__ADAS'
+
+
+    # Create the design matrix#----------------------------------------------------------------
+    design_matrix = create_design_matrix(formula_vars, clinical_df, subject_id_column)
+    # Display the design matrix
+    final_design_matrix = design_matrix
+
+    #----------------------------------------------------------------DO NOT TOUCH----------------------------------------------------------------
+    nifti_path_csv = '/PHShome/cu135/memory/file_paths/paths_to_grey_matter.csv'
+    ordered_image_list, nifti_df = process_nifti_paths(nifti_path_csv)
+
+    #This will generate a basic contrast matrix for you to copy into a cell and edit
+    contrast_matrix = np.array([[1], [-1]])
+    print(contrast_matrix)
+    print('The above contrast matrix is useful to assess if your given explanatory varialbe is significantly different from the slope (ie is a significant coefficient)')
+    print('Copy it into the cell below and edit it for more control over your analysis.')
+    contrast_matrix = contrast_matrix
+    #----------------------------------------------------------------DO NOT EDIT!----------------------------------------------------------------
+    # https://github.com/nimlab/documentation/wiki/PALM-Analyses
+    contrast_df = pd.DataFrame(data=contrast_matrix, columns=final_design_matrix.columns)
+    contrast_df.to_csv(os.path.join(out_dir, 'contrast_matrix.csv'))
+    print("This is a basic contrast matrix set up to evaluate the significance of each variable. \n Please modify it to assess specific hypotheses.")
+
+
+
+    # Edit this according to documentation page
+    cluster_username = 'cu135'
+    cluster_email = 'choward12@bwh.harvard.edu'
+    number_of_permutations=2
+
+    #----------------------------------------------------------------DO NOT TOUCH----------------------------------------------------------------
+    working_dir = os.path.join(out_dir, "palm_config")
+    if not os.path.exists(working_dir):
+        os.makedirs(working_dir)
+
+    output_dir = os.path.join(out_dir, "palm_results")
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+
+    # Current best default settings:
+    calvins_call_palm(input_imgs=ordered_image_list,
+                 design_matrix=final_design_matrix,
+                 contrast_matrix=contrast_df,
+                 working_directory=working_dir,
+                 output_directory=output_dir,
+                 iterations=number_of_permutations,
+                 accel="tail",
+                 voxelwise_evs=None,
+                 eb=None,
+                 mask="",
+                 save_1p=True,
+                 logp=False,
+                 tfce=False,
+                 ise_flag=False,
+                 two_tailed_flag=True,
+                 corrcon_flag=False,
+                 fdr_flag=False,
+                 cluster_name="erisone",
+                 username=cluster_username,
+                 cluster_email=cluster_email,
+                 queue="normal",
+                 cores="1",
+                 memory="6000",
+                 dryrun=False,
+                 job_name="fsl_palm",
+                 job_time="",
+                 num_nodes="",
+                 num_tasks="",
+                 x11_forwarding="",
+                 service_class="",
+                 debug=False,
+                 extra=""
+        )
+
+
+if __name__ == "__main__":
+    main()

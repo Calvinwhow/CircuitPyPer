@@ -1,7 +1,6 @@
 import numpy as np
 from scipy.stats import spearmanr
 from calvin_utils.neuroimaging_utils.ccm_utils.stat_utils import CorrelationCalculator
-from skopt import gp_minimize
 
 class NiftiBayesianOptimizer:
     def __init__(self, corr_map_dict, data_loader, load_in_time=True):
@@ -88,6 +87,14 @@ class NiftiBayesianOptimizer:
         return -(T - P)
 
     def optimize(self, n_calls=50):
+        try:
+            from skopt import gp_minimize
+        except ImportError as exc:
+            raise ImportError(
+                "NiftiBayesianOptimizer.optimize requires the optional "
+                "'scikit-optimize' package."
+            ) from exc
+
         bounds = [(0.0, 1.0)] * len(self.corr_map_names)
 
         def objective(W):

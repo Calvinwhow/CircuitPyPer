@@ -1,1 +1,1 @@
-Back-compat shim for legacy imports.
+"""Back-compat shim for legacy imports."""

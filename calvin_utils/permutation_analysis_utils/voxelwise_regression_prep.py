@@ -357,6 +357,7 @@ class RegressionPrep:
                 "output_ftype": self.output_ftype,
                 "mask_path": self.mask_path,
                 "formula": self.formula,
+                "neuroimaging_variables": list(self.neuroimaging_variables),
             }
         }
 

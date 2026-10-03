@@ -1,3 +1,5 @@
-Back-compat shim for legacy imports.
+"""Back-compat shims for legacy CCM imports.
 
-This package re-exports modules from calvin_utils.neuroimaging_utils.ccm_utils.
+Modules in this package re-export their maintained implementations from
+``calvin_utils.neuroimaging_utils.ccm_utils``.
+"""

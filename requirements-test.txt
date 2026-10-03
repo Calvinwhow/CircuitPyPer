@@ -1,0 +1,21 @@
+# Minimal, headless dependencies needed by the automated test suite.
+numpy<2
+pandas<3
+scipy<1.13
+statsmodels==0.14.4
+patsy
+scikit-learn
+jax==0.4.35
+h5py
+nibabel
+nilearn==0.12.1
+matplotlib==3.7.1
+seaborn==0.12.2
+tqdm
+natsort
+tensorly==0.9.0
+termcolor
+ipython
+
+pytest>=8,<10
+coverage>=7,<8

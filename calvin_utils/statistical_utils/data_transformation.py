@@ -81,7 +81,7 @@ def min_max_normalize_minus_one_to_one(series, reference_series=None):
     else:
         min_val = series.min()
         max_val = series.max()
-        return 2 * (series - min_val) / (max_val - min_val) - 1s
+        return 2 * (series - min_val) / (max_val - min_val) - 1
 
 def min_max_normalize(series):
     '''

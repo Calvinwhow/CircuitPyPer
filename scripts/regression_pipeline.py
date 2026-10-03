@@ -39,7 +39,6 @@ from calvin_utils.permutation_analysis_utils.map_damage_cv import (
     cross_validated_map_damage, load_native_patient_vectors,
 )
 from calvin_utils.neuroimaging_utils.output_functions import NeuroimageFileOutporter
-import circuit_pyper.scripts.neuro_plotter as neuro_plotter
 
 
 # =============================================================================
@@ -193,6 +192,14 @@ def _regression_outputs_exist(new_out_dir):
 
 def plot_regression_results(new_out_dir, regression_dir):
     """Build the shared 3D NIfTI viewer and static contrast-map galleries."""
+    # Plotting carries optional SUIT/yabplot dependencies. Keep it out of the
+    # regression module's import path so headless analysis and tests can use
+    # the pipeline without installing visualization extras.
+    try:
+        from circuit_pyper.scripts import neuro_plotter
+    except ModuleNotFoundError:
+        from scripts import neuro_plotter
+
     figure_root = Path(new_out_dir) / "figures"
     nifti_candidates = sorted(
         path

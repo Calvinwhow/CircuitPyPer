@@ -161,7 +161,7 @@ def test_convert_new_values_pair_directly_to_trk(tmp_path):
     description_path = FiberIO.write_values_description(values_path, atlas_path)
     nib.streamlines.save(
         nib.streamlines.Tractogram(FIBERS, affine_to_rasmm=np.eye(4)),
-        reference_path,
+        str(reference_path),
     )
 
     FiberFormatConverter(reference_path).convert_fiber_file_to_trk(

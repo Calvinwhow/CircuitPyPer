@@ -7,3 +7,10 @@ repos:
         language: system
         types: [jupyter]
         pass_filenames: true
+      - id: pytest-before-push
+        name: Run test suite before push
+        entry: python scripts/run_tests.py
+        language: system
+        stages: [pre-push]
+        pass_filenames: false
+        always_run: true

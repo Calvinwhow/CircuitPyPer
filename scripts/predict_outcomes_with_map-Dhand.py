@@ -27,8 +27,7 @@ import matplotlib.pyplot as plt
 import nibabel as nib
 import numpy as np
 import pandas as pd
-from scipy.stats import pearsonr, rankdata
-from tqdm import tqdm
+from scipy.stats import pearsonr
 
 # Ensure circuit_pyper is on Python path when this file is run directly.
 CIRCUIT_PYPER_DIR = Path(__file__).resolve().parents[1]
@@ -36,7 +35,10 @@ if str(CIRCUIT_PYPER_DIR) not in sys.path:
     sys.path.insert(0, str(CIRCUIT_PYPER_DIR))
 
 from calvin_utils.neuroimaging_utils.ccm_utils.stat_utils import CorrelationCalculator
-from calvin_utils.permutation_analysis_utils.statsmodels_palm import CalvinStatsmodelsPalm
+from calvin_utils.permutation_analysis_utils.statsmodels_palm import (
+    CalvinStatsmodelsPalm,
+    SpreadsheetDataLoader,
+)
 from calvin_utils.statistical_utils.scatterplot import SimpleScatterPlotWrapper
 
 
@@ -129,115 +131,6 @@ class MapPrediction:
     outcome_values: np.ndarray
 
 
-class SpreadsheetDataLoader:
-    """
-    Spreadsheet-backed loader for subject images and outcomes.
-
-    It mirrors the small DataLoader API needed by the CCM helper utilities while
-    reading subject images and outcomes from one spreadsheet.
-    """
-
-    def __init__(
-        self,
-        data_df,
-        outcome_col,
-        nifti_col,
-        mask_path=None,
-        covariates_list=None,
-        data_transform_method="standardize",
-        dataset_name=None,
-    ):
-        self.data_df = data_df.reset_index(drop=True)
-        self.outcome_col = outcome_col
-        self.nifti_col = nifti_col
-        self.mask_path = mask_path
-        self.covariates_list = list(covariates_list or [])
-        self.data_transform_method = data_transform_method
-        self.dataset_name = dataset_name or outcome_col
-        self.dataset_paths_dict = {self.dataset_name: {"source": "spreadsheet"}}
-        self.dataset_names_list = [self.dataset_name]
-        self._dataset_cache = None
-
-    def load_dataset(self, dataset_name, nifti_type="niftis"):
-        if dataset_name not in self.dataset_paths_dict:
-            raise KeyError(f"Unknown dataset: {dataset_name}")
-        if self._dataset_cache is None:
-            self._dataset_cache = self._load_dataset()
-
-        data = {
-            "niftis": self._dataset_cache["niftis"],
-            "indep_var": self._dataset_cache["indep_var"],
-            "covariates": self._dataset_cache["covariates"],
-        }
-        if nifti_type == "niftis_ranked":
-            data["niftis"] = self._rank_niftis(data["niftis"])
-        elif nifti_type != "niftis":
-            raise ValueError("nifti_type must be 'niftis' or 'niftis_ranked'")
-        return data
-
-    def _load_dataset(self):
-        niftis = self._load_and_mask_niftis(self.data_df[self.nifti_col].tolist())
-        indep_var = pd.to_numeric(self.data_df[self.outcome_col], errors="raise").to_numpy(dtype=float)[:, np.newaxis]
-
-        if self.covariates_list:
-            covariates = self.data_df[self.covariates_list].apply(pd.to_numeric, errors="raise").to_numpy(dtype=float)
-        else:
-            covariates = np.empty((len(self.data_df), 0), dtype=float)
-
-        niftis = self._transform_niftis(niftis)
-        indep_var = self._transform_outcome(indep_var)
-        niftis, indep_var, covariates = self._handle_nans(niftis, indep_var, covariates)
-        return {"niftis": niftis, "indep_var": indep_var, "covariates": covariates}
-
-    def _load_and_mask_niftis(self, nifti_paths):
-        mask_indices = None
-        if self.mask_path is not None:
-            mask = nib.load(self.mask_path)
-            mask_indices = mask.get_fdata().flatten() > 0
-
-        arrays = []
-        for path in tqdm(nifti_paths, desc=f"Loading NIFTI files for {self.outcome_col}"):
-            img = nib.load(str(path))
-            data = img.get_fdata().flatten()
-            if mask_indices is not None:
-                data = data[mask_indices]
-            arrays.append(data)
-        return np.asarray(arrays, dtype=float)
-
-    def _transform_niftis(self, niftis):
-        if self.data_transform_method == "standardize":
-            mean = np.nanmean(niftis, axis=0, keepdims=True)
-            std = np.nanstd(niftis, axis=0, keepdims=True)
-            return (niftis - mean) / (std + 1e-8)
-        if self.data_transform_method == "rank":
-            return self._rank_niftis(niftis)
-        return niftis
-
-    def _transform_outcome(self, indep_var):
-        if self.data_transform_method == "standardize":
-            return (indep_var - np.nanmean(indep_var, axis=0, keepdims=True)) / (np.nanstd(indep_var, axis=0, keepdims=True) + 1e-8)
-        if self.data_transform_method == "rank":
-            return rankdata(indep_var.flatten())[:, np.newaxis]
-        return indep_var
-
-    @staticmethod
-    def _rank_niftis(arr):
-        return np.apply_along_axis(rankdata, 0, arr)
-
-    @staticmethod
-    def _handle_nans(*arrs, value=0):
-        processed = []
-        for arr in arrs:
-            if arr.size == 0:
-                processed.append(arr)
-                continue
-            finite = arr[np.isfinite(arr)]
-            if finite.size == 0:
-                processed.append(np.nan_to_num(arr, nan=value, posinf=value, neginf=value))
-                continue
-            processed.append(np.nan_to_num(arr, nan=value, posinf=np.nanmax(finite), neginf=np.nanmin(finite)))
-        return tuple(processed)
-
 
 class PredictionDataPreparer:
     """Owns spreadsheet intake, row filtering, validation, and loader creation."""
@@ -307,18 +200,15 @@ class PredictionDataPreparer:
         return cal_palm, cal_palm.read_and_display_data()
 
     def _prepare_spreadsheet_rows(self, cal_palm, data_df):
-        data_df = data_df.copy()
-        self._apply_path_replacements(data_df)
-        data_df = self._apply_keep_rows(data_df)
-        data_df = self._apply_outcome_inversion(data_df)
-
-        cal_palm.df = data_df
         drop_nan_list = [self.outcome_col, self.nifti_col] + self.covariates_list
-        data_df = cal_palm.drop_nans_from_columns(columns_to_drop_from=drop_nan_list)
-
-        for column, condition, value in self.drop_rows:
-            data_df, _ = cal_palm.drop_rows_based_on_value(column, condition, value)
-        return data_df
+        return cal_palm.prepare_spreadsheet_data(
+            data_df=data_df,
+            required_columns=drop_nan_list,
+            keep_rows=self.keep_rows,
+            drop_rows=self.drop_rows,
+            path_replacements={self.nifti_col: self.path_replacements},
+            invert_columns=[self.outcome_col] if self.invert_outcome else None,
+        )
 
     def _apply_path_replacements(self, data_df):
         for old, new in self.path_replacements:

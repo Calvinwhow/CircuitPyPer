@@ -49,7 +49,7 @@ class FiberFormatConverter:
                 f"Reference file must currently be .trk or .tck, got: {reference_path}"
             )
 
-        self.reference_obj = nib.streamlines.load(reference_path)
+        self.reference_obj = nib.streamlines.load(str(reference_path))
         self.reference_tractogram = self.reference_obj.tractogram
 
         self.reference_header = None
@@ -643,10 +643,10 @@ class FiberFormatConverter:
         if self.reference_ftype == "trk":
             header = self.reference_header.copy()
             trk = TrkFile(tractogram, header=header)
-            nib.streamlines.save(trk, out_path)
+            nib.streamlines.save(trk, str(out_path))
             return out_path
 
-        nib.streamlines.save(tractogram, out_path)
+        nib.streamlines.save(tractogram, str(out_path))
         return out_path
 
     def convert_fiber_file_to_trk(

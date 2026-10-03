@@ -96,6 +96,96 @@ def _maybe_save_tables(out_dir: str, *, df: pd.DataFrame, design: pd.DataFrame, 
     contrast.to_csv(os.path.join(out_dir, "contrast_matrix.csv"), index=False)
 
 
+def _load_cv_inputs(
+    json_path: str,
+    *,
+    dependent_source: str,
+    dependent_cols: list[str] | None,
+) -> tuple[pd.Series, pd.Series, int]:
+    """Recover one numeric CV target and its aligned subject image paths."""
+    root = Path(json_path).resolve().parent
+    table_paths = {
+        "data": root / "preprocessed_data.csv",
+        "outcome": root / "outcome_df.csv",
+        "design": root / "design_matrix.csv",
+    }
+    missing = [str(path) for path in table_paths.values() if not path.is_file()]
+    if missing:
+        raise FileNotFoundError(
+            "Cross-validation needs the preparation tables beside dataset_dict.json. "
+            f"Missing: {missing}"
+        )
+
+    data_df = pd.read_csv(table_paths["data"])
+    outcome_df = pd.read_csv(table_paths["outcome"])
+    design_df = pd.read_csv(table_paths["design"])
+    payload = json.loads(Path(json_path).read_text())["neuroimaging_regression"]
+
+    image_candidates = [
+        column
+        for column in payload.get("neuroimaging_variables", [])
+        if column in data_df.columns
+    ]
+    if not image_candidates:
+        for column in data_df.columns:
+            values = data_df[column].dropna()
+            if len(values) == len(data_df) and values.map(
+                lambda value: Path(str(value)).expanduser().is_file()
+            ).all():
+                image_candidates.append(column)
+    if len(image_candidates) != 1:
+        raise ValueError(
+            "Cross-validation requires exactly one subject image column; found "
+            f"{image_candidates}. Re-run preparation with one neuroimaging variable."
+        )
+    subject_files = data_df[image_candidates[0]].astype(str).reset_index(drop=True)
+
+    resolved_source = dependent_source
+    if dependent_source == "auto":
+        resolved_source = (
+            "design" if image_candidates[0] in outcome_df.columns else "outcome"
+        )
+    source_df = outcome_df if resolved_source == "outcome" else design_df
+    requested = list(dependent_cols or [])
+    if requested:
+        missing_cols = set(requested) - set(source_df.columns)
+        if missing_cols:
+            raise ValueError(
+                f"CV dependent columns are absent from {resolved_source}: "
+                f"{sorted(missing_cols)}"
+            )
+        candidates = requested
+    else:
+        candidates = [
+            column
+            for column in source_df.columns
+            if column != "Intercept"
+            and column != image_candidates[0]
+            and pd.to_numeric(source_df[column], errors="coerce").notna().all()
+        ]
+    if len(candidates) != 1:
+        raise ValueError(
+            "Cross-validation needs exactly one numeric dependent column; found "
+            f"{candidates}. Select one with --cv-dependent-col."
+        )
+
+    dependent_col = candidates[0]
+    y_true = pd.to_numeric(source_df[dependent_col], errors="raise").reset_index(
+        drop=True
+    )
+    if len(y_true) != len(subject_files):
+        raise ValueError(
+            "CV target and subject image rows do not align: "
+            f"{len(y_true)} targets for {len(subject_files)} images."
+        )
+    regression_idx = (
+        list(outcome_df.columns).index(dependent_col)
+        if resolved_source == "outcome"
+        else 0
+    )
+    return y_true, subject_files, regression_idx
+
+
 def prepare_from_table(
     *,
     input_path: str,
@@ -224,21 +314,27 @@ def run_regression_from_json(
         reg.run()
 
     if cv:
+        y_true, subject_files, regression_idx = _load_cv_inputs(
+            json_path,
+            dependent_source=cv_dependent_source,
+            dependent_cols=cv_dependent_cols,
+        )
         if str(cv).lower() in {"all"}:
-            reg.run_cross_validation(
-                dependent_variable_source=cv_dependent_source,
-                dependent_cols=cv_dependent_cols,
-            )
+            cv_schemes = ["loocv"]
+            cv_schemes.extend(k for k in (2, 5, 10) if k <= reg.n_obs)
+            cv_schemes.append("leave_all_in")
         else:
             try:
                 cv_arg: str | int = int(cv)
             except Exception:
                 cv_arg = str(cv).lower()
-            reg._evaluate_map(
-                cv=cv_arg,
-                dependent_variable_source=cv_dependent_source,
-                dependent_cols=cv_dependent_cols,
-            )
+            cv_schemes = cv_arg
+        reg.run_cross_validation(
+            y_true=y_true,
+            subject_files=subject_files,
+            regression_idx=regression_idx,
+            cv=cv_schemes,
+        )
 
 
 def run_prediction(
@@ -300,16 +396,16 @@ def build_parser() -> argparse.ArgumentParser:
     sp_fit.add_argument("--cv", default=None, help="Cross-validation: 'loocv', an int (e.g. 2), or 'all'.")
     sp_fit.add_argument(
         "--cv-dependent-source",
-        default="outcome",
-        choices=["outcome", "design"],
-        help="Which vector to correlate against in CV scatterplots (default: outcome).",
+        default="auto",
+        choices=["auto", "outcome", "design"],
+        help="Where to find the CV target. 'auto' selects the non-image side of the formula.",
     )
     sp_fit.add_argument(
         "--cv-dependent-col",
         action="append",
         default=None,
         help="When --cv-dependent-source=design, evaluate against this design_matrix column (repeatable). "
-        "If omitted, evaluates against all design columns.",
+        "If omitted, the source must contain exactly one numeric non-intercept column.",
     )
 
     sp_run = sub.add_parser("run", help="Run regression from an existing dataset_dict.json.")
@@ -322,16 +418,16 @@ def build_parser() -> argparse.ArgumentParser:
     sp_run.add_argument("--cv", default=None, help="Cross-validation: 'loocv', an int (e.g. 2), or 'all'.")
     sp_run.add_argument(
         "--cv-dependent-source",
-        default="outcome",
-        choices=["outcome", "design"],
-        help="Which vector to correlate against in CV scatterplots (default: outcome).",
+        default="auto",
+        choices=["auto", "outcome", "design"],
+        help="Where to find the CV target. 'auto' selects the non-image side of the formula.",
     )
     sp_run.add_argument(
         "--cv-dependent-col",
         action="append",
         default=None,
         help="When --cv-dependent-source=design, evaluate against this design_matrix column (repeatable). "
-        "If omitted, evaluates against all design columns.",
+        "If omitted, the source must contain exactly one numeric non-intercept column.",
     )
 
     sp_predict = sub.add_parser("predict", help="Predict maps for a dataset using saved beta maps from a fitted model.")

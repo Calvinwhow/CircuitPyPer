@@ -1,0 +1,11 @@
+[run]
+source =
+    calvin_utils
+    scripts
+relative_files = True
+
+[report]
+fail_under = 17
+precision = 1
+skip_empty = True
+show_missing = True
