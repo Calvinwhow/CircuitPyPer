@@ -81,6 +81,15 @@ def overlay_colours(values, overlay):
     ceiling = float(np.max(cmap(np.linspace(0, 1, 256))[:, 3]))
     if ceiling > 0 and ceiling < 0.999:
         shape = shape / ceiling
+    # How far the colour scale overrides what is under it, 0..1. At 1 every
+    # value the overlay keeps is painted at full strength -- the bottom of the
+    # scale (and anything below it) in the bottom colour, as MRIcroGL draws a
+    # LUT -- and at 0 the LUT's own alpha ramp fades the low end out. Absent
+    # (None) keeps the ramp, as before this setting existed.
+    override = overlay.get("override")
+    if override is not None:
+        override = min(max(float(override), 0.0), 1.0)
+        shape = shape + override * (1.0 - np.clip(shape, 0.0, 1.0))
     alpha[present] = np.clip(shape, 0.0, 1.0) * float(overlay.get("opacity", 1.0))
 
     if overlay.get("hide_below_min"):
