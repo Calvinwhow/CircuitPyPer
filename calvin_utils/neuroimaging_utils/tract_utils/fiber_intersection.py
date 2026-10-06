@@ -190,23 +190,40 @@ class FiberVoxelIndexer:
         Return list of fibers, each shaped (n_vertices, 3) or (n_vertices, 4).
         For streamline files, only xyz are loaded.
         """
+        return list(self.iter_fibers(fiber_file_path))
+
+    def iter_fibers(self, fiber_file_path):
+        """Yield fibers without materializing tractogram geometry when possible.
+
+        TRK/TCK/TRX files use nibabel's lazy tractogram loader. Object-array
+        NPY/NPZ and JSON containers are inherently materialized by their storage
+        formats, but are yielded one fiber at a time without creating a second
+        full Python list.
+        """
         ftype = self._identify_fiber_file_type(fiber_file_path)
+        fiber_mask = None
+        if self.fiber_mask is not None:
+            fiber_mask = np.asarray(self.fiber_mask).astype(bool).reshape(-1)
 
         if ftype in {'trk', 'trx'}:
-            tractogram = nib.streamlines.load(fiber_file_path).tractogram
-            fibers = [np.asarray(sl, dtype=np.float32) for sl in tractogram.streamlines]
+            tractogram = nib.streamlines.load(
+                fiber_file_path, lazy_load=True
+            ).tractogram
+            source = tractogram.streamlines
 
         elif ftype == 'tck':
             try:
-                tractogram = nib.streamlines.load(fiber_file_path).tractogram
-                fibers = [np.asarray(sl, dtype=np.float32) for sl in tractogram.streamlines]
+                tractogram = nib.streamlines.load(
+                    fiber_file_path, lazy_load=True
+                ).tractogram
+                source = tractogram.streamlines
             except Exception:
-                fibers = self._load_tck_tolerant(fiber_file_path)
+                source = self._load_tck_tolerant(fiber_file_path)
 
         elif ftype == 'npy':
             obj = np.load(fiber_file_path, allow_pickle=True)
             if isinstance(obj, np.ndarray) and obj.dtype == object:
-                fibers = obj.tolist()
+                source = obj
             else:
                 raise ValueError(f"Expected object-array of fibers in {fiber_file_path}")
 
@@ -214,36 +231,115 @@ class FiberVoxelIndexer:
             obj = np.load(fiber_file_path, allow_pickle=True)
             if 'fibers' not in obj:
                 raise ValueError(f"NPZ fiber file missing 'fibers' key: {fiber_file_path}")
-            fibers = obj['fibers'].tolist()
+            source = obj['fibers']
 
         elif ftype == 'json':
             with open(fiber_file_path, 'r') as f:
                 obj = json.load(f)
             if 'fibers' not in obj:
                 raise ValueError(f"JSON fiber file missing 'fibers' key: {fiber_file_path}")
-            fibers = obj['fibers']
+            source = obj['fibers']
 
         else:
             raise RuntimeError(f"Unsupported fiber file type: {fiber_file_path}")
 
-        fibers = [np.asarray(f, dtype=np.float32) for f in fibers]
-
-        for i, fiber in enumerate(fibers):
+        count = 0
+        for index, value in enumerate(source):
+            count = index + 1
+            if fiber_mask is not None and index >= fiber_mask.size:
+                raise ValueError(
+                    f"fiber_mask length ({fiber_mask.size}) is shorter than the "
+                    "number of fibers."
+                )
+            fiber = np.asarray(value, dtype=np.float32)
             if fiber.ndim != 2 or fiber.shape[1] not in (3, 4):
                 raise ValueError(
-                    f"Fiber {i} has invalid shape {fiber.shape}. "
+                    f"Fiber {index} has invalid shape {fiber.shape}. "
                     f"Expected (n_vertices, 3) or (n_vertices, 4)."
                 )
+            if fiber_mask is None or fiber_mask[index]:
+                yield fiber
 
-        if self.fiber_mask is not None:
-            mask = np.asarray(self.fiber_mask).astype(bool).flatten()
-            if mask.shape[0] != len(fibers):
+        if fiber_mask is not None and fiber_mask.size != count:
+            raise ValueError(
+                f"fiber_mask length ({fiber_mask.size}) does not match number "
+                f"of fibers ({count})."
+            )
+
+    def load_selected_fibers(
+        self,
+        fiber_file_path,
+        selected_indices,
+        expected_count=None,
+    ):
+        """Load only selected atlas indices when the source format permits it."""
+        selected_indices = np.asarray(selected_indices, dtype=np.int64).reshape(-1)
+        if selected_indices.size == 0:
+            return []
+        if np.any(selected_indices < 0) or np.any(np.diff(selected_indices) <= 0):
+            raise ValueError("selected_indices must be sorted, unique, and non-negative.")
+
+        ftype = self._identify_fiber_file_type(fiber_file_path)
+        source = None
+        if ftype == "npy":
+            source = np.load(fiber_file_path, allow_pickle=True)
+            if source.dtype != object:
                 raise ValueError(
-                    f"fiber_mask length ({mask.shape[0]}) does not match number of fibers ({len(fibers)})."
+                    f"Expected object-array of fibers in {fiber_file_path}"
                 )
-            fibers = [f for f, keep in zip(fibers, mask) if keep]
+        elif ftype == "npz":
+            archive = np.load(fiber_file_path, allow_pickle=True)
+            if "fibers" not in archive:
+                raise ValueError(
+                    f"NPZ fiber file missing 'fibers' key: {fiber_file_path}"
+                )
+            source = archive["fibers"]
+        elif ftype == "json":
+            with open(fiber_file_path) as fiber_file:
+                payload = json.load(fiber_file)
+            if "fibers" not in payload:
+                raise ValueError(
+                    f"JSON fiber file missing 'fibers' key: {fiber_file_path}"
+                )
+            source = payload["fibers"]
 
-        return fibers
+        if source is not None:
+            total = len(source)
+            if expected_count is not None and total != int(expected_count):
+                raise ValueError(
+                    f"Fiber atlas contains {total} fibers but the values vector "
+                    f"contains {expected_count}."
+                )
+            if selected_indices[-1] >= total:
+                raise ValueError("Selected fiber indices exceed the atlas fiber count.")
+            selected = [
+                np.asarray(source[index], dtype=np.float32)
+                for index in selected_indices
+            ]
+            for index, fiber in zip(selected_indices, selected):
+                if fiber.ndim != 2 or fiber.shape[1] not in (3, 4):
+                    raise ValueError(
+                        f"Fiber {index} has invalid shape {fiber.shape}."
+                    )
+            return selected
+
+        selected = []
+        wanted_position = 0
+        total = 0
+        for index, fiber in enumerate(self.iter_fibers(fiber_file_path)):
+            total = index + 1
+            if wanted_position < selected_indices.size and index == selected_indices[wanted_position]:
+                selected.append(fiber)
+                wanted_position += 1
+
+        if expected_count is not None and total != int(expected_count):
+            raise ValueError(
+                f"Fiber atlas contains {total} fibers but the values vector "
+                f"contains {expected_count}."
+            )
+        if wanted_position != selected_indices.size:
+            raise ValueError("Selected fiber indices exceed the atlas fiber count.")
+        return selected
 
     def world_to_voxel(self, xyz_world):
         """
@@ -265,6 +361,10 @@ class FiberVoxelIndexer:
         p0_vox = self.world_to_voxel(np.asarray(p0_world))[0:3]
         p1_vox = self.world_to_voxel(np.asarray(p1_world))[0:3]
 
+        return self._voxel_segment_indices(p0_vox, p1_vox)
+
+    def _voxel_segment_indices(self, p0_vox, p1_vox):
+        """Rasterize a segment whose endpoints are already in voxel space."""
         delta = p1_vox - p0_vox
         dist = float(np.linalg.norm(delta))
 
@@ -312,18 +412,51 @@ class FiberVoxelIndexer:
                 return np.asarray([np.ravel_multi_index((p[0], p[1], p[2]), self.reference_shape)], dtype=np.int64)
             return np.empty(0, dtype=np.int64)
 
-        chunks = []
         xyz = fiber_xyz[:, :3]
-
-        for i in range(xyz.shape[0] - 1):
-            seg_lin = self._segment_voxel_indices(xyz[i], xyz[i + 1])
-            if seg_lin.size > 0:
-                chunks.append(seg_lin)
-
-        if len(chunks) == 0:
+        voxel_xyz = self.world_to_voxel(xyz)
+        starts = voxel_xyz[:-1]
+        deltas = voxel_xyz[1:] - starts
+        distances = np.linalg.norm(deltas, axis=1)
+        steps_per_segment = np.where(
+            distances == 0,
+            1,
+            np.maximum(2, np.ceil(distances / self.step_size_vox).astype(np.int64) + 1),
+        ).astype(np.int64)
+        total_steps = int(steps_per_segment.sum())
+        if total_steps == 0:
             return np.empty(0, dtype=np.int64)
 
-        return np.unique(np.concatenate(chunks))
+        segment_ids = np.repeat(
+            np.arange(starts.shape[0], dtype=np.int64),
+            steps_per_segment,
+        )
+        segment_offsets = np.repeat(
+            np.cumsum(steps_per_segment) - steps_per_segment,
+            steps_per_segment,
+        )
+        local_steps = np.arange(total_steps, dtype=np.int64) - segment_offsets
+        denominators = np.maximum(steps_per_segment[segment_ids] - 1, 1)
+        fractions = (local_steps / denominators).astype(np.float32)[:, None]
+        points = starts[segment_ids] + fractions * deltas[segment_ids]
+        ijk = np.round(points).astype(np.int32)
+        in_bounds = (
+            (ijk[:, 0] >= 0) & (ijk[:, 0] < self.reference_shape[0]) &
+            (ijk[:, 1] >= 0) & (ijk[:, 1] < self.reference_shape[1]) &
+            (ijk[:, 2] >= 0) & (ijk[:, 2] < self.reference_shape[2])
+        )
+        ijk = ijk[in_bounds]
+        if ijk.shape[0] == 0:
+            return np.empty(0, dtype=np.int64)
+        return np.unique(
+            np.ravel_multi_index(
+                (ijk[:, 0], ijk[:, 1], ijk[:, 2]),
+                dims=self.reference_shape,
+            )
+        )
+
+    def voxel_indices_for_fiber(self, fiber):
+        """Return unique reference-grid voxel indices for one world-space fiber."""
+        return self._fiber_voxel_index(np.asarray(fiber, dtype=np.float32)[:, :3])
 
     def build_index(self, fibers):
         """

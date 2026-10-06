@@ -134,6 +134,7 @@ class ConnectomeSeed:
         show_progress: bool = True,
         save_mat: bool | None = None,
         auto_run: bool = True,
+        load_connectome: bool = True,
     ):
         """
         Parameters
@@ -204,6 +205,9 @@ class ConnectomeSeed:
         auto_run:
             If True, immediately derive/save the subset when a rule or seed mask
             is supplied. The created subset is available as ``self.subset``.
+        load_connectome:
+            Internal optimization for voxelwise tractography builders. If False,
+            initialize tracking parameters without loading or generating fibers.
         """
         if out is not None and output_path is not None and str(out) != str(output_path):
             raise ValueError("Use either out or output_path, not both with different values.")
@@ -249,7 +253,11 @@ class ConnectomeSeed:
         self.save_mat = save_mat
         self._stream_connectome = self._can_stream_connectome(connectome_path) and bool(self.rules)
         self._n_fibers = None
-        if self._stream_connectome:
+        if not load_connectome:
+            self.fibers = []
+            self.global_fiber_ids = np.empty(0, dtype=np.int64)
+            self.idx = np.empty(0, dtype=np.int64)
+        elif self._stream_connectome:
             self.fibers = []
             self.global_fiber_ids = np.empty(0, dtype=np.int64)
             self.idx = np.empty(0, dtype=np.int64)
