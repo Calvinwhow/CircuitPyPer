@@ -5,6 +5,16 @@ from calvin_utils.ml_utils.brain_umap import BrainUmap
 from calvin_utils.permutation_analysis_utils.voxelwise_regression import VoxelwiseRegression
 
 class UmapRegression:
+    """Test UMAP cluster persistence against caller-derived permutations.
+
+    Each empirical null realization comes from rerunning the underlying voxelwise
+    regression and UMAP clustering after permuting the caller-supplied data.
+    No theoretical null distribution is inserted. By default, each permutation
+    is summarized by the 99.9th percentile of its cluster-persistence values.
+    The ``pseudo_var_smooth`` parameter is a historical name for that percentile
+    heuristic; it does not perform variance smoothing.
+    """
+
     def __init__(self, json_path, mask_path, formula, out_dir):
         self.out_dir = out_dir
         self.T = None
@@ -41,7 +51,7 @@ class UmapRegression:
         }
 
     def _get_max_stat(self, arr, pseudo_var_smooth=True, q=99.9):
-        """max-stat for 1-D or 2-D input"""
+        """Summarize empirical persistence values by percentile or raw maximum."""
         vals = np.asarray(arr)
         if pseudo_var_smooth:       # 99.9th percentile smooths out single-voxel spikes
             return np.nanpercentile(vals, q) if vals.ndim == 1 else np.nanpercentile(vals, q, axis=1)

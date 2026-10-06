@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render a compact optimization history as a GIF.
+"""Render a compact optimization history as a GIF and native map stack.
 
 Example:
     python scripts/visualize_optimization.py results/optimization_history.npz \
@@ -28,7 +28,10 @@ def main():
         help="Output GIF path (default: optimization.gif beside the history)",
     )
     parser.add_argument("--fps", type=float, default=5)
-    parser.add_argument("--max-frames", type=int, default=60)
+    parser.add_argument(
+        "--max-frames", type=int, default=60,
+        help="Maximum evenly sampled GIF frames and saved map snapshots",
+    )
     parser.add_argument("--view", choices=("auto", "spatial", "circuit", "metrics"), default="auto")
     parser.add_argument("--output-type", help="Override the history's image type")
     parser.add_argument("--mask-path", help="Override the history's image mask or fiber atlas")
@@ -37,12 +40,22 @@ def main():
                         help="Maximum fibers drawn per Circuit Viewer frame")
     parser.add_argument("--viewer-url",
                         help="Read camera and lighting from a running Circuit Viewer")
+    parser.add_argument(
+        "--map-stack", type=Path,
+        help=("Output 4D NIfTI or 2D fiber NumPy path (default: use the GIF "
+              "stem and the native extension)"),
+    )
+    parser.add_argument(
+        "--no-map-stack", action="store_true",
+        help="Render only the GIF and do not save reconstructed map snapshots",
+    )
     args = parser.parse_args()
     path = render_optimization_history(
         args.history, args.output, fps=args.fps, max_frames=args.max_frames,
         view=args.view, output_type=args.output_type,
         mask_path=args.mask_path, vmax=args.vmax, max_lines=args.max_lines,
-        viewer_url=args.viewer_url,
+        viewer_url=args.viewer_url, map_stack_path=args.map_stack,
+        write_map_stack=not args.no_map_stack,
     )
     print(f"Saved optimization GIF to: {path}")
 

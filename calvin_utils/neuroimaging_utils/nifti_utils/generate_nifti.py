@@ -7,6 +7,7 @@ import nibabel as nib
 from nilearn import image, plotting
 from nilearn.image import resample_to_img
 from calvin_utils.file_utils.import_matrices import import_matrices_from_folder
+from calvin_utils.resource_paths import default_nifti_mask_path
 
 warnings.filterwarnings('ignore')
 
@@ -38,11 +39,7 @@ def nifti_from_matrix(matrix, output_file, ref_file=None, use_reference=True, us
         img = image.new_img_like(output_file, matrix, affine)
     elif use_reference:
         if ref_file is None:
-            try:
-                from nimlab import datasets as nimds
-                ref_img = nimds.get_img("mni_icbm152")
-            except Exception as e:
-                raise ValueError(f"Error {e}. Resolve by specifying mask or installing nimlab: https://github.com/nimlab/documentation.git")
+            ref_img = nib.load(default_nifti_mask_path())
         else:
             ref_img = image.load_img(ref_file)
         ref_img_data = ref_img.get_fdata()
@@ -148,11 +145,7 @@ def generate_eccentric_spherical_roi(subject, x, y, z, out_dir, radius=5, eccent
 
 def generate_spherical_roi(x, y, z, out_dir=rf'', radius=5):
     sphere_roi = gen_sphere_roi(xcoord=x, ycoord=y, zcoord=z, mask=False, thresh_mx=None, radius=radius);
-    try:
-        from nimlab import datasets as nimds
-        mask = nimds.get_img("mni_icbm152")
-    except Exception as e:
-        raise ValueError(f"Error {e}. Resolve by specifying mask or installing nimlab: https://github.com/nimlab/documentation.git")
+    mask = nib.load(default_nifti_mask_path())
     ovr_img3 = image.new_img_like(mask, sphere_roi)
     #Save
     if os.path.isdir(out_dir)==False:

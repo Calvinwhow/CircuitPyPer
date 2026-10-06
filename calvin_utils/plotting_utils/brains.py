@@ -25,13 +25,15 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from calvin_utils.resource_paths import lazy_resource_path
+
 # Where the prebuilt meshes live. An application that ships its own copy points
 # this at it with NEURO_PLOTTER_RESOURCES, so it does not have to reach into
 # this package's install directory to find geometry it depends on.
-RESOURCE_DIR = Path(os.environ.get(
-    "NEURO_PLOTTER_RESOURCES",
-    Path(__file__).resolve().parents[2] / "resources" / "neuro_plotter_resources",
-)).expanduser()
+if configured_resource_dir := os.environ.get("NEURO_PLOTTER_RESOURCES"):
+    RESOURCE_DIR = Path(configured_resource_dir).expanduser()
+else:
+    RESOURCE_DIR = lazy_resource_path("neuro_plotter_resources")
 
 FAMILIES = ("surface", "subcortex")
 

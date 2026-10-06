@@ -9,6 +9,21 @@ import getpass
 from nilearn import image
 from IPython.core.getipython import get_ipython
 from calvin_utils.file_utils.dataframe_utilities import preprocess_colnames_for_regression
+from calvin_utils.resource_paths import default_nifti_mask_path
+
+try:
+    from nimlab import configuration as config
+    from nimlab import datasets as ds
+except ModuleNotFoundError:  # Optional institutional dependency.
+    config = None
+    ds = None
+
+
+def _require_nimlab():
+    if config is None or ds is None:
+        raise ModuleNotFoundError(
+            "This PALM operation requires the optional nimlab package."
+        )
 
 class CalvinPalm:
     """
@@ -73,20 +88,22 @@ class CalvinPalm:
         Returns:
         - DataFrame representing the design matrix.
         """
-        if formula_vars is None or len(formula_vars) == 0:
+        if data_df is None:
+            data_df = self.df
+        if data_df is None:
+            raise ValueError("data_df is required before data have been loaded")
+        formula_vars = list(formula_vars or [])
+        if not formula_vars:
             design_matrix = pd.DataFrame({'Intercept': np.ones(len(data_df.index))}, index=data_df.index)
         else:
             formula = ' + '.join(formula_vars)
             design_matrix = patsy.dmatrix(formula, data_df, return_type='dataframe')
 
         # Handle intercept
-        if intercept and 'Intercept' not in map(str.capitalize, formula_vars):
+        if intercept and 'Intercept' not in design_matrix.columns:
             design_matrix['Intercept'] = 1.0
-        if intercept==False:
-            try:
-                self.design_matrix.pop('Intercept')
-            except:
-                print('Could not remove Intercept.')
+        if not intercept:
+            design_matrix = design_matrix.drop(columns="Intercept", errors="ignore")
 
         # Handle interactions
         design_matrix = self.handle_interactions(design_matrix, formula_vars)
@@ -327,6 +344,7 @@ class CalvinPalmSubmitter:
         Returns:
         - None
         """
+        _require_nimlab()
         # Setup directories
         working_directory = os.path.join(output_directory, "palm_config")
         os.makedirs(working_directory, exist_ok=True)
@@ -394,6 +412,7 @@ class CalvinPalmSubmitter:
         Returns:
         - None. An exception is raised if an error occurs.
         """
+        _require_nimlab()
         # Verify if FSL software is available
         config.verify_software(["fsl_path"])
 
@@ -451,10 +470,9 @@ class CalvinPalmSubmitter:
         - str: the path to the mask file to be used in PALM analysis.
         """
         if mask == "":
-            mask_file = os.path.join(working_directory, f"MNI152_T1_2mm_brain_mask_dil.nii")
-            ds.get_img("MNI152_T1_2mm_brain_mask_dil").to_filename(mask_file)
-            return mask_file
+            return os.fspath(default_nifti_mask_path())
         else:
+            _require_nimlab()
             mask_file = os.path.join(working_directory, f"{mask}.nii")
             ds.get_img(mask).to_filename(mask_file)
             return mask_file
@@ -501,6 +519,7 @@ class CalvinPalmSubmitter:
         Returns:
         - list: A list of command line arguments for running PALM.
         """
+        _require_nimlab()
         palm_cmd = [
             f"{config.software['palm_path']}/palm",
             "-i", os.path.abspath(concat_file),
@@ -619,6 +638,7 @@ class CalvinPalmSubmitter:
             ValueError: Unrecognized cluster
         """
 
+        _require_nimlab()
         if cluster_name in config.clusters.keys():
             cluster_config = config.clusters[cluster_name]
             job_script_path = os.path.abspath(
@@ -727,8 +747,8 @@ class CalvinPalmSubmitter:
         eb : pd.DataFrame, optional
             Dataframe specifying exchangeability block membership. Defaults to None
         mask : str
-            Path to mask file. Defaults to "MNI152_T1_2mm_brain_mask_dil" provided
-            by nimlab.datasets
+            Path to mask file. Defaults to the bundled
+            ``MNI152_T1_2mm_brain_mask.nii``.
         save_1p : bool
             Save p values as 1 - p. Defaults to True.
         logp : bool
@@ -755,6 +775,7 @@ class CalvinPalmSubmitter:
         None
 
         """
+        _require_nimlab()
         # prep folders
         working_directory = os.path.join(self.out_dir, "palm_config")
         if not os.path.exists(working_directory):
@@ -783,9 +804,7 @@ class CalvinPalmSubmitter:
         self.text2vest(working_directory + "/design.tsv", design_matrix_file)
         self.text2vest(working_directory + "/contrast.tsv", contrast_matrix_file)
         if mask == "":
-            mask_file = working_directory + "/" + self.DEFAULT_MASK + ".nii"
-            ds.get_img(self.DEFAULT_MASK).to_filename(mask_file)
-            mask = mask_file
+            mask = os.fspath(default_nifti_mask_path())
 
         # Create exchangeability blocks
         if eb is not None:

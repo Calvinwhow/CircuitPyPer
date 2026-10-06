@@ -9,9 +9,10 @@ from tqdm import tqdm
 from calvin_utils.neuroimaging_utils.tract_utils.fiber_converter import FiberFormatConverter
 from calvin_utils.neuroimaging_utils.tract_utils.fiber_result_visualizer import FiberResultVisualizer
 from calvin_utils.neuroimaging_utils.tract_utils.tract_density import TractDensity
-PACKAGE_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+from calvin_utils.resource_paths import lazy_resource_path
+
 DEFAULT_FIBER_MASK = None
-DEFAULT_MNI_MASK = os.path.join(PACKAGE_ROOT, "resources", "MNI152_T1_2mm_brain_mask.nii")
+DEFAULT_MNI_MASK = lazy_resource_path("MNI152_T1_2mm_brain_mask.nii")
 
 class FiberIO:
     """Fiber-space I/O using a canonical, ordered streamline atlas.

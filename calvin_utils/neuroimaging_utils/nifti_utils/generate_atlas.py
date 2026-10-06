@@ -4,6 +4,7 @@ import warnings
 import numpy as np
 import nibabel as nib
 from nilearn.image import resample_to_img
+from calvin_utils.resource_paths import lazy_resource_path
 
 def split_atlas(atlas_nii: str, labels_txt: str, out_dir: str | pathlib.Path) -> None:
     """
@@ -48,11 +49,7 @@ class AtlasAggregator:
     Build a resampled 4D atlas with flexible grouping rules and export ROIs.
     """
 
-    DEFAULT_MASK = (
-        pathlib.Path(__file__).resolve().parents[2]
-        / "resources"
-        / "MNI152_T1_2mm_brain_mask.nii"
-    )
+    DEFAULT_MASK = lazy_resource_path("MNI152_T1_2mm_brain_mask.nii")
 
     def __init__(
         self,

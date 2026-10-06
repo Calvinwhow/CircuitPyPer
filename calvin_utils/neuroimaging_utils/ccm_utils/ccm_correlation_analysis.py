@@ -426,8 +426,8 @@ class CorrelationAnalysis:
                     
 def mask_array(mask_path, data_array, threshold=0):
     if mask_path is None:
-        from nimlab import datasets as nimds
-        mask = nimds.get_img("mni_icbm152")
+        from calvin_utils.resource_paths import default_nifti_mask_path
+        mask = nib.load(default_nifti_mask_path())
     else:
         mask = nib.load(mask_path)
     mask_data = mask.get_fdata()
@@ -437,8 +437,8 @@ def mask_array(mask_path, data_array, threshold=0):
 
 def unmask_array(mask_path, data_array, threshold=0):
     if mask_path is None:
-        from nimlab import datasets as nimds
-        mask = nimds.get_img("mni_icbm152")
+        from calvin_utils.resource_paths import default_nifti_mask_path
+        mask = nib.load(default_nifti_mask_path())
     else:
         mask = nib.load(mask_path)
     mask_data = mask.get_fdata()

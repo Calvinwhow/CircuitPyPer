@@ -52,6 +52,10 @@ def simple_heatmap(
     """
     Simple heatmap with consistent styling and flexible colormap logic.
 
+    A DataFrame may contain one non-numeric label column (for example,
+    ``"Symptom"``). That column is automatically moved to the row index before
+    plotting. All remaining cells must be numeric or missing.
+
     Use cbar_range=(vmin, vmax) to set the colorbar range in one argument.
     For palette="similarity", cbar_range creates a zero-centered TwoSlopeNorm.
     For other palettes, cbar_range is passed as seaborn/matplotlib vmin/vmax.
@@ -67,10 +71,7 @@ def simple_heatmap(
         if vmin >= vmax:
             raise ValueError(f"cbar_range must be increasing; got {cbar_range}.")
 
-    if isinstance(data, pd.DataFrame):
-        matrix = data.copy()
-    else:
-        matrix = pd.DataFrame(np.asarray(data))
+    matrix = _prepare_heatmap_matrix(data)
 
     if mask_half:
         matrix = pd.DataFrame(np.tril(matrix.to_numpy()), index=matrix.index, columns=matrix.columns)
@@ -128,8 +129,8 @@ def simple_heatmap(
         linecolor=linecolor,
         cmap=cmap,
         norm=norm,
-        vmin=vmin,
-        vmax=vmax,
+        vmin=None if norm is not None else vmin,
+        vmax=None if norm is not None else vmax,
         ax=ax,
         cbar=cbar,
         annot=annot,
@@ -166,3 +167,41 @@ def simple_heatmap(
         ax.figure.savefig(os.path.join(out_dir, output_name), bbox_inches="tight", dpi=dpi)
 
     return limit
+
+
+def _prepare_heatmap_matrix(data) -> pd.DataFrame:
+    """Return numeric heatmap values, promoting one text column to row labels."""
+    if isinstance(data, pd.DataFrame):
+        matrix = data.copy()
+    else:
+        matrix = pd.DataFrame(np.asarray(data))
+
+    if matrix.empty or matrix.shape[1] == 0:
+        raise ValueError("Heatmap data must contain at least one row and one column.")
+
+    numeric = matrix.apply(pd.to_numeric, errors="coerce")
+    invalid = numeric.isna() & matrix.notna()
+    non_numeric_columns = [column for column in matrix.columns if invalid[column].any()]
+
+    if len(non_numeric_columns) == 1 and matrix.shape[1] > 1:
+        label_column = non_numeric_columns[0]
+        labels = matrix[label_column]
+        matrix = matrix.drop(columns=label_column)
+        numeric = matrix.apply(pd.to_numeric, errors="coerce")
+        invalid = numeric.isna() & matrix.notna()
+        if not invalid.to_numpy().any():
+            numeric.index = pd.Index(labels, name=label_column)
+            return numeric
+
+    if non_numeric_columns:
+        examples = {
+            str(column): matrix.loc[invalid[column], column].iloc[0]
+            for column in non_numeric_columns
+        }
+        raise ValueError(
+            "Heatmap values must be numeric. Non-numeric values were found in "
+            f"columns {list(examples)} (examples: {examples}). Set a label column "
+            "as the DataFrame index before calling simple_heatmap."
+        )
+
+    return numeric

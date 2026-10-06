@@ -40,6 +40,13 @@ class VoxelwiseRegression:
     tensors. Native map loading, evaluation-space projection, output validation,
     saving, and viewing are delegated to ``NeuroimageFileOutporter`` and its
     selected IO backend.
+
+    Empirical permutation p-values are derived only from refits of the caller-supplied
+    tensors after permuting their observation linkage. No theoretical null
+    distribution is inserted. For each permutation, ``_get_max_stat`` uses the
+    90th percentile of absolute location statistics by default. Despite its
+    historical ``pseudo_var_smooth`` name, that is a percentile heuristic—not
+    actual variance smoothing and not a true maximum-statistic correction.
     """
     def __init__(self, json_path, mask_path=None, out_dir=None, regression_type='linear', n_permutations=0):
         self.json_path = json_path
@@ -517,7 +524,13 @@ class VoxelwiseRegression:
     
     ### P-VALUE METHODS ###
     def _get_max_stat(self, arr, pseudo_var_smooth=True, t=90):
-        """Return the 99.9th percentile of the absolute values in arr. Or just the raw maximum if pseudo_var_smooth is false (this is subject to chaotic noise)."""
+        """Summarize each empirical permutation across locations.
+
+        When ``pseudo_var_smooth`` is true, return percentile ``t`` (90 by
+        default) of the absolute statistics in each row. This historical option
+        is a percentile heuristic, not variance smoothing. When false, return
+        the absolute row maximum.
+        """
         if pseudo_var_smooth:        
             return np.nanpercentile(np.abs(arr), t, axis=1)  # Calculate along rows, ignoring NaNs
         else: 
@@ -892,6 +905,8 @@ class VoxelwiseRegression:
         def _scatter(pred_col, y_true, *, name: str):
             import matplotlib.pyplot as plt
             from calvin_utils.statistical_utils.scatterplot import simple_scatter
+
+
 
             rmse = float(np.sqrt(np.mean((pred_col - y_true) ** 2)))
             mae = float(np.mean(np.abs(pred_col - y_true)))

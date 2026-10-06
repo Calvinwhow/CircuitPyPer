@@ -44,9 +44,20 @@ def run_spearman(X:np.array, Y:np.array, vectorize:bool = False, debug:bool = Fa
     else:
         X, Y = efficient_rank(X), efficient_rank(Y)
         RHO = run_pearson(X, Y, vectorize=True, debug=False)
-    mask = np.isfinite(RHO)
-    RHO = np.nan_to_num(RHO, nan=0, posinf=np.max(RHO[mask]),  neginf=np.min(RHO[mask]))
-    return RHO
+    return _replace_nonfinite_correlations(RHO)
+
+
+def _replace_nonfinite_correlations(values: np.ndarray) -> np.ndarray:
+    """Replace undefined correlations while handling all-constant inputs."""
+    finite = np.isfinite(values)
+    if not finite.any():
+        return np.zeros_like(values, dtype=float)
+    return np.nan_to_num(
+        values,
+        nan=0.0,
+        posinf=np.max(values[finite]),
+        neginf=np.min(values[finite]),
+    )
 
 def run_pearson(X:np.array, Y:np.array, vectorize:bool = True, debug:bool = False) -> np.ndarray:
     """
@@ -85,15 +96,14 @@ def run_pearson(X:np.array, Y:np.array, vectorize:bool = True, debug:bool = Fals
         DENOMINATOR = np.sqrt(SST_X)[:, np.newaxis] @ np.sqrt(SST_Y)[np.newaxis, :] # Pairwise (Indepvars, DepVars) <- (Indepvars, 1) @ (1, Depvars)
 
         # Pearson
-        R = NUMERATOR / DENOMINATOR # (Indepvars, DepVars) <- (Indepvars, DepVars) / (Indepvars, DepVars)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            R = NUMERATOR / DENOMINATOR # (Indepvars, DepVars) <- (Indepvars, DepVars) / (Indepvars, DepVars)
         
         if debug:
-            print("X: ", X.shape, " Y: ", Y.shape, " X_BAR :", X_BAR.shape, " Y_BAR ", Y_BAR.shape, " Y_C: ", Y_C.shape, " X_C: ", X_C.shape, "NUMERATOR :", NUMERATOR.shape, "DENOMINATOR: ", DENOMINATOR.shape, "R: ", r.shape)
+            print("X: ", X.shape, "Y: ", Y.shape, "Y_C: ", Y_C.shape, "X_C: ", X_C.shape, "NUMERATOR: ", NUMERATOR.shape, "DENOMINATOR: ", DENOMINATOR.shape, "R: ", R.shape)
             print(np.max(X_C), np.max(Y_C), NUMERATOR, DENOMINATOR)
         if debug:
             print('Correlation matrix shape: ', R.shape)
     
     # Remove NaNs and Infs. 
-    mask = np.isfinite(R)
-    R = np.nan_to_num(R, nan=0, posinf=np.max(R[mask]),  neginf=np.min(R[mask]))
-    return R
+    return _replace_nonfinite_correlations(R)

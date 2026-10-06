@@ -94,7 +94,7 @@ if __name__=='__main__':
             #----------------------------------------------------------------Submit the job
             # Submit the matrix for calculation
             result = executor.submit(voxelwise_interaction_f_stat, outcomes_df, neuroimaging_dfs, clinical_dfs,
-                                    model_type='linear', manual_f_stat=False, manual_g_stat=False, permutation=True)
+                                    model_type='linear', manual_f_stat=False, permutation=True)
             results.append(result)
         
         for idx, result in enumerate(concurrent.futures.as_completed(results)):

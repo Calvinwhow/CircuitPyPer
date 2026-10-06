@@ -1,10 +1,12 @@
 import numpy as np
 import pandas as pd
+import nibabel as nib
 import scipy.stats as st
 from scipy.stats import zscore
 from scipy.stats import t, norm
-from nilearn import image, plotting 
+from nilearn import image, plotting
 from nibabel.affines import apply_affine
+from calvin_utils.resource_paths import default_nifti_mask_path
 
 import numpy as np
 import pandas as pd
@@ -389,11 +391,7 @@ def mask_matrix(df_1, mask_path=None, mask_threshold=0.2, mask_by='rows'):
     
     #Get Mask
     if mask_path is None:
-        try:
-            from nimlab import datasets as nimds
-            mask = nimds.get_img("mni_icbm152")
-        except Exception as e:
-            raise ValueError(f"Error {e}. Resolve by specifying mask or installing nimlab: https://github.com/nimlab/documentation.git")
+        mask = nib.load(default_nifti_mask_path())
         mask_data = mask.get_fdata().flatten()
         brain_indices = np.where(mask_data > 0)[0]
     else:
@@ -431,11 +429,7 @@ def apply_mask_to_dataframe(merged_df, mask_path=None):
     if mask_path is not None:
         brain_indices = np.where(image.load_img(mask_path).get_fdata().flatten() > 0)[0]
     else:
-        try:
-            from nimlab import datasets as nimds
-            mask = nimds.get_img("mni_icbm152")
-        except Exception as e:
-            raise ValueError(f"Error {e}. Resolve by specifying mask or installing nimlab: https://github.com/nimlab/documentation.git")
+        mask = nib.load(default_nifti_mask_path())
         mask_data = mask.get_fdata().flatten()
         brain_indices = np.where(mask_data > 0)[0]
     
@@ -467,11 +461,7 @@ def mask_matrix(df_1, mask_path=None, mask_threshold=0.2, mask_by='rows', datafr
     else:
         # Get Mask
         if mask_path is None:
-            try:
-                from nimlab import datasets as nimds
-                mask = nimds.get_img("mni_icbm152")
-            except Exception as e:
-                raise ValueError(f"Error {e}. Resolve by specifying mask or installing nimlab: https://github.com/nimlab/documentation.git")
+            mask = nib.load(default_nifti_mask_path())
             mask_data = mask.get_fdata().flatten()
             brain_indices = np.where(mask_data > 0)[0]
         else:
@@ -522,11 +512,7 @@ def unmask_matrix(df_1, mask_path=None, mask_threshold=0.2, unmask_by='rows', da
     else:
         # Get Mask
         if mask_path is None:
-            try:
-                from nimlab import datasets as nimds
-                mask = nimds.get_img("mni_icbm152")
-            except Exception as e:
-                raise ValueError(f"Error {e}. Resolve by specifying mask or installing nimlab: https://github.com/nimlab/documentation.git")
+            mask = nib.load(default_nifti_mask_path())
             mask_data = mask.get_fdata().flatten()
             brain_indices = np.where(mask_data > 0)[0]
         else:
@@ -573,9 +559,10 @@ def unmask_matrix_v2(df_1, mask_path=None, mask_threshold=0, dataframe_to_unmask
         mask = dataframe_to_unmask_by.copy()
         mask['mask_index'] = mask.sum(axis=1)
         mask_indices = np.where(mask['mask_index'] != 0)[0]
+        mask_data = np.zeros(len(mask), dtype=float)
     else:
         if mask_path is None:
-            mask = nimds.get_img("mni_icbm152")
+            mask = nib.load(default_nifti_mask_path())
         else:
             mask = image.load_img(mask_path)
         
@@ -615,6 +602,7 @@ class CsvToNifti:
         self.data_frames = []
         self.nifti_image = None
 
+    @staticmethod
     def unmask_csv_with_nifti_mask(csv_file, nifti_mask_file):
         # Load the CSV data and the NIFTI mask
         data_frame = pd.read_csv(csv_file)
@@ -640,5 +628,3 @@ class CsvToNifti:
 
     def save_nifti(self, output_file):
         nib.save(self.nifti_image, output_file)
-
-

@@ -7,11 +7,11 @@ import json
 
 import numpy as np
 
-from calvin_utils.file_utils.import_functions import GiiNiiFileImport
+from calvin_utils.neuroimaging_utils.io.importers import GiiNiiFileImport
 from calvin_utils.neuroimaging_utils.ccm_utils.npy_utils import DataLoader
 from calvin_utils.neuroimaging_utils.ccm_utils.optimization.convergent_map_optimizer import LocalizationOptimizer
 from calvin_utils.neuroimaging_utils.ccm_utils.optimization.history import OptimizationHistory
-from calvin_utils.neuroimaging_utils.output_functions import NeuroimageFileOutporter
+from calvin_utils.neuroimaging_utils.io.exporters import NeuroimageFileOutporter
 
 
 def load_map_files(map_files, *, mask_path, map_output_type=None):

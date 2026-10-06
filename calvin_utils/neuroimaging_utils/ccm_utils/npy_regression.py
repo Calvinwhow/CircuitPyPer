@@ -8,6 +8,21 @@ from nilearn import plotting
 
 # New regression analysis class with FWE correction
 class RegressionNPYAnalysis:
+    """Fit voxelwise OLS contrasts using caller-derived empirical permutations.
+
+    When FWE output is requested, each row permutation of the supplied design
+    matrix is refitted against the supplied voxel data. Per-contrast summary
+    statistics from those fits form the empirical null realizations used for
+    voxelwise p-values. No analytic or theoretical null distribution is inserted.
+
+    ``max_stat_method=None`` records the largest absolute contrast statistic in
+    each permutation. ``"pseudo_var_smooth"`` records the 99.99th percentile of
+    absolute statistics. That option is a historical percentile heuristic, not
+    actual variance smoothing, and is less conservative than a true maximum.
+    The legacy ``"var_smooth"`` selector remains unsupported and raises
+    ``ValueError``.
+    """
+
     def __init__(self, data_dict_path, n_permutations=1000, out_dir=None, fwe=False, max_stat_method=None, verbose=True, mask_path=None):
         """
         Parameters:
@@ -140,11 +155,16 @@ class RegressionNPYAnalysis:
     
     def run_permutation(self):
         """
-        For each permutation, randomly shuffle the rows of X (breaking the link to Y),
-        recompute regression and contrast t-maps, then record one maximum statistic (scalar)
-        across all contrasts and voxels using get_max_stat.
+        For each permutation, randomly shuffle the rows of X (breaking the link
+        to Y), recompute regression and contrast t-maps, then record one summary
+        statistic per contrast using all voxels in that contrast map.
+
+        These values are empirical null realizations derived from the caller's
+        data. ``get_max_stat`` determines whether each realization is the raw
+        absolute maximum or the historical percentile heuristic.
+
         Returns:
-          permuted_max: array of shape (n_permutations,)
+          permuted_max: array of shape (n_contrasts, n_permutations)
         """
         permuted_max = np.zeros((self.contrast_matrix.shape[0], self.n_permutations))           # (n_contrasts, n_perms) <- stores the max contrast value for each contrast
         for i in tqdm(range(self.n_permutations), desc="Permutations"):
@@ -154,7 +174,7 @@ class RegressionNPYAnalysis:
             contrast_estimates, contrast_tmaps = self.apply_contrast(beta, XtX_inv, mse)
             
             for c in range(contrast_tmaps.shape[0]):
-                permuted_max[c,i] = self.get_max_stat(contrast_tmaps[c,i])        # extract the max start per contrast map
+                permuted_max[c, i] = self.get_max_stat(contrast_tmaps[c, :])
         return permuted_max
 
     def apply_contrast(self, beta, XtX_inv, mse):

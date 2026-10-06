@@ -26,9 +26,9 @@ import nibabel as nib
 from nilearn import image
 from tqdm import tqdm
 from calvin_utils.neuroimaging_utils.ccm_utils.bounding_box import NiftiBoundingBox
+from calvin_utils.resource_paths import lazy_resource_path
 
-PACKAGE_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-DEFAULT_MASK = os.path.join(PACKAGE_ROOT, "resources", "MNI152_T1_2mm_brain_mask.nii")
+DEFAULT_MASK = lazy_resource_path("MNI152_T1_2mm_brain_mask.nii")
 
 class NiftiIO:
     output_ftype = "nii"

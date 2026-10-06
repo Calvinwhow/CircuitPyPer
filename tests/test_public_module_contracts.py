@@ -34,6 +34,10 @@ PUBLIC_MODULE_CONTRACTS = (
         "calvin_utils.neuroimaging_utils.ccm_utils.symptom_specificity",
         ("SpecificityAnalyzer", "NetworkSpecificityAnalysis"),
     ),
+    (
+        "calvin_utils.neuroimaging_utils.ccm_utils.sensitivity_map",
+        ("SensitivityMap",),
+    ),
 )
 
 

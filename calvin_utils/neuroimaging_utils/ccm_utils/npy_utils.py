@@ -279,8 +279,8 @@ class RegressionNPYPreparer:
 
     def _mask_array(self, data_array, threshold=0):
         if self.mask_path is None:
-            from nimlab import datasets as nimds
-            mask = nimds.get_img("mni_icbm152")
+            from calvin_utils.resource_paths import default_nifti_mask_path
+            mask = nib.load(default_nifti_mask_path())
         else:
             mask = nib.load(self.mask_path)
 

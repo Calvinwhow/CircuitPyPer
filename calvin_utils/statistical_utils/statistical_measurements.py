@@ -22,7 +22,7 @@ import numpy as np
 
 # For PDD
 import statsmodels.discrete.discrete_model as smd
-from calvin_utils.statistical_utils.scatterplot import simple_scatter
+from calvin_utils.plotting_utils.statistical.scatterplot import simple_scatter
 
 def calculate_vif(df):
 
@@ -541,8 +541,6 @@ class FactorialPlot(EMMPlot):
         # Drop rows with NaN in any of the factor columns or in the predictions
         emm_df = self.emm_df
         emm_df = emm_df.dropna()
-        display(emm_df)
-
         # Initialize the plotting area if not provided
         if ax is None:
             fig, ax = plt.subplots(figsize=(10, 8))
@@ -551,7 +549,6 @@ class FactorialPlot(EMMPlot):
         unique_values_per_factor = [emm_df[fname].nunique() for fname in factor_names]
 
         # Map the first categorical variable to integers for the x-axis
-        print(factor_names)
         x_factor = factor_names[0]
         x_levels = emm_df[x_factor].dropna().unique()
         x_levels.sort()  # Sort the levels to ensure consistent order
@@ -559,14 +556,14 @@ class FactorialPlot(EMMPlot):
         emm_df['x_mapped'] = emm_df[x_factor].map(x_mapping)
 
         # Set colors and markers based on unique values
-        colors = plt.cm.get_cmap('tab10', unique_values_per_factor[1])  # For the trace factor
+        colors = plt.get_cmap('tab10', unique_values_per_factor[1])  # For the trace factor
         markers = ['o', 's', 'D', '^', 'v', '*', 'p', 'x']  # Default set of markers
         
         if len(factor_names) > 2 and unique_values_per_factor[2] > len(markers):
             markers *= (unique_values_per_factor[2] // len(markers)) + 1
 
         # Adjust the markers based on the third factor if it's provided
-        marker_assignments = markers
+        marker_assignments = markers[:unique_values_per_factor[1]]
         if len(factor_names) > 2:
             third_factor = factor_names[2]
             marker_assignments = emm_df[third_factor].map(dict(zip(emm_df[third_factor].unique(), markers)))

@@ -5,7 +5,8 @@ import concurrent
 from tqdm import tqdm
 import numpy as np
 from calvin_utils.permutation_analysis_utils.permutation_utils.palm import permute_column
-from nimlab import datasets as nimds
+import nibabel as nib
+from calvin_utils.resource_paths import default_nifti_mask_path
 import pandas as pd
 
 
@@ -18,7 +19,7 @@ def permute_brain(data, n_permutations):
     '''
     
     # Load the brain mask
-    mni_mask = nimds.get_img("mni_icbm152")
+    mni_mask = nib.load(default_nifti_mask_path())
     mask_data = mni_mask.get_fdata().flatten()
 
     # Get the indices of the brain voxels

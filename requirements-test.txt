@@ -19,3 +19,4 @@ ipython
 
 pytest>=8,<10
 coverage>=7,<8
+wheel>=0.38

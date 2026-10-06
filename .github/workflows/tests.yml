@@ -38,6 +38,14 @@ jobs:
           python -m pip install -r requirements-test.txt
           python -m pip install --no-deps -e .
 
+      - name: Build and smoke-test wheel
+        run: |
+          python setup.py bdist_wheel --dist-dir "$RUNNER_TEMP/calvin-wheels"
+          python -m venv "$RUNNER_TEMP/calvin-wheel-venv"
+          "$RUNNER_TEMP/calvin-wheel-venv/bin/python" -m pip install --no-deps "$RUNNER_TEMP"/calvin-wheels/*.whl
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/calvin-wheel-venv/bin/python" -c "from calvin_utils.resource_paths import resource_path; import calvin_utils.neuroimaging_utils; assert resource_path('MNI152_T1_2mm_brain_mask.nii').is_file()"
+
       - name: Run behavioral and module contracts
         env:
           MPLBACKEND: Agg
@@ -49,7 +57,7 @@ jobs:
       - name: Enforce core-pipeline coverage floor
         run: >-
           python -m coverage report
-          --include=calvin_utils/file_utils/csv_prep.py,calvin_utils/file_utils/file_path_collector.py,calvin_utils/file_utils/import_functions.py,calvin_utils/neuroimaging_utils/nifti_utils/volume_io.py,calvin_utils/neuroimaging_utils/tract_utils/fiber_io.py,calvin_utils/neuroimaging_utils/tract_utils/fiber_converter.py,calvin_utils/neuroimaging_utils/tract_utils/filter_fibers.py,calvin_utils/permutation_analysis_utils/map_damage_cv.py,calvin_utils/permutation_analysis_utils/voxelwise_regression.py,calvin_utils/permutation_analysis_utils/voxelwise_regression_prep.py,calvin_utils/permutation_analysis_utils/statsmodels_palm.py,calvin_utils/neuroimaging_utils/ccm_utils/symptom_specificity.py,calvin_utils/statistical_utils/data_transformation.py
+          --include=calvin_utils/file_utils/csv_prep.py,calvin_utils/file_utils/file_path_collector.py,calvin_utils/neuroimaging_utils/io/importers.py,calvin_utils/neuroimaging_utils/nifti_utils/volume_io.py,calvin_utils/neuroimaging_utils/tract_utils/fiber_io.py,calvin_utils/neuroimaging_utils/tract_utils/fiber_converter.py,calvin_utils/neuroimaging_utils/tract_utils/filter_fibers.py,calvin_utils/permutation_analysis_utils/map_damage_cv.py,calvin_utils/permutation_analysis_utils/voxelwise_regression.py,calvin_utils/permutation_analysis_utils/voxelwise_regression_prep.py,calvin_utils/permutation_analysis_utils/statsmodels_palm.py,calvin_utils/neuroimaging_utils/ccm_utils/symptom_specificity.py,calvin_utils/neuroimaging_utils/ccm_utils/sensitivity_map.py,calvin_utils/statistical_utils/data_transformation.py
           --fail-under=55
 
       - name: Upload coverage data

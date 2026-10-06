@@ -64,8 +64,8 @@ DATA_TRANSFORM_METHOD = "rank"   # Regression maps: 'standardize', 'rank', or No
 RANDOM_SEED = 2026
 MAX_ITERS = 500
 WEIGHT_INIT_MODE = "unweighted"
-STORE_ITERS = False              # Save compact final-fit history for a GIF.
-RENDER_GIF = False               # Save history and render after optimization.
+STORE_ITERS = False              # Save compact final-fit visualization history.
+RENDER_GIF = False               # Render a GIF plus NIfTI/fiber history stack.
 GIF_OPTIONS = {                  # Passed to render_optimization_history.
     "fps": 5, "max_frames": 60, "view": "auto",
 }

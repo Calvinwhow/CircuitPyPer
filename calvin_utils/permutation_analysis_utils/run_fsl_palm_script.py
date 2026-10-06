@@ -6,6 +6,7 @@ from nilearn import image
 from time import time
 import subprocess
 import getpass
+from calvin_utils.resource_paths import default_nifti_mask_path
 
 
 def process_nifti_paths(csv_file_path):
@@ -118,7 +119,6 @@ def create_design_matrix(formula_vars, data_df, subject_id_column):
 
     return design_matrix
 
-DEFAULT_MASK = "MNI152_T1_2mm_brain_mask_dil"
 try:
     from pathlib import Path
 except:
@@ -181,8 +181,8 @@ def calvins_call_palm(
     eb : pd.DataFrame, optional
         Dataframe specifying exchangeability block membership. Defaults to None
     mask : str
-        Path to mask file. Defaults to "MNI152_T1_2mm_brain_mask_dil" provided
-        by nimlab.datasets
+        Path to mask file. Defaults to the bundled
+        ``MNI152_T1_2mm_brain_mask.nii``.
     save_1p : bool
         Save p values as 1 - p. Defaults to True.
     logp : bool
@@ -211,7 +211,6 @@ def calvins_call_palm(
     """
     try:
         from nimlab import configuration as config
-        from nimlab import datasets as ds
     except ImportError as exc:
         raise ImportError("calvins_call_palm requires the optional 'nimlab' package") from exc
 
@@ -235,9 +234,7 @@ def calvins_call_palm(
     text2vest(working_directory + "/design.tsv", design_matrix_file)
     text2vest(working_directory + "/contrast.tsv", contrast_matrix_file)
     if mask == "":
-        mask_file = working_directory + "/" + DEFAULT_MASK + ".nii"
-        ds.get_img(DEFAULT_MASK).to_filename(mask_file)
-        mask = mask_file
+        mask = os.fspath(default_nifti_mask_path())
 
     # Create exchangeability blocks
     if eb is not None:

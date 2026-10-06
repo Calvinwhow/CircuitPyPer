@@ -4,8 +4,9 @@ import warnings
 warnings.filterwarnings('ignore')
 import os
 import numpy as np
-from nimlab import datasets as nimds
+import nibabel as nib
 from nilearn import image, plotting, maskers
+from calvin_utils.resource_paths import default_nifti_mask_path
 
 #----------------------------------------------------------------user input----------------------------------------------------------------
 def convolve_extract_clusters(nifti_file, save_clusters=True):    
@@ -32,7 +33,7 @@ def convolve_extract_clusters(nifti_file, save_clusters=True):
     c, numc = ndimage.measurements.label(convolution)
     print('Number clusters: ', numc)
 
-    mask = nimds.get_img("mni_icbm152")
+    mask = nib.load(default_nifti_mask_path())
     cluster_dict = {}
     for i in range(1, numc+1):
         cluster_dict[i] = np.where(c == i, 1, 0)

@@ -1,2 +1,2 @@
-"""Back-compat shim for legacy imports."""
+"""Legacy shim; use calvin_utils.neuroimaging_utils.ccm_utils.nifti_utils."""
 from calvin_utils.neuroimaging_utils.ccm_utils.nifti_utils import *  # noqa: F401,F403

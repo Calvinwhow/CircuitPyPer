@@ -1,6 +1,8 @@
-"""Render optimization weight histories as GIFs in native map space."""
+"""Render and export optimization histories in native map space."""
 
 from pathlib import Path
+import tempfile
+import warnings
 
 import numpy as np
 
@@ -10,11 +12,12 @@ from calvin_utils.neuroimaging_utils.ccm_utils.optimization.history import (
 
 
 def render_optimization_history(history, output_path=None, **kwargs):
-    """Render an OptimizationHistory object or ``.npz`` path to a GIF.
+    """Render an OptimizationHistory object or ``.npz`` path.
 
     This is the reusable entry point for optimization pipelines and the CLI.
-    When ``output_path`` is omitted for an archive, the GIF is written beside
-    it as ``optimization.gif``.
+    The GIF and a native map stack are written together. When ``output_path``
+    is omitted for an archive, the GIF is written beside it as
+    ``optimization.gif``.
     """
     history_path = None
     if not isinstance(history, OptimizationHistory):
@@ -46,10 +49,149 @@ def _slices(volume, cuts):
     )
 
 
+def _normalized_output_type(output_type):
+    return {
+        "nifti": "nii",
+        "gii": "surface",
+        "freesurfer": "surface",
+    }.get(output_type, output_type)
+
+
+def optimization_stack_path(gif_path, output_type):
+    """Return the default native map-stack path paired with a GIF."""
+    output_type = _normalized_output_type(output_type)
+    gif_path = Path(gif_path)
+    if output_type == "nii":
+        return gif_path.with_suffix(".nii.gz")
+    if output_type == "fiber":
+        return gif_path.with_suffix(".fib.npy")
+    return None
+
+
+def _frame_indices(n_iterations, max_frames):
+    """Evenly sample a history while always retaining its endpoints."""
+    if max_frames is None:
+        return np.arange(n_iterations, dtype=int)
+    if max_frames <= 0:
+        raise ValueError("max_frames must be positive or None.")
+    return np.unique(np.linspace(
+        0, n_iterations - 1,
+        num=min(max_frames, n_iterations), dtype=int,
+    ))
+
+
+def export_optimization_map_stack(history, output_path, *, output_type=None,
+                                  mask_path=None, max_frames=60):
+    """Reconstruct sampled weight snapshots as one native map stack.
+
+    Snapshots are sampled evenly across the full history, including the first
+    and last. Pass ``max_frames=None`` to retain every stored snapshot. NIfTI
+    histories are saved as ``(x, y, z, snapshot)``. Fiber histories are saved
+    as ``(fiber, snapshot)`` and are restored to full atlas order when
+    optimization used a masked subset of the atlas.
+    """
+    if history.weights.shape[0] == 0:
+        raise ValueError("The history has no scored iterations.")
+
+    output_type = _normalized_output_type(output_type or history.output_type)
+    mask_path = mask_path or history.mask_path or None
+    if output_type not in {"nii", "fiber"}:
+        raise ValueError(
+            "Optimization map stacks are supported for NIfTI and fiber "
+            f"histories, not {output_type!r}."
+        )
+
+    from calvin_utils.neuroimaging_utils.io.exporters import NeuroimageFileOutporter
+
+    exporter = NeuroimageFileOutporter(
+        output_ftype=output_type, mask_path=mask_path
+    )
+    exporter.validate_for_output()
+    output_path = Path(output_path).expanduser()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    indices = _frame_indices(history.weights.shape[0], max_frames)
+    n_snapshots = len(indices)
+
+    if output_type == "nii":
+        import nibabel as nib
+
+        lower_name = output_path.name.lower()
+        if not lower_name.endswith((".nii", ".nii.gz")):
+            raise ValueError("A volumetric optimization stack must end in .nii or .nii.gz.")
+        first_image = exporter.io._map_to_image(history.map_at(indices[0]))
+        first_volume = np.asarray(first_image.dataobj, dtype=np.float32)
+        if first_volume.ndim != 3:
+            raise ValueError(
+                "A volumetric optimization snapshot must be 3D, got "
+                f"{first_volume.shape}."
+            )
+        temporary = tempfile.NamedTemporaryFile(
+            prefix=".optimization_stack_", suffix=".dat",
+            dir=output_path.parent, delete=False,
+        )
+        temporary_path = Path(temporary.name)
+        temporary.close()
+        stacked = None
+        try:
+            stacked = np.memmap(
+                temporary_path, mode="w+", dtype=np.float32,
+                shape=first_volume.shape + (n_snapshots,),
+            )
+            stacked[..., 0] = first_volume
+            for snapshot, iteration in enumerate(indices[1:], start=1):
+                image = exporter.io._map_to_image(history.map_at(iteration))
+                volume = np.asarray(image.dataobj, dtype=np.float32)
+                if volume.shape != first_volume.shape:
+                    raise ValueError(
+                        "Optimization snapshots do not share a volume shape: "
+                        f"{first_volume.shape} and {volume.shape}."
+                    )
+                stacked[..., snapshot] = volume
+            stacked.flush()
+            header = first_image.header.copy()
+            header.set_data_dtype(np.float32)
+            nib.save(
+                nib.Nifti1Image(stacked, first_image.affine, header=header),
+                str(output_path),
+            )
+        finally:
+            if stacked is not None:
+                del stacked
+            temporary_path.unlink(missing_ok=True)
+    else:
+        if output_path.suffix.lower() != ".npy":
+            raise ValueError("A fiber optimization stack must end in .npy.")
+        fiber_mask = exporter.io.fiber_mask
+        n_fibers = len(exporter.io.reference_fibers)
+        n_features = history.maps.shape[1]
+        if n_features not in {int(fiber_mask.sum()), n_fibers}:
+            raise ValueError(
+                "Optimization map length does not match the masked or full "
+                f"fiber atlas: {n_features} versus {int(fiber_mask.sum())} "
+                f"masked / {n_fibers} full fibers."
+            )
+        full_stack = np.lib.format.open_memmap(
+            output_path, mode="w+", dtype=np.float32,
+            shape=(n_fibers, n_snapshots),
+        )
+        full_stack[:] = 0
+        for snapshot, iteration in enumerate(indices):
+            values = np.asarray(history.map_at(iteration), dtype=np.float32)
+            if n_features == n_fibers:
+                full_stack[:, snapshot] = values
+            else:
+                full_stack[fiber_mask, snapshot] = values
+        full_stack.flush()
+        del full_stack
+
+    return output_path
+
+
 def render_gif(history, output_path, *, fps=5, max_frames=60,
                view="auto", output_type=None, mask_path=None, vmax=None,
-               max_lines=10000, viewer_url=None):
-    """Create a weight/loss GIF, with anatomical slices when I/O supports them."""
+               max_lines=10000, viewer_url=None, write_map_stack=True,
+               map_stack_path=None):
+    """Create a weight/loss GIF and its volumetric or fiber map stack."""
     if fps <= 0 or max_frames <= 0:
         raise ValueError("fps and max_frames must be positive.")
     if history.weights.shape[0] == 0:
@@ -60,7 +202,7 @@ def render_gif(history, output_path, *, fps=5, max_frames=60,
     import matplotlib.pyplot as plt
     from matplotlib.animation import PillowWriter
 
-    output_type = output_type or history.output_type
+    output_type = _normalized_output_type(output_type or history.output_type)
     mask_path = mask_path or history.mask_path or None
     if view == "auto":
         view = "circuit" if output_type == "fiber" else (
@@ -73,7 +215,7 @@ def render_gif(history, output_path, *, fps=5, max_frames=60,
         raise ValueError("Circuit Viewer fiber rendering requires a fiber history.")
     exporter = None
     if spatial or circuit:
-        from calvin_utils.neuroimaging_utils.output_functions import NeuroimageFileOutporter
+        from calvin_utils.neuroimaging_utils.io.exporters import NeuroimageFileOutporter
 
         exporter = NeuroimageFileOutporter(output_ftype=output_type, mask_path=mask_path)
         exporter.validate_for_output()
@@ -81,9 +223,7 @@ def render_gif(history, output_path, *, fps=5, max_frames=60,
             raise ValueError(f"No spatial image renderer is available for {output_type!r}.")
 
     n_iterations = history.weights.shape[0]
-    indices = np.unique(np.linspace(
-        0, n_iterations - 1, num=min(max_frames, n_iterations), dtype=int
-    ))
+    indices = _frame_indices(n_iterations, max_frames)
 
     circuit_renderer = None
     if spatial or circuit:
@@ -194,4 +334,22 @@ def render_gif(history, output_path, *, fps=5, max_frames=60,
         if circuit_renderer is not None:
             circuit_renderer.close()
         plt.close(fig)
+    if write_map_stack:
+        stack_path = (
+            Path(map_stack_path).expanduser()
+            if map_stack_path is not None
+            else optimization_stack_path(output_path, output_type)
+        )
+        if stack_path is None:
+            warnings.warn(
+                "No native optimization map stack was written for output type "
+                f"{output_type!r}; only NIfTI and fiber histories are supported.",
+                stacklevel=2,
+            )
+        else:
+            export_optimization_map_stack(
+                history, stack_path, output_type=output_type,
+                mask_path=mask_path, max_frames=max_frames,
+            )
+            print(f"Saved optimization map stack to: {stack_path}")
     return output_path

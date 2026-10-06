@@ -105,6 +105,7 @@ import re
 from typing import Iterable
 
 import numpy as np
+import nibabel as nib
 
 
 __all__ = ["SuitCerebellumAtlas", "suit_name_to_yabplot"]

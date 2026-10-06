@@ -4,7 +4,8 @@ import os
 import numpy as np
 import pandas as pd
 import concurrent.futures
-from nimlab import datasets as nimds
+import nibabel as nib
+from calvin_utils.resource_paths import default_nifti_mask_path
 from calvin_utils.permutation_analysis_utils.permutation_utils.palm import whole_brain_permutation_test, permute_column, permute_row, permute_contrast_matrix
 from calvin_utils.file_utils.dataframe_utilities import preprocess_colnames_for_regression
 from calvin_utils.statistical_utils.voxelwise_statistical_testing import voxelwise_interaction_f_stat
@@ -30,7 +31,7 @@ class v1:
     coefficient_matrix = pd.read_csv(coefficient_matrix,index_col=False)
 
     #Prepare the empiric t values matrix
-    mni_mask = nimds.get_img("mni_icbm152")
+    mni_mask = nib.load(default_nifti_mask_path())
     mask_data = mni_mask.get_fdata().flatten()
     brain_indices = np.where(mask_data > 0)[0]
     t_matrix = t_matrix.to_numpy()[brain_indices, -1]
@@ -159,8 +160,7 @@ class PermutationTester:
 #         'outcome_df': outcome_df,
 #         'neuroimaging_dfs': neuroimaging_dfs,
 #         'clinical_dfs': clinical_dfs,
-#         'manual_f_stat': False,
-#         'manual_g_stat': False
+#         'manual_f_stat': False
 #     },
 #     out_dir='path_to_output_directory',
 #     job_name='delta_r_permutation'
@@ -169,7 +169,6 @@ class PermutationTester:
 from sklearn.preprocessing import StandardScaler
 from calvin_utils.file_utils.import_matrices import import_matrices_from_folder, import_matrices_from_csv
 from calvin_utils.neuroimaging_utils.nifti_utils.generate_nifti import nifti_from_matrix
-from nimlab import datasets as nimds
 import numpy as np
 from calvin_utils.statistical_utils.z_score_matrix import z_score_matrix
 
@@ -192,8 +191,7 @@ class VoxelwiseInteractionTester(PermutationTester):
                 'outcome_df': self.outcome_df,
                 'neuroimaging_dfs': self.neuroimaging_dfs,
                 'clinical_dfs': self.clinical_dfs,
-                'manual_f_stat': False,
-                'manual_g_stat': False
+                'manual_f_stat': False
             },
             out_dir=out_dir,
             job_name=job_name

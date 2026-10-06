@@ -8,13 +8,13 @@ import numpy as np
 import pandas as pd
 from scipy.stats import spearmanr
 
-from calvin_utils.file_utils.import_functions import GiiNiiFileImport
+from calvin_utils.neuroimaging_utils.io.importers import GiiNiiFileImport
 from calvin_utils.permutation_analysis_utils.map_damage_cv import load_native_patient_vectors
 from calvin_utils.neuroimaging_utils.ccm_utils.optimization.convergent_map_optimizer import LocalizationOptimizer
 from calvin_utils.neuroimaging_utils.ccm_utils.optimization.history import OptimizationHistory
 from calvin_utils.neuroimaging_utils.ccm_utils.optimization.inner_cv import prepare_inner_folds
 from calvin_utils.neuroimaging_utils.ccm_utils.optimization.fold_assignment import assign_id_folds
-from calvin_utils.neuroimaging_utils.output_functions import NeuroimageFileOutporter
+from calvin_utils.neuroimaging_utils.io.exporters import NeuroimageFileOutporter
 
 
 class ArrayLoader:

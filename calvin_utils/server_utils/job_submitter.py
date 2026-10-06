@@ -1,61 +1,74 @@
+"""Build and optionally submit batches of LSF jobs."""
+
+from __future__ import annotations
+
+import argparse
 import subprocess
-import os
-from nimlab import configuration as config
-import time
+from pathlib import Path
 
-# Enter Submission Information
-## Multiprocessing information
-processes = 10000 #How many computations must be done in total
-num_multi_processes = 4 #How many computations can be done at a time
 
-## Submission information
-job_name = 'multi_sub_multiproc_palm'
-user = 'choward12@bwh.harvard.edu'
-stdout_dir = '/PHShome/cu135/terminal_outputs'
-stderr_dir = '/PHShome/cu135/terminal_outputs'
-queue = 'big-multi'
-script_language = 'python'
-script = '/PHShome/cu135/python_scripts/palm.py'
-out_dir = 'memory/server_inputs/age_voxel_interaction_palm/results'
-desired_cwd = '/PHShome/cu135/python_scripts' #where the code to execute resides
-test_command = False
+def build_batch_scripts(
+    *,
+    processes: int,
+    batch_size: int,
+    submission_commands: dict[str, str],
+    output_dir: str | Path = ".",
+) -> list[Path]:
+    """Create one ``bsub`` script per process batch and return their paths."""
+    if processes < 1 or batch_size < 1:
+        raise ValueError("processes and batch_size must be positive")
+    destination = Path(output_dir)
+    destination.mkdir(parents=True, exist_ok=True)
+    paths = []
+    for index, _ in enumerate(range(0, processes, batch_size)):
+        commands = submission_commands.copy()
+        if "-J" in commands:
+            commands["-J"] = f"{commands['-J']}{index}"
+        for stream in ("-o", "-e"):
+            if stream in commands:
+                base = Path(commands[stream])
+                commands[stream] = str(base / f"{commands.get('-J', 'batch')}.txt")
+        command = " ".join(f"{key} {value}" for key, value in commands.items())
+        path = destination / f"batch_{index}.sh"
+        path.write_text(f"#!/bin/bash\nbsub {command}\n", encoding="utf-8")
+        paths.append(path)
+    return paths
 
-#-----end user input
-#Enter the information into a dict
-submission_commands = {
-	'-J': f'{job_name}',
-	'-u': f'{user}',
-	'-o': f'{stdout_dir}',
-	'-e': f'{stderr_dir}',
-	'-q': f'{queue}',
-	f'{script_language}': f'{script}',
-	'-cwd': f'{desired_cwd}',
-	'-w': f'{num_multi_processes}'
-}
 
-batches = [i for i in range(0, processes, num_multi_processes)]
+def submit_batch_scripts(paths: list[Path], *, dry_run: bool = False) -> None:
+    """Submit prepared scripts, or print them in dry-run mode."""
+    for path in paths:
+        if dry_run:
+            print(path.read_text(encoding="utf-8").rstrip())
+        else:
+            subprocess.run(["bash", str(path)], check=True)
 
-# For each batch of processes, submit an LSF job to run them
-job_ids = []
-for i, batch in enumerate(batches):
-	# Define the command to run the batch
-	## Update information particular to this batch
-	batch_commands = submission_commands.copy()
-	batch_commands['-J'] = batch_commands['-J'] + f'{i}'
-	batch_commands['-o'] = os.path.join(batch_commands['-o'], f'{job_name}_{i}.txt')
-	batch_commands['-e'] = os.path.join(batch_commands['-e'], f'{job_name}_{i}.txt')
-	command = ' '.join([f'{k} {v}' for k, v in batch_commands.items()])
-	# Write the command to a file
-	with open(f"batch_{i}.sh", "w") as f:
-		f.write(f"bsub {command}")
-	#Print the command for testing
-	with open(f"batch_{i}.sh", "r") as f:
-		if test_command:
-			with open(f"batch_{i}.sh", "r") as f:
-				script = f.read()
-				print(script)
-		else:
-			script = f.read()
-			#subprocess.run(script)
-			subprocess.Popen(['bash', f'batch_{i}.sh'], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-			time.sleep(5)
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("script")
+    parser.add_argument("--processes", type=int, required=True)
+    parser.add_argument("--batch-size", type=int, default=4)
+    parser.add_argument("--job-name", default="calvin_batch")
+    parser.add_argument("--queue", default="normal")
+    parser.add_argument("--output-dir", default=".")
+    parser.add_argument("--dry-run", action="store_true")
+    args = parser.parse_args(argv)
+    commands = {
+        "-J": args.job_name,
+        "-q": args.queue,
+        "-w": str(args.batch_size),
+        "python": str(Path(args.script).resolve()),
+    }
+    paths = build_batch_scripts(
+        processes=args.processes,
+        batch_size=args.batch_size,
+        submission_commands=commands,
+        output_dir=args.output_dir,
+    )
+    submit_batch_scripts(paths, dry_run=args.dry_run)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

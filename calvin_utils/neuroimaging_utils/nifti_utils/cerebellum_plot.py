@@ -7,8 +7,8 @@ import numpy as np
 import pandas as pd
 from matplotlib.colors import ListedColormap
 
-from calvin_utils.file_utils.import_functions import GiiNiiFileImport
-from calvin_utils.neuroimaging_utils.output_functions import NeuroimageFileOutporter
+from calvin_utils.neuroimaging_utils.io.importers import GiiNiiFileImport
+from calvin_utils.neuroimaging_utils.io.exporters import NeuroimageFileOutporter
 from calvin_utils.plotting_utils.colormaps import resolve_cmap
 
 

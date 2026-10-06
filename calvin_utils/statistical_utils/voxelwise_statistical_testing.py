@@ -1,13 +1,12 @@
 import pandas as pd
 import numpy as np
+import itertools
 from tqdm import tqdm
 from statsmodels.stats.api import anova_lm
 from statsmodels.stats.multitest import multipletests
 import statsmodels.formula.api as smf
-from statsmodels.stats.diagnostic import het_breuschpagan
-from scipy.stats import chi2, t, f
+from scipy.stats import f
 from statsmodels.regression.linear_model import OLS
-from statsmodels.tools import add_constant
 
 from scipy.stats import spearmanr, pearsonr
 from tqdm import tqdm
@@ -17,7 +16,7 @@ import nibabel as nib
 # from nimlab import datasets as nimds
 
 from calvin_utils.neuroimaging_utils.nifti_utils.matrix_utilities import unmask_matrix, mask_matrix
-from sklearn.linear_model import LinearRegression
+from calvin_utils.permutation_analysis_utils.permutation_utils.palm import permute_column
 
 
 def generate_interaction_features(df):
@@ -160,118 +159,6 @@ def voxelwise_mediated_moderation_analysis(mediator_df, moderator_df, exposure_d
     results_df = pd.concat(results)
     return results_df
 
-def calculate_g_statistic(full_model, reduced_model):
-    #### WORK IN PROGRESS #####
-    """
-    Calculates the G-statistic for a given model.
-    Please note, a G-statistic is comparable to various other statistics under various conditions, 
-    but it is not meant to derive p-values analytically. It is meant to derive p-values using permutation testing. 
-
-    Parameters:
-        full_model: A fitted model object from the full model.
-        reduced_model: A fitted model object from the reduced model.
-        heteroscedastic: Boolean. If True, the errors are assumed to be heteroscedastic, 
-                         and a chi-square distribution is used to calculate the p-value. 
-                         If False, the errors are assumed to be homoscedastic and a Student's 
-                         t-distribution is used to calculate the p-value.
-
-    Returns:
-        G_statistic: The calculated G-statistic.
-        p_value: The p-value associated with the G-statistic.
-    """
-    # ψ^: The estimated parameters from the full model, minus those from the reduced model
-    psi_hat = full_model.params - reduced_model.params
-    # C: The contrast matrix. This depends on your specific hypotheses and model.
-    # Assuming that full_model and reduced_model are statsmodels regression result objects
-    # Get the parameter names from both models
-    full_model_params = full_model.params.index
-    reduced_model_params = reduced_model.params.index
-
-    # Initialize the contrast matrix as a zero matrix with the length of the full model params
-    C = np.zeros(len(full_model_params))
-
-    # For each parameter in the full model, if it is not in the reduced model, set the corresponding
-    # element in the contrast matrix to 1
-    for i, param in enumerate(full_model_params):
-        if param not in reduced_model_params:
-            C[i] = 1
-
-    # Ensure that C remains a 2D array (i.e., a matrix), which is expected for matrix operations
-    C = C.reshape(-1, len(C))
-
-    # M: The design matrix from the full model
-    M = full_model.model.exog
-
-    # W: Diagonal weighting matrix.
-    # Compute the residuals from your full model
-    residuals = full_model.resid.to_numpy()
-
-    # Compute the variance of residuals
-    variances = np.reshape(np.var(residuals), -1)
-
-    # Assume gn contains the variance group assignments for each observation
-    # Assume R is the residual forming matrix
-    # Assume epsilon_hat contains the vector of residuals
-
-    # Initialize W as a zero matrix with the same shape as R
-    W = np.zeros_like(residuals)
-
-    # Iterate over each observation
-    for n in range(len(gn)):
-        # Get the variance group assignment for the n-th observation
-        variance_group = gn[n]
-
-        # Find the indices of observations belonging to the same variance group
-        group_indices = np.where(gn == variance_group)[0]
-
-        # Compute the sum of diagonal elements of R for the variance group
-        sum_R = np.sum(R[group_indices, group_indices])
-
-        # Compute the product of epsilon_hat for the variance group
-        product_epsilon_hat = np.prod(epsilon_hat[group_indices])
-
-        # Compute the diagonal element of W for the n-th observation
-        W_nn = sum_R / product_epsilon_hat
-
-        # Set the diagonal element of W for the n-th observation
-        W[n, n] = W_nn
-
-
-    # Calculate Λ and the inverse of it.
-    Lambda_inv = np.linalg.inv(C @ M.T @ W @ M @ C.T)
-
-    # Calculate the G-statistic
-    G_statistic = psi_hat.T @ C.T @ Lambda_inv @ C @ psi_hat
-
-    # Degrees of freedom is the rank of C
-    df = np.linalg.matrix_rank(C)
-
-    # Compute 1-tailed p-value to assess if full model is significant better than reduced model
-    # Assess heteroscedasticity with the Breusch-Pagan test, p-value <0.05 indicates the linear model is heteroscedastic
-    _, p_value, _, _ = het_breuschpagan(residuals, full_model.model.exog)
-    print('6')
-    if p_value < 0.05:
-        if df == 1:
-            p_value = np.NaN
-            #This is equivalent to Welch's v^2, which does not have an analytical distribution
-        else:
-            p_value = np.NaN
-            #This is equivalent to Aspen-Welch v, which does not have an analytical distribution
-        print('7')
-    else:
-        print('8')
-        if df == 1:
-            print('9')
-            p_value = 2 * (1 - t.cdf(np.sqrt(G_statistic), df))
-            #This is equivalent to student's T, which does have an analytical distribution
-        else:
-            print('10')
-            p_value = 1 - f.cdf(G_statistic, df, full_model.df_resid - df)
-            #This is equivalent to F-ratio, which does have an analytical distribution
-
-    return G_statistic, p_value
-
-
 
 def handle_nan_p_values(p_value_series):
     """
@@ -321,34 +208,37 @@ def fdr_correct_p_values_and_threshold_r_squared(results_df, alpha=0.05):
     
     return results_df
 
-def voxelwise_interaction_f_stat(outcome_df, predictor_neuroimaging_dfs, predictor_clinical_dfs, model_type='linear', manual_f_stat=False, manual_g_stat=True, permutation=False):
+def voxelwise_interaction_f_stat(outcome_df, predictor_neuroimaging_dfs, predictor_clinical_dfs, model_type='linear', manual_f_stat=False, permutation=False):
+    """Compare nested interaction and main-effects-only OLS models by voxel.
+
+    The reduced model contains the supplied main effects and the full model
+    additionally contains every pairwise interaction. With
+    ``manual_f_stat=True``, the function calculates the partial F statistic
+    directly from the two residual sums of squares. Otherwise it uses
+    ``statsmodels.stats.api.anova_lm`` for the same nested-model test.
+
+    Parameters
+    ----------
+    outcome_df : pandas.DataFrame
+        Outcome values in an ``outcome`` column, indexed by subject.
+    predictor_neuroimaging_dfs : list of pandas.DataFrame
+        Voxelwise predictors with subjects in rows.
+    predictor_clinical_dfs : list of pandas.DataFrame
+        Clinical predictors with subjects in rows.
+    model_type : str, default="linear"
+        Regression family. Only linear OLS is supported.
+    manual_f_stat : bool, default=False
+        Calculate the partial F statistic directly instead of through ANOVA.
+    permutation : bool, default=False
+        Return only the statistic vector for an external permutation workflow.
+
+    Returns
+    -------
+    tuple or pandas.Series
+        Normally ``(statistics, results_df, last_voxel_dataframe)``. With
+        ``permutation=True``, only the statistic Series is returned.
     """
-    Perform voxelwise regression with interactions between the corresponding voxels from
-    neuroimaging dataframes and clinical dataframes on a patient's outcome and use F-test to compare models with and without interactions.
-    The F-test is the proportion of mean squared errors. When comparing two different models, F-statistic is the proprtion of the change in
-    the mean squared error between the two models compared to the full model. 
-    However, this means that if the second model is much worse than the first model (Larger MSE), the F-statistic can be negative. Thus, 
-    negative F-statistic is considered to be equivalent to and F-statistic of zero. 
-    
-    degrees_of_freedom is equivalent to sample size. 
-    F-statistic = ((sum_squared_residuals_1 - sum_squared_residuals_2)/(df_residuals_1 - df_residuals_2)) / (sum_squared_residuals_2/(df_residuals_2)
-    MSE = sum_squared_residuals/degrees_of_freedom 
-    F-statistic = delta_MSE/full_model_MSE
-    
-    Parameters:
-        outcome_df (pd.DataFrame): DataFrame containing the outcome variable in 'outcome' column with patients in rows and 'subject_id' as index.
-        predictor_neuroimaging_dfs (list of pd.DataFrame): List of DataFrames containing voxelwise neuroimaging data with patients in rows and 'subject_id' as index.
-        predictor_clinical_dfs (list of pd.DataFrame): List of DataFrames containing clinical data with patients in rows and 'subject_id' as index.
-        model_type (str): Specifies the type of regression model to use ('linear' or 'logistic').
-        manual_f_stat (bool): If True, use the manual calculation for F-statistic and p-value. Otherwise, use anova_lm function.
-    
-    Returns:
-        results_df (pd.DataFrame): DataFrame containing F-statistics and p-values for each voxel.
-        
-    Cite: 
-    chrome-extension://efaidnbmnnnibpcajpcglclefindmkaj/https://sites.duke.edu/bossbackup/files/2013/02/FTestTutorial.pdf
-    """
-    
+
     # Number of voxels in the first neuroimaging dataframe
     n_voxels = predictor_neuroimaging_dfs[0].shape[1]
 
@@ -415,10 +305,6 @@ def voxelwise_interaction_f_stat(outcome_df, predictor_neuroimaging_dfs, predict
             else:
                 P_value = 1 - f.cdf(F_statistic, degrees_freedom_1 - degrees_freedom_2, degrees_freedom_2)
             statistic = 'manual_f_statistic'
-        elif manual_g_stat:
-            # This assesses heteroscedasticity at every voxel and decides what distribution the G-statistic should use
-            f_stat = calculate_g_statistic(model_interaction, model_no_interaction)
-            statistic = 'manual_g_statistic'
         else:
             # Calculate the F-statistic and p-value using anova_lm function
             table = anova_lm(model_no_interaction, model_interaction)

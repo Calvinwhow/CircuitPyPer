@@ -5,10 +5,10 @@ from typing import Iterable, Optional, Tuple, Union
 
 from matplotlib import colormaps
 from matplotlib.colors import LinearSegmentedColormap
+from calvin_utils.resource_paths import lazy_resource_path
 
 
-PACKAGE_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_CLUT_DIR = PACKAGE_ROOT / "resources" / "colour_luts"
+DEFAULT_CLUT_DIR = lazy_resource_path("colour_luts")
 
 PathLike = Union[str, os.PathLike]
 ColorNode = Tuple[float, Tuple[float, float, float, float]]

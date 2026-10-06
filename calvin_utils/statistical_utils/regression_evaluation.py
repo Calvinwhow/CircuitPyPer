@@ -1,7 +1,7 @@
 import numpy as np
 from scipy.stats import f
 
-from calvin_utils.statistical_utils.scatterplot import simple_scatter
+from calvin_utils.plotting_utils.statistical.scatterplot import simple_scatter
 
 
 def calculate_ssr(observations, predictions):

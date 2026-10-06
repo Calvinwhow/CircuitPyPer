@@ -44,7 +44,8 @@ def main():
         contrast_matrix = cal_palm.generate_basic_contrast_matrix(design_matrix)
         contrast_matrix_df = cal_palm.finalize_contrast_matrix(design_matrix=design_matrix, contrast_matrix=contrast_matrix)
 
-        mask_path = '/Users/cu135/Software_Local/calvin_utils_project/calvin_utils_project/resources/MNI152_T1_2mm_brain_mask.nii'
+        from calvin_utils.resource_paths import default_nifti_mask_path
+        mask_path = default_nifti_mask_path()
         data_transform_method='standardize'
         if glob.glob(os.path.join(out_dir_indep_var, '**', '*.nii*'), recursive=True):
             print("Files exist. Skipping {out_dir_indep_var}")

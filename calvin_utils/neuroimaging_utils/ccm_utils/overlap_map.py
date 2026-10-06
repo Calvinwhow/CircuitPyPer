@@ -222,7 +222,11 @@ class OverlapMap:
         """
         for dataset_name, overlap_map in overlap_map_dict.items():
             img = self._save_map(overlap_map, dataset_name + suffix + '.nii.gz')
-            _ = self._save_map(np.abs(overlap_map), dataset_name + suffix + '_absval.nii.gz')
+            if self.save_absval:
+                self._save_map(
+                    np.abs(overlap_map),
+                    dataset_name + suffix + '_absval.nii.gz',
+                )
             if self.verbose:
                 try:
                     self._visualize_map(img, f"{dataset_name}{suffix}")
@@ -256,4 +260,3 @@ class OverlapMap:
             self.save_maps(stepwise_map_dict, suffix='_percent_overlap_stepwise')
         
         return overlap_map_dict, stepwise_map_dict
-

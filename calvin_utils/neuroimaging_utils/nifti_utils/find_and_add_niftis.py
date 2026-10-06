@@ -1,65 +1,82 @@
+"""Combine bilateral Lead-DBS stimulation volumes without import-time work."""
+
+from __future__ import annotations
+
+import argparse
 from glob import glob
-import subprocess
-import shutil
-import os 
+from pathlib import Path
 
-from ..nifti_utils.generate_nifti import view_and_save_nifti
-from calvin_utils.file_utils.import_functions import GiiNiiFileImport
+from calvin_utils.neuroimaging_utils.io.importers import GiiNiiFileImport
+from calvin_utils.neuroimaging_utils.nifti_utils.generate_nifti import (
+    view_and_save_nifti,
+)
 
-# User-defined variables
-root_dir = r"/Users/cu135/Dropbox (Partners HealthCare)/resources/datasets/Queensland_PD_DBS_STN/BIDSdata/derivatives/leaddbs"
-file_pattern_1 = r"/stimulations/MNI152NLin2009bAsym/gs_2023Aysu/*sim-binary_model-simbio_hemi-R.nii"
-file_pattern_2 = r"/stimulations/MNI152NLin2009bAsym/gs_2023Aysu/*sim-binary_model-simbio_hemi-L.nii"
-output_file_pattern = r"sim-efield_model-simbio_hemi-bl.nii"
 
-# Path to MNI template
-mni_template_path = r"/Users/cu135/Dropbox (Partners HealthCare)/resources/mni_spaces/mni_icbm152_nlin_sym_09b_nifti/mni_icbm152_nlin_sym_09b/mni_icbm152_t1_tal_nlin_sym_09b_hires.nii"
+DEFAULT_RIGHT_PATTERN = (
+    "stimulations/MNI152NLin2009bAsym/gs_2023Aysu/"
+    "*sim-binary_model-simbio_hemi-R.nii"
+)
+DEFAULT_LEFT_PATTERN = (
+    "stimulations/MNI152NLin2009bAsym/gs_2023Aysu/"
+    "*sim-binary_model-simbio_hemi-L.nii"
+)
 
-for sub_dir in os.listdir(root_dir):
-    sub_dir_path = os.path.join(root_dir, sub_dir)
-    if not os.path.isdir(sub_dir_path):
-        continue
-    # print("Subdirpath:", os.path.join(root_dir, sub_dir))
-    files1 = glob(root_dir+"/"+sub_dir+file_pattern_1)
-    files2 = glob(root_dir+"/"+sub_dir+file_pattern_2)
 
-    if files1 and files2:
-        # Extract identified files
-        file1 = files1[0]
-        file2 = files2[0]
-        
-        # Prepare Output File
-        output_dir = os.path.dirname(file1)
-        output_file_with_subject = os.path.basename(sub_dir_path)+"_"+output_file_pattern
-        
-        # Prepare intermediary file
-        copyfile1 = file1.split('.nii')[0] + "_copy.nii"
-        copyfile2 = file2.split('.nii')[0] + "_copy.nii"
-        
-        try:
-            # Copy files to create backups
-            # shutil.copyfile(file1, copyfile1)
-            # shutil.copyfile(file2, copyfile2)
+def combine_bilateral_niftis(
+    root_dir: str | Path,
+    *,
+    right_pattern: str = DEFAULT_RIGHT_PATTERN,
+    left_pattern: str = DEFAULT_LEFT_PATTERN,
+    output_name: str = "sim-efield_model-simbio_hemi-bl.nii",
+) -> list[Path]:
+    """Sum matching left/right images for each subject directory."""
+    root = Path(root_dir).expanduser().resolve()
+    if not root.is_dir():
+        raise NotADirectoryError(f"Lead-DBS root directory does not exist: {root}")
 
-            # Attempt resampling to MNI space to fix bad headers
-            # subprocess.run(["flirt", "-in", copyfile1, "-ref", mni_template_path, "-out", copyfile1], check=True)
-            # subprocess.run(["flirt", "-in", copyfile2, "-ref", mni_template_path, "-out", copyfile2], check=True)
+    written = []
+    for subject_dir in sorted(path for path in root.iterdir() if path.is_dir()):
+        right = glob(str(subject_dir / right_pattern))
+        left = glob(str(subject_dir / left_pattern))
+        if not right or not left:
+            continue
 
-            # Add the aligned files
-            importer = GiiNiiFileImport(os.path.dirname(copyfile1), file_pattern="*sim-binary_model-simbio_hemi-*copy*")
-            imports = importer.run()
-            display(imports)
-            imports["summated"] = imports.iloc[:,0] + imports.iloc[:,1]
-            
-            view_and_save_nifti(imports["summated"], out_dir=output_dir, output_file=output_file_with_subject)
-            
-            # Clean up and remove the copy files. 
-            # os.remove(copyfile1)
-            # os.remove(copyfile2)
-            
-            print(f"\n ***Processed: {sub_dir_path}")
-            
-        except subprocess.CalledProcessError as e:
-            print(f"Error processing {sub_dir_path}: {e}")
-    else:
-        print(f"Missing file(s) in {sub_dir_path}")
+        input_dir = Path(right[0]).parent
+        importer = GiiNiiFileImport(
+            str(input_dir), file_pattern="*sim-binary_model-simbio_hemi-[LR].nii"
+        )
+        imports = importer.run()
+        if imports.shape[1] != 2:
+            raise ValueError(
+                f"Expected two hemisphere images for {subject_dir.name}, "
+                f"found {imports.shape[1]}"
+            )
+        output_path = input_dir / f"{subject_dir.name}_{output_name}"
+        view_and_save_nifti(
+            imports.iloc[:, 0] + imports.iloc[:, 1],
+            out_dir=str(input_dir),
+            output_file=output_path.name,
+        )
+        written.append(output_path)
+    return written
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("root_dir", help="Lead-DBS derivatives directory")
+    parser.add_argument("--right-pattern", default=DEFAULT_RIGHT_PATTERN)
+    parser.add_argument("--left-pattern", default=DEFAULT_LEFT_PATTERN)
+    parser.add_argument("--output-name", default="sim-efield_model-simbio_hemi-bl.nii")
+    args = parser.parse_args(argv)
+    outputs = combine_bilateral_niftis(
+        args.root_dir,
+        right_pattern=args.right_pattern,
+        left_pattern=args.left_pattern,
+        output_name=args.output_name,
+    )
+    print(f"Wrote {len(outputs)} bilateral image(s).")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

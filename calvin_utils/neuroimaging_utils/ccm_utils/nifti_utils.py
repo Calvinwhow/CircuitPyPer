@@ -8,7 +8,7 @@ from tqdm import tqdm
 import tensorly as tl
 import statsmodels.api as sm
 from tensorly.regression.cp_regression import CPRegressor
-from calvin_utils.file_utils.import_functions import GiiNiiFileImport
+from calvin_utils.neuroimaging_utils.io.importers import GiiNiiFileImport
 
 class DatasetNiftiImporter(GiiNiiFileImport):
     def __init__(self, df, dataset_col, nifti_col, indep_var_col, covariate_cols, out_dir, mask_path=None, regression_method='tensor', data_transform_method='standardize'):

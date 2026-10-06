@@ -43,7 +43,7 @@ Run the same coverage checks used by CI with:
 ```bash
 python -m coverage run -m pytest -q
 python -m coverage report
-python -m coverage report --include='calvin_utils/file_utils/csv_prep.py,calvin_utils/file_utils/file_path_collector.py,calvin_utils/file_utils/import_functions.py,calvin_utils/neuroimaging_utils/nifti_utils/volume_io.py,calvin_utils/neuroimaging_utils/tract_utils/fiber_io.py,calvin_utils/neuroimaging_utils/tract_utils/fiber_converter.py,calvin_utils/neuroimaging_utils/tract_utils/filter_fibers.py,calvin_utils/permutation_analysis_utils/map_damage_cv.py,calvin_utils/permutation_analysis_utils/voxelwise_regression.py,calvin_utils/permutation_analysis_utils/voxelwise_regression_prep.py,calvin_utils/permutation_analysis_utils/statsmodels_palm.py,calvin_utils/neuroimaging_utils/ccm_utils/symptom_specificity.py,calvin_utils/statistical_utils/data_transformation.py' --fail-under=55
+python -m coverage report --include='calvin_utils/file_utils/csv_prep.py,calvin_utils/file_utils/file_path_collector.py,calvin_utils/neuroimaging_utils/io/importers.py,calvin_utils/neuroimaging_utils/nifti_utils/volume_io.py,calvin_utils/neuroimaging_utils/tract_utils/fiber_io.py,calvin_utils/neuroimaging_utils/tract_utils/fiber_converter.py,calvin_utils/neuroimaging_utils/tract_utils/filter_fibers.py,calvin_utils/permutation_analysis_utils/map_damage_cv.py,calvin_utils/permutation_analysis_utils/voxelwise_regression.py,calvin_utils/permutation_analysis_utils/voxelwise_regression_prep.py,calvin_utils/permutation_analysis_utils/statsmodels_palm.py,calvin_utils/neuroimaging_utils/ccm_utils/symptom_specificity.py,calvin_utils/neuroimaging_utils/ccm_utils/sensitivity_map.py,calvin_utils/statistical_utils/data_transformation.py' --fail-under=55
 ```
 
 When adding a core module, add its public surface to
@@ -51,7 +51,8 @@ When adding a core module, add its public surface to
 pipeline suite, and add it to the core coverage command once meaningful
 coverage exists.
 
-CI currently guards a 17% repository-wide baseline (including large legacy
-modules) and a 55% aggregate floor for the actively tested core modules. Raise
+CI currently guards a 17% repository-wide baseline (including the newly
+packaged legacy neuroimaging tree) and a 55% aggregate floor for the actively
+tested core modules. Raise
 these floors as new module contracts are added; do not lower them to accommodate
 untested changes.

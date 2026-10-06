@@ -9,8 +9,20 @@ from calvin_utils.neuroimaging_utils.nifti_utils.generate_nifti import view_and_
 
 class CalvinFWEMap():
     """
-    This is a class to orchestrate a simple association between some Y variable of interest and voxelwise data (X variable).
-    It will run FWE correction via the Maximum Statistic Correction method.
+    Run voxelwise regression with an empirical permutation reference distribution.
+
+    The caller supplies the observed voxelwise data and covariates. For each
+    permutation, this class shuffles the supplied covariates, refits the model,
+    and records one summary statistic. Those permuted values—not a parametric or
+    theoretical null distribution—form the empirical null reference used for
+    thresholding and p-values.
+
+    With ``max_stat_method=None``, the recorded value is the largest statistic
+    in each permutation. With ``max_stat_method="pseudo_var_smooth"``, it is the
+    99.5th percentile within that permutation. The latter is a historical
+    heuristic: it is not an implementation of variance smoothing and is less
+    conservative than a true maximum statistic. The legacy ``"var_smooth"``
+    selector is unsupported and raises ``ValueError``.
 
     Notes:
     ------
@@ -42,7 +54,8 @@ class CalvinFWEMap():
     out_dir : str
         Output directory to save results.
     max_stat_method : str or None
-        Method for maximum statistic correction. Options: None | 'pseudo_var_smooth' | 'var_smooth'.
+        Empirical-permutation summary. Use ``None`` for the maximum or
+        ``"pseudo_var_smooth"`` for the historical percentile heuristic.
     vectorize : bool
         Whether to use vectorized implementation for correlation calculation.
 
@@ -73,10 +86,10 @@ class CalvinFWEMap():
         Orchestrates the linear regression analysis for voxelwise data.
     
     var_smooth(df: pd.DataFrame)
-        Takes the 95th percentile of the permuted data as the 'maximum stat' as a proxy for variance smoothed max stat.
+        Unsupported legacy selector; raises ``ValueError``.
     
     pseudo_var_smooth(df: pd.DataFrame) -> np.ndarray
-        Takes the 99th percentile of the permuted data as the 'maximum stat' as a proxy for variance smoothed max stat.
+        Takes the 99.5th percentile within one permutation.
     
     raw_max_stat(df: pd.DataFrame) -> float
         Returns the max statistic in the data.

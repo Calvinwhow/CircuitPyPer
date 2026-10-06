@@ -1,6 +1,7 @@
-import os 
+import os
+
+import pandas as pd
 from sklearn.model_selection import train_test_split
-from calvin_utils.ml_utils.smote import SmoteOversampler
 
 class TrainTestSplitter:
     '''
@@ -30,6 +31,15 @@ class TrainTestSplitter:
     
     def oversample(self, col, df):
         '''Returns a DataFrame with oversampled classes using SMOTE. Synthetic rows are tagged with `is_synthetic` column.'''
+        try:
+            from calvin_utils.ml_utils.smote import SmoteOversampler
+        except ModuleNotFoundError as exc:
+            if exc.name == "imblearn":
+                raise ModuleNotFoundError(
+                    "SMOTE support requires the optional 'ml' dependencies. "
+                    "Install calvin_utils[ml]."
+                ) from exc
+            raise
         return SmoteOversampler(col, sampling_strategy="auto").fit_resample(df)
 
     def save_splits(self, train_df, test_df, out_dir):
@@ -39,11 +49,22 @@ class TrainTestSplitter:
             os.makedirs(out_dir, exist_ok=True)
             train_df.to_csv(train_path, index=False)
             test_df.to_csv(test_path, index=False)
-            print(f"Train data saved to {train_path}. Proportion of synthetic data in train set: {train_df['is_synthetic'].mean()}")
+            synthetic_proportion = (
+                train_df["is_synthetic"].mean()
+                if "is_synthetic" in train_df.columns
+                else 0.0
+            )
+            print(
+                f"Train data saved to {train_path}. Proportion of synthetic "
+                f"data in train set: {synthetic_proportion}"
+            )
         print(f"Train set shape: {train_df.shape}, Test set shape: {test_df.shape}")
         
     def run(self, df, out_dir, stratify=None):
         train_df, test_df = self.split(df, stratify=stratify)
-        train_df = self.oversample(stratify, train_df) if self.oversample else train_df
+        if self.synthetic_data:
+            if stratify is None:
+                raise ValueError("stratify must name the outcome column when synthetic_data=True")
+            train_df = self.oversample(stratify, train_df)
         self.save_splits(train_df, test_df, out_dir)
         return train_df, test_df
