@@ -358,6 +358,7 @@ class RegressionPrep:
                 "mask_path": self.mask_path,
                 "formula": self.formula,
                 "neuroimaging_variables": list(self.neuroimaging_variables),
+                "outcome_names": [str(name) for name in self.outcome_df.columns],
             }
         }
 

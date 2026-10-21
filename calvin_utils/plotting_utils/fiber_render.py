@@ -115,7 +115,10 @@ def fiber_material(panel=None):
 
 
 # Loading ------------------------------------------------------------------
-ATLAS_SUFFIXES = (".npz", ".npy")
+# Fibre geometry: the converter's own .npz / .npy, and standard tractograms
+# (MRtrix .tck, TrackVis .trk, .trx), which it reads with nibabel. A Lead-DBS
+# .mat is handled separately: it can carry values as well as geometry.
+ATLAS_SUFFIXES = (".npz", ".npy", ".tck", ".trk", ".trx")
 
 
 def is_atlas(path):

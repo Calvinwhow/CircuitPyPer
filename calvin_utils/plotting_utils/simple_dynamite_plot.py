@@ -1,11 +1,11 @@
 import os
-from typing import Iterable, List
+from typing import Iterable, Literal
 
 import numpy as np
 import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
-from scipy.stats import f_oneway, ttest_1samp, ttest_ind
+from scipy.stats import f_oneway, ttest_1samp, ttest_ind, ttest_rel
 import statsmodels.formula.api as smf
 from statsmodels.stats.anova import anova_lm
 
@@ -35,6 +35,7 @@ class SimpleDynamitePlot:
         tick_fontsize: int = 16,
         spine_width: int = 2,
         ttest_ref: float = 0.0,
+        yminmax: tuple | None = None,
     ):
         self.df = df
         self.group_col = group_col
@@ -51,6 +52,7 @@ class SimpleDynamitePlot:
         self.tick_fontsize = tick_fontsize
         self.spine_width = spine_width
         self.ttest_ref = ttest_ref
+        self.yminmax = yminmax
 
         self._means = None
         self._sems = None
@@ -131,7 +133,6 @@ class SimpleDynamitePlot:
         self._order = self.order if self.order is not None else list(self._means.index)
 
     def _plot(self, ax=None):
-        sns.set_style("white")
         if ax is None:
             plt.figure(figsize=self.figsize)
             ax = plt.gca()
@@ -157,14 +158,34 @@ class SimpleDynamitePlot:
             lw=2,
             zorder=3,
         )
+        
+        # Gridlines behind bars
+        ax.set_axisbelow(True)
+        ax.yaxis.grid(True, linestyle=":", linewidth=1.3, color="0.6")
+        ax.xaxis.grid(False)
+
+        # Outward ticks
+        ax.tick_params(
+            axis="both",
+            which="major",
+            direction="out",
+            length=8,
+            width=1.8,
+            labelsize=self.tick_fontsize,
+        )
+
+        # Clean spines
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+        ax.spines["left"].set_linewidth(2)
+        ax.spines["bottom"].set_linewidth(2)
 
         ax.set_title(self.dataset_name, fontsize=self.title_fontsize)
         ax.set_xlabel(self.xlabel if self.xlabel is not None else self.group_col, fontsize=self.label_fontsize)
         ax.set_ylabel(self.ylabel if self.ylabel is not None else self.value_col, fontsize=self.label_fontsize)
-
-        ax.tick_params(axis="both", labelsize=self.tick_fontsize)
-        for spine in ax.spines.values():
-            spine.set_linewidth(self.spine_width)
+        
+        if self.yminmax is not None:
+            ax.set_ylim(self.yminmax[0], self.yminmax[1])
 
         self._annotate_stats(ax)
 
@@ -238,6 +259,8 @@ class SimpleDynamitePlotPair(SimpleDynamitePlot):
         label_fontsize: int = 20,
         tick_fontsize: int = 16,
         spine_width: int = 2,
+        yminmax: float | None = None,
+        stat_test: Literal["2wayanova", "ttest_ind", "ttest_paired"] = "2wayanova",
     ):
         super().__init__(
             df,
@@ -257,6 +280,8 @@ class SimpleDynamitePlotPair(SimpleDynamitePlot):
         self.category_col = category_col
         self.hue_order = list(hue_order) if hue_order is not None else None
         self.bar_palette = list(bar_palette) if bar_palette is not None else ["#8E8E8E", "#B0B0B0"]
+        self.yminmax = yminmax
+        self.stat_test = stat_test
 
     def run(self, ax=None):
         self._validate_columns_pair()
@@ -272,61 +297,112 @@ class SimpleDynamitePlotPair(SimpleDynamitePlot):
             raise ValueError(f"Missing required columns: {sorted(missing)}")
 
     def _plot_pair(self, ax=None):
-        sns.set_style("white")
         if ax is None:
-            plt.figure(figsize=self.figsize)
-            ax = plt.gca()
+            _, ax = plt.subplots(figsize=self.figsize)
 
-        if self.category_col:
-            order = self.order if self.order is not None else list(self.df[self.category_col].dropna().unique())
-            hue_order = self.hue_order if self.hue_order is not None else list(self.df[self.group_col].dropna().unique())
-            sns.barplot(
-                data=self.df,
-                x=self.category_col,
-                y=self.value_col,
-                hue=self.group_col,
-                order=order,
-                hue_order=hue_order,
-                palette=self.bar_palette,
-                ci=None,
-                edgecolor="white",
-                linewidth=2,
-                alpha=0.98,
-                ax=ax,
-            )
+        self._ax = ax
 
-            means = self.df.groupby([self.category_col, self.group_col])[self.value_col].mean()
-            sems = self.df.groupby([self.category_col, self.group_col])[self.value_col].sem()
+        # Determine plotting layout
+        grouped = self.category_col is not None
+        x_col = self.category_col if grouped else self.group_col
+
+        order = (
+            self.order if grouped and self.order is not None
+            else self.hue_order if not grouped and self.hue_order is not None
+            else list(self.df[x_col].dropna().unique())
+        )
+
+        hue_order = (
+            self.hue_order
+            if self.hue_order is not None
+            else list(self.df[self.group_col].dropna().unique())
+        )
+
+        # Single plotting call
+        sns.barplot(
+            data=self.df,
+            x=x_col,
+            y=self.value_col,
+            hue=self.group_col if grouped else None,
+            order=order,
+            hue_order=hue_order if grouped else None,
+            palette=self.bar_palette,
+            ci=None,
+            edgecolor="white",
+            linewidth=2,
+            alpha=0.98,
+            ax=ax,
+        )
+
+        # Error bars
+        group_cols = [x_col, self.group_col] if grouped else [self.group_col]
+        means = self.df.groupby(group_cols)[self.value_col].mean()
+        sems = self.df.groupby(group_cols)[self.value_col].sem()
+
+        if grouped:
             self._add_grouped_errorbars(ax, order, hue_order, means, sems)
-            self._annotate_two_way_anova(ax)
-            ax.set_xlabel(self.xlabel if self.xlabel is not None else self.category_col, fontsize=self.label_fontsize)
         else:
-            order = self.hue_order if self.hue_order is not None else list(self.df[self.group_col].dropna().unique())
-            sns.barplot(
-                data=self.df,
-                x=self.group_col,
-                y=self.value_col,
-                order=order,
-                palette=self.bar_palette,
-                ci=None,
-                edgecolor="white",
-                linewidth=2,
-                alpha=0.98,
-                ax=ax,
-            )
-            means = self.df.groupby(self.group_col)[self.value_col].mean()
-            sems = self.df.groupby(self.group_col)[self.value_col].sem()
             self._add_simple_errorbars(ax, order, means, sems)
-            self._annotate_welch_ttest(ax, order)
-            ax.set_xlabel(self.xlabel if self.xlabel is not None else self.group_col, fontsize=self.label_fontsize)
 
+        # Formatting
         ax.set_title(self.dataset_name, fontsize=self.title_fontsize)
-        ax.set_ylabel(self.ylabel if self.ylabel is not None else self.value_col, fontsize=self.label_fontsize)
-        ax.tick_params(axis="both", labelsize=self.tick_fontsize)
+        ax.set_xlabel(self.xlabel if self.xlabel is not None else x_col,
+                    fontsize=self.label_fontsize)
+        ax.set_ylabel(self.ylabel if self.ylabel is not None else self.value_col,
+                    fontsize=self.label_fontsize)
+
+        if self.yminmax is not None:
+            ax.set_ylim(*self.yminmax)
+
         for spine in ax.spines.values():
             spine.set_linewidth(self.spine_width)
+
         if ax.get_legend() is not None:
             ax.legend(fontsize=self.tick_fontsize - 2, frameon=False)
+
+        ax.set_axisbelow(True)
+        ax.yaxis.grid(True, linestyle=":", linewidth=1.3, color="0.6")
+        ax.xaxis.grid(False)
+
+        ax.tick_params(
+            axis="both",
+            which="major",
+            direction="out",
+            bottom=True,
+            left=True,
+            top=False,
+            right=False,
+            length=8,
+            width=1.8,
+            labelsize=self.tick_fontsize,
+        )
+
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+
+        # Statistical annotation, independent of plotting
+        print("Selected statistical test:", self.stat_test)
+        self._annotate_selected_stats(ax, order, hue_order)
+        print("Annotations:", [t.get_text() for t in ax.texts])
+        
+    def _annotate_selected_stats(self, ax, order, hue_order):
+        if self.stat_test is None:
+            return
+
+        if self.stat_test == "2wayanova":
+            if self.category_col is None:
+                raise ValueError("2wayanova requires category_col.")
+            self._annotate_two_way_anova(ax)
+
+        elif self.stat_test == "ttest_ind":
+            self._annotate_ttest(ax, order, hue_order, paired=False)
+
+        elif self.stat_test == "ttest_paired":
+            self._annotate_ttest(ax, order, hue_order, paired=True)
+
+        else:
+            raise ValueError(f"Unknown statistical test: {self.stat_test}")
+
 
     def _add_grouped_errorbars(self, ax, order, hue_order, means, sems):
         containers = getattr(ax, "containers", [])
@@ -359,42 +435,80 @@ class SimpleDynamitePlotPair(SimpleDynamitePlot):
             formula = f"{self.value_col} ~ C({self.group_col}) * C({self.category_col})"
             model = smf.ols(formula, data=self.df).fit()
             table = anova_lm(model, typ=2)
-            term = f"C({self.group_col}):C({self.category_col})"
-            f_stat = table.loc[term, "F"]
-            p_val = table.loc[term, "PR(>F)"]
-            text = f"F = {f_stat:.2f}, p = {p_val:.2e}"
-        except Exception:
-            text = "F = NaN, p = NaN"
-        ax.text(
-            0.05,
-            0.95,
-            text,
-            transform=ax.transAxes,
-            fontsize=self.tick_fontsize,
-            verticalalignment="top",
-            bbox=dict(facecolor="white", alpha=0, edgecolor="none"),
-        )
 
-    def _annotate_welch_ttest(self, ax, order):
-        if len(order) != 2:
-            text = "t = NaN, p = NaN"
-        else:
-            g1 = self.df.loc[self.df[self.group_col] == order[0], self.value_col].dropna()
-            g2 = self.df.loc[self.df[self.group_col] == order[1], self.value_col].dropna()
-            if len(g1) and len(g2):
-                t_stat, p_val = ttest_ind(g1, g2, equal_var=False)
-                text = f"t = {t_stat:.2f}, p = {p_val:.2e}"
-            else:
-                text = "t = NaN, p = NaN"
+            terms = {
+                "Group": f"C({self.group_col})",
+                "Category": f"C({self.category_col})",
+                "Interaction": f"C({self.group_col}):C({self.category_col})",
+            }
+
+            text = "\n".join(
+                f"{label}: F = {table.loc[term, 'F']:.2f}, p = {table.loc[term, 'PR(>F)']:.2e}"
+                for label, term in terms.items()
+            )
+            print(text)
+
+        except Exception:
+            text = "ANOVA unavailable"
+
         ax.text(
             0.05,
             0.95,
             text,
             transform=ax.transAxes,
-            fontsize=self.tick_fontsize,
+            fontsize=self.tick_fontsize - 4,
             verticalalignment="top",
             bbox=dict(facecolor="white", alpha=0, edgecolor="none"),
         )
+    def _annotate_ttest(self, ax, order, hue_order, paired=False):
+        if len(hue_order) != 2:
+            raise ValueError("T-tests require exactly two groups.")
+
+        categories = order if self.category_col is not None else [None]
+
+        for i, category in enumerate(categories):
+            sub = (
+                self.df[self.df[self.category_col] == category]
+                if category is not None else self.df
+            )
+
+            if paired:
+                if "_pair_id" not in sub.columns:
+                    raise ValueError("Paired tests require _pair_id.")
+
+                wide = sub.pivot(
+                    index="_pair_id",
+                    columns=self.group_col,
+                    values=self.value_col,
+                )[hue_order].dropna()
+
+                a = wide[hue_order[0]]
+                b = wide[hue_order[1]]
+            else:
+                a = sub.loc[
+                    sub[self.group_col] == hue_order[0], self.value_col
+                ].dropna()
+                b = sub.loc[
+                    sub[self.group_col] == hue_order[1], self.value_col
+                ].dropna()
+
+            if len(a) < 2 or len(b) < 2:
+                continue
+
+            if paired:
+                t, p = ttest_rel(a, b)
+            else:
+                t, p = ttest_ind(a, b, equal_var=False)
+
+            ax.text(
+                i if category is not None else 0.5,
+                0.95,
+                f"t = {t:.2f}\np = {p:.2e}",
+                transform=ax.get_xaxis_transform(),
+                ha="center",
+                va="top",
+                fontsize=self.tick_fontsize - 4,
+            )
 
 
 class SimpleDynamitePlotWrapper:
@@ -413,7 +527,7 @@ class SimpleDynamitePlotWrapper:
     def __init__(self, df: pd.DataFrame):
         self.df = df
 
-    def plot(self, columns, dataset_name="Dynamite Plot", group_labels=None, pair_names=None, **kwargs):
+    def plot(self, columns, dataset_name="Dynamite Plot", group_labels=None, pair_names=None, out_path=None, **kwargs):
         # Pairwise: list of tuples [(col_a, col_b), ...]
         if any(isinstance(c, (list, tuple)) for c in columns):
             if pair_names is None:
@@ -427,10 +541,13 @@ class SimpleDynamitePlotWrapper:
                 if not isinstance(pair, (list, tuple)) or len(pair) != 2:
                     raise ValueError("Each paired entry must be a 2-item list/tuple of column names.")
                 left_col, right_col = pair
-                if left_col not in self.df.columns or right_col not in self.df.columns:
-                    raise ValueError(f"Missing columns for metric '{group_labels[i]}': {left_col}, {right_col}")
-                rows += [{"metric": group_labels[i], "group": pair_names[0], "value": v} for v in self.df[left_col].dropna()]
-                rows += [{"metric": group_labels[i], "group": pair_names[1], "value": v} for v in self.df[right_col].dropna()]
+                for row_id, (a, b) in enumerate(zip(self.df[left_col], self.df[right_col])):
+                    rows.extend([
+                        {"metric": group_labels[i], "group": pair_names[0],
+                        "value": a, "_pair_id": row_id},
+                        {"metric": group_labels[i], "group": pair_names[1],
+                        "value": b, "_pair_id": row_id},
+                    ])
             df_long = pd.DataFrame(rows)
             category_col = "metric" if len(columns) > 1 else None
             plotter = SimpleDynamitePlotPair(
@@ -443,20 +560,28 @@ class SimpleDynamitePlotWrapper:
                 order=group_labels if category_col else None,
                 **kwargs,
             )
-            return plotter.run()
 
-        # Non-pairwise: list of columns
-        df_long = self.df.melt(value_vars=columns, var_name="group", value_name="value")
-        if group_labels is not None:
-            if len(group_labels) != len(columns):
-                raise ValueError("group_labels must match the length of columns.")
-            label_map = dict(zip(columns, group_labels))
-            df_long["group"] = df_long["group"].map(label_map)
-        plotter = SimpleDynamitePlot(
-            df_long,
-            group_col="group",
-            value_col="value",
-            dataset_name=dataset_name,
-            **kwargs,
-        )
-        return plotter.run()
+        else:   # Non-pairwise: list of columns
+            df_long = self.df.melt(value_vars=columns, var_name="group", value_name="value")
+            if group_labels is not None:
+                if len(group_labels) != len(columns):
+                    raise ValueError("group_labels must match the length of columns.")
+                label_map = dict(zip(columns, group_labels))
+                df_long["group"] = df_long["group"].map(label_map)
+            kwargs.setdefault("order", group_labels if group_labels is not None else columns)
+            plotter = SimpleDynamitePlot(
+                df_long,
+                group_col="group",
+                value_col="value",
+                dataset_name=dataset_name,
+                **kwargs,
+            )
+        fig, ax = plt.subplots(figsize=plotter.figsize)
+        result = plotter.run(ax=ax)
+
+        if out_path is not None:
+            os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
+            fig.savefig(out_path, bbox_inches="tight")
+
+        plt.show()
+        return result

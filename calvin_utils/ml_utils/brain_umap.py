@@ -11,10 +11,20 @@ import plotly.express as px
 import plotly.graph_objects as go
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
+from matplotlib.colors import to_rgb
 from sklearn.preprocessing import StandardScaler
 import pandas as pd
 from calvin_utils.ml_utils.torus_utils import project_points_to_torus_auto
 from calvin_utils.ml_utils.sphere_utils import project_points_to_sphere_auto
+from calvin_utils.plotting_utils.scatter_ellipsoids import (
+    add_cluster_ellipsoids_matplotlib,
+    add_cluster_ellipsoids_plotly,
+    calculate_cluster_ellipsoids,
+)
+from calvin_utils.plotting_utils.simple_scatterplot_3d import SimpleScatterplot3D
+from calvin_utils.plotting_utils.hotelling_cluster_separation import (
+    pairwise_hotelling_tests,
+)
 
 
 class BrainUmap:
@@ -55,6 +65,8 @@ class BrainUmap:
     cluster_voxels : bool, default True
         If True, clusters individual voxels in embedding space.  
         If False, clusters whole maps using a pre-computed distance matrix.
+    random_state : int or None, default 42
+        Random seed passed to UMAP for reproducible embeddings.
 
     Attributes
     ----------
@@ -99,7 +111,7 @@ class BrainUmap:
     ...                         metric="correlation", cluster_voxels=True)
     >>> umap_runner.plot_embedding()
     """
-    def __init__(self, data, n_components=2, n_neighbors=15, min_dist=0.1, metric='correlation', projection="sphere", min_cluster_size=5, mask=None, verbose=True, cluster_voxels=False, visualize_failed_clusters=False, cols_to_flip=[]):
+    def __init__(self, data, n_components=2, n_neighbors=15, min_dist=0.1, metric='correlation', projection="sphere", min_cluster_size=5, mask=None, verbose=True, cluster_voxels=False, visualize_failed_clusters=False, cols_to_flip=[], random_state=42):
         """
         metric: 'euclidean', 'manhattan', 'cosine', 'correlation', 'haversine', etc. (see umap.UMAP docs)
         min_dist recommendation: 0.1 (low for tight clusters, higher for more spread out embedding)
@@ -114,10 +126,19 @@ class BrainUmap:
         self.mask = self._get_mask(mask)
         self.brain_array = self._mask_arr(arr, cluster_voxels) # (N maps, N voxels)
         self.features = self._get_features()
-        self.embedding = self._run_umap(n_components, n_neighbors, min_dist, metric)
+        self.random_state = random_state
+        self.embedding = self._run_umap(
+            n_components,
+            n_neighbors,
+            min_dist,
+            metric,
+            random_state=random_state,
+        )
         self.embedding = self._project_embedding()
         self.distances = self._compute_distance(metric, cluster_voxels)
         self.cluster_labels, self.cluster_probabilities, self.cluster_persistence = self._run_hdbscan(min_cluster_size, cluster_voxels)
+        self.cluster_separation_results = None
+        self.cluster_separation_path = None
         
     ### Setters and Getters ###
     def _get_arr(self, data):
@@ -195,12 +216,25 @@ class BrainUmap:
         return x, y, z
         
     ### Internal API ###
-    def _run_umap(self, n_components, n_neighbors, min_dist, metric):
+    def _run_umap(
+        self,
+        n_components,
+        n_neighbors,
+        min_dist,
+        metric,
+        random_state=42,
+    ):
         """Runs UMAP dimensionality reduction."""
         if (metric == 'haversine' or metric == 'geodesic') and (self.features.shape[1] != 2):
             print(f"Cannot pass haversine/geodesic distance umapped with {self.features.shape[1]} features. Substituting in cosine distance.")
             metric = 'cosine'
-        umapper = umap.UMAP(n_components=n_components, n_neighbors=n_neighbors, min_dist=min_dist, metric=metric, random_state=42)
+        umapper = umap.UMAP(
+            n_components=n_components,
+            n_neighbors=n_neighbors,
+            min_dist=min_dist,
+            metric=metric,
+            random_state=random_state,
+        )
         return umapper.fit_transform(self.features) # learns on (N maps, N voxels)
     
     def _project_embedding(self):
@@ -259,7 +293,7 @@ class BrainUmap:
             a = np.clip(a, 0.0, 1.0)
             d = 2.0 * np.arctan2(np.sqrt(a), np.sqrt(1.0 - a))  # radians on unit sphere
 
-        elif metric == "geodesic" or "spherical":   # distance between two points travelling along a sphere's surfaces
+        elif metric in {"geodesic", "spherical"}:   # distance between two points travelling along a sphere's surfaces
             X = X / (np.linalg.norm(X, axis=-1, keepdims=True) + 1e-12)
             dot = np.clip(X @ X.T, -1.0, 1.0)
             cross = np.linalg.norm(np.cross(X[:, None, :], X[None, :, :]), axis=-1)
@@ -323,8 +357,49 @@ class BrainUmap:
         if self.verbose:
             print(f"[BrainUmap] Cluster report saved to: {out_path}")
         return df
-    
-    def plot_embedding(self, *, point_size: int = 4, override_probabilities = None, outlines=True, verbose = True, continuous_colour=True):
+
+    def get_cluster_ellipsoids(self, *, n_std=3.0, ddof=1, resolution=36):
+        """Return 2D ellipses or 3D ellipsoids for the HDBSCAN clusters."""
+        return calculate_cluster_ellipsoids(
+            self.embedding,
+            self.cluster_labels,
+            n_std=n_std,
+            ddof=ddof,
+            resolution=resolution,
+        )
+
+    def test_cluster_separation(
+        self,
+        *,
+        p_adjust="holm",
+        alpha=0.05,
+        ellipsoid_n_std=3.0,
+        ddof=1,
+    ):
+        """Run pairwise Hotelling tests for every non-noise cluster."""
+        return pairwise_hotelling_tests(
+            self.embedding,
+            self.cluster_labels,
+            p_adjust=p_adjust,
+            alpha=alpha,
+            ellipsoid_n_std=ellipsoid_n_std,
+            ddof=ddof,
+        )
+
+    def plot_embedding(
+        self,
+        *,
+        point_size: int = 4,
+        override_probabilities=None,
+        outlines=True,
+        verbose=True,
+        continuous_colour=True,
+        ellipsoids=False,
+        ellipsoid_n_std=3.0,
+        ellipsoid_opacity=0.18,
+        ellipsoid_resolution=36,
+        ellipsoid_ddof=1,
+    ):
         """Interactive scatter of the embedding using Plotly. Points coloured by cluster label, opacity by probability of belonging to a cluster."""
         emb = self.embedding
         rgba_colors = self._get_opacity(override_probabilities)
@@ -341,11 +416,26 @@ class BrainUmap:
             col = rgba_colors
         else:
             col = labels
-        
+
+        cluster_colors = {}
+        for label, color in zip(labels, rgba_colors):
+            cluster_colors.setdefault(label, color)
+
         if (emb.shape[1] == 2) and (self.projection != "torus"):
             fig = px.scatter(x=emb[:, 0], y=emb[:, 1], color=col,
                              size=np.full(emb.shape[0], point_size),
                              labels={"x": "UMAP 1", "y": "UMAP 2"})
+            if ellipsoids:
+                add_cluster_ellipsoids_plotly(
+                    fig,
+                    emb,
+                    labels,
+                    n_std=ellipsoid_n_std,
+                    ddof=ellipsoid_ddof,
+                    resolution=ellipsoid_resolution,
+                    opacity=ellipsoid_opacity,
+                    colors=cluster_colors,
+                )
             fig.update_layout(scene=dict(xaxis_title="UMAP 1",
                                          yaxis_title="UMAP 2"))
             fig.update_yaxes(scaleanchor="x", scaleratio=1)
@@ -413,6 +503,28 @@ class BrainUmap:
                     '<extra></extra>'
                 )
             ))
+            if ellipsoids:
+                add_cluster_ellipsoids_plotly(
+                    fig,
+                    emb,
+                    labels,
+                    n_std=ellipsoid_n_std,
+                    ddof=ellipsoid_ddof,
+                    resolution=ellipsoid_resolution,
+                    opacity=ellipsoid_opacity,
+                    colors=cluster_colors,
+                )
+                # Every dropdown state must update all traces, including each
+                # newly-added surface, so 2D projections remain coherent.
+                for button, (_, dims) in zip(dim_buttons, dim_options):
+                    updates = {"x": [], "y": [], "z": []}
+                    for trace in fig.data:
+                        for axis_index, axis_name in enumerate(("x", "y", "z")):
+                            values = np.asarray(getattr(trace, axis_name))
+                            updates[axis_name].append(
+                                values if axis_index in dims else np.zeros_like(values)
+                            )
+                    button["args"][0] = updates
             fig.update_layout(scene=dict(xaxis_title="UMAP 1",
                                          yaxis_title="UMAP 2",
                                          zaxis_title="UMAP 3",
@@ -483,6 +595,9 @@ class BrainUmap:
         transparent=False,
         continuous_colour=True,
         preserve_aspect=False,
+        ellipsoids=False,
+        ellipsoid_n_std=3.0,
+        ellipsoid_opacity=0.18,
     ):
         """
         Export the interactive Plotly view to a static image.
@@ -497,6 +612,9 @@ class BrainUmap:
             outlines=outlines,
             verbose=False,
             continuous_colour=continuous_colour,
+            ellipsoids=ellipsoids,
+            ellipsoid_n_std=ellipsoid_n_std,
+            ellipsoid_opacity=ellipsoid_opacity,
         )
         if camera is not None:
             fig.update_layout(scene_camera=camera)
@@ -513,12 +631,18 @@ class BrainUmap:
         if self.embedding.shape[1] == 3:
             data_min = self.embedding.min(axis=0)
             data_max = self.embedding.max(axis=0)
+            if ellipsoids:
+                for ellipsoid in self.get_cluster_ellipsoids(
+                    n_std=ellipsoid_n_std
+                ).values():
+                    data_min = np.minimum(data_min, ellipsoid.center - ellipsoid.radii)
+                    data_max = np.maximum(data_max, ellipsoid.center + ellipsoid.radii)
             data_range = data_max - data_min
             data_range[data_range == 0] = 1
             padding = data_range * 0.08
             if preserve_aspect:
-                center = self.embedding.mean(axis=0)
-                radius = np.max(np.linalg.norm(self.embedding - center, axis=1))
+                center = (data_min + data_max) / 2.0
+                radius = np.max(data_range) * 0.54
                 if radius == 0:
                     radius = 1
                 ranges = [
@@ -564,8 +688,34 @@ class BrainUmap:
         grid=True,
         legend=False,
         transparent=False,
+        ellipsoids=False,
+        ellipsoid_n_std=3.0,
+        ellipsoid_opacity=0.18,
+        ellipsoid_lighting=True,
+        ellipsoid_light_azimuth=315.0,
+        ellipsoid_light_altitude=45.0,
+        ellipsoid_light_strength=0.22,
+        ellipsoid_ground_shadows=False,
+        ellipsoid_ground_level=None,
+        ellipsoid_shadow_opacity=0.10,
+        ellipsoid_shadow_stems=False,
+        ellipsoid_shadow_stem_opacity=0.24,
+        ellipsoid_show_ground_plane=False,
+        cluster_colors=None,
+        cluster_names=None,
+        axis_color="black",
+        axis_label_fontsize=20,
+        tick_label_fontsize=16,
+        axis_linewidth=2.0,
+        legend_fontsize=16,
+        bbox_inches=None,
     ):
-        """Export a fixed-orientation Matplotlib figure for publication."""
+        """Export a fixed-orientation Matplotlib figure for publication.
+
+        ``bbox_inches`` defaults to ``None`` so the exported canvas preserves
+        the requested ``figsize`` and orientation. Pass ``"tight"`` when a
+        closely cropped figure is preferred.
+        """
         fig = self.plot_embedding_matplotlib(
             point_size=point_size,
             outlines=outlines,
@@ -577,18 +727,85 @@ class BrainUmap:
             axes=axes,
             grid=grid,
             legend=legend,
+            ellipsoids=ellipsoids,
+            ellipsoid_n_std=ellipsoid_n_std,
+            ellipsoid_opacity=ellipsoid_opacity,
+            ellipsoid_lighting=ellipsoid_lighting,
+            ellipsoid_light_azimuth=ellipsoid_light_azimuth,
+            ellipsoid_light_altitude=ellipsoid_light_altitude,
+            ellipsoid_light_strength=ellipsoid_light_strength,
+            ellipsoid_ground_shadows=ellipsoid_ground_shadows,
+            ellipsoid_ground_level=ellipsoid_ground_level,
+            ellipsoid_shadow_opacity=ellipsoid_shadow_opacity,
+            ellipsoid_shadow_stems=ellipsoid_shadow_stems,
+            ellipsoid_shadow_stem_opacity=ellipsoid_shadow_stem_opacity,
+            ellipsoid_show_ground_plane=ellipsoid_show_ground_plane,
+            cluster_colors=cluster_colors,
+            cluster_names=cluster_names,
+            axis_color=axis_color,
+            axis_label_fontsize=axis_label_fontsize,
+            tick_label_fontsize=tick_label_fontsize,
+            axis_linewidth=axis_linewidth,
+            legend_fontsize=legend_fontsize,
         )
         fig.savefig(
             out_path,
             dpi=dpi,
-            bbox_inches='tight',
+            bbox_inches=bbox_inches,
             transparent=transparent,
             facecolor='none' if transparent else 'white',
         )
+        if self.cluster_separation_results is not None:
+            separation_path = SimpleScatterplot3D._separation_path_for_figure(
+                out_path
+            )
+            self.cluster_separation_results.to_csv(separation_path, index=False)
+            self.cluster_separation_path = str(separation_path)
+            if self.verbose:
+                print(
+                    "[BrainUmap] Cluster-separation results saved to: "
+                    f"{separation_path}"
+                )
         plt.close(fig)
         return out_path
 
-    def plot_embedding_matplotlib(self, *, point_size=100, outlines=True, dpi=300, out_path=None, elevation=60, azimuth=30, roll=0, figsize=(8, 8), axes=True, grid=False, legend=True):
+    def plot_embedding_matplotlib(
+        self,
+        *,
+        point_size=100,
+        outlines=True,
+        dpi=300,
+        out_path=None,
+        elevation=60,
+        azimuth=30,
+        roll=0,
+        figsize=(8, 8),
+        axes=True,
+        grid=False,
+        legend=True,
+        ellipsoids=False,
+        ellipsoid_n_std=3.0,
+        ellipsoid_opacity=0.18,
+        ellipsoid_resolution=36,
+        ellipsoid_ddof=1,
+        ellipsoid_lighting=True,
+        ellipsoid_light_azimuth=315.0,
+        ellipsoid_light_altitude=45.0,
+        ellipsoid_light_strength=0.22,
+        ellipsoid_ground_shadows=False,
+        ellipsoid_ground_level=None,
+        ellipsoid_shadow_opacity=0.10,
+        ellipsoid_shadow_stems=False,
+        ellipsoid_shadow_stem_opacity=0.24,
+        ellipsoid_show_ground_plane=False,
+        cluster_colors=None,
+        cluster_names=None,
+        axis_color="black",
+        axis_label_fontsize=20,
+        tick_label_fontsize=16,
+        axis_linewidth=2.0,
+        legend_fontsize=16,
+    ):
         emb   = self.embedding.copy()
         labs  = self.cluster_labels.copy()
         probs = self.cluster_probabilities.copy()
@@ -600,7 +817,22 @@ class BrainUmap:
         uniq = np.unique(labs)
         # nice categorical palette
         base = list(plt.cm.tab10.colors)
-        palette = {lab: base[i % len(base)] for i, lab in enumerate(uniq)}
+        palette = {
+            lab: (
+                to_rgb(cluster_colors[lab])
+                if cluster_colors is not None and lab in cluster_colors
+                else base[i % len(base)]
+            )
+            for i, lab in enumerate(uniq)
+        }
+        legend_labels = [
+            (
+                cluster_names[lab]
+                if cluster_names is not None and lab in cluster_names
+                else f"Cluster {lab}"
+            )
+            for lab in uniq
+        ]
 
         if emb.shape[1] == 2:
             fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
@@ -615,70 +847,122 @@ class BrainUmap:
                     edgecolors='k' if outlines else 'none',
                     linewidths=0.35 if outlines else 0
                 )
-            ax.set_xlabel("UMAP 1"); ax.set_ylabel("UMAP 2")
+            if ellipsoids:
+                add_cluster_ellipsoids_matplotlib(
+                    ax,
+                    emb,
+                    labs,
+                    n_std=ellipsoid_n_std,
+                    ddof=ellipsoid_ddof,
+                    resolution=ellipsoid_resolution,
+                    opacity=ellipsoid_opacity,
+                    colors=palette,
+                    lighting=ellipsoid_lighting,
+                    light_azimuth=ellipsoid_light_azimuth,
+                    light_altitude=ellipsoid_light_altitude,
+                    light_strength=ellipsoid_light_strength,
+                    ground_shadows=ellipsoid_ground_shadows,
+                    ground_level=ellipsoid_ground_level,
+                    shadow_opacity=ellipsoid_shadow_opacity,
+                    shadow_stems=ellipsoid_shadow_stems,
+                    shadow_stem_opacity=ellipsoid_shadow_stem_opacity,
+                )
+            ax.set_xlabel("UMAP 1", fontsize=axis_label_fontsize, color=axis_color)
+            ax.set_ylabel("UMAP 2", fontsize=axis_label_fontsize, color=axis_color)
+            ax.tick_params(
+                axis='both',
+                labelsize=tick_label_fontsize,
+                colors=axis_color,
+                width=axis_linewidth,
+            )
+            for spine in ax.spines.values():
+                spine.set_color(axis_color)
+                spine.set_linewidth(axis_linewidth)
             ax.set_aspect('equal', adjustable='box')
-            ax.grid(grid, color='0.88', linewidth=0.6)
+            if grid:
+                ax.grid(True, color='0.88', linewidth=0.6)
+            else:
+                ax.grid(False)
             if not axes:
                 ax.axis('off')
             # legend
             handles = [Line2D([0],[0], marker='o', linestyle='',
-                            markerfacecolor=palette[lab], markeredgecolor='k' if outlines else palette[lab],
+                            markerfacecolor=palette[lab], markeredgecolor='k' if outlines else 'none',
                             markersize=6) for lab in uniq]
             if axes and legend:
-                ax.legend(handles, [f"Cluster {lab}" for lab in uniq], frameon=False, title="Cluster", loc='best')
+                ax.legend(
+                    handles,
+                    legend_labels,
+                    frameon=False,
+                    title="Cluster",
+                    loc='best',
+                    fontsize=legend_fontsize,
+                )
 
         elif emb.shape[1] == 3:
-            fig = plt.figure(figsize=figsize, dpi=dpi)
-            ax = fig.add_subplot(111, projection='3d')
-            ax.set_proj_type('ortho')
-            for lab in uniq:
-                m = (labs == lab)
-                rgb = np.tile(palette[lab], (m.sum(), 1))
-                rgba = np.hstack([rgb, np.clip(probs[m], 0.15, 1.0)[:, None]])
-                ax.scatter(
-                    emb[m, 0], emb[m, 1], emb[m, 2],
-                    s=point_size,
-                    c=rgba,
-                    depthshade=False,
-                    edgecolors='k' if outlines else 'none',
-                    linewidths=0.25 if outlines else 0
-                )
-            data_min = emb.min(axis=0)
-            data_max = emb.max(axis=0)
-            ranges = data_max - data_min
-            ranges[ranges == 0] = 1
-            pad = ranges * 0.08
-            ax.set_xlim(data_min[0] - pad[0], data_max[0] + pad[0])
-            ax.set_ylim(data_min[1] - pad[1], data_max[1] + pad[1])
-            ax.set_zlim(data_min[2] - pad[2], data_max[2] + pad[2])
-            ax.set_box_aspect(ranges / ranges.max())
-            ax.view_init(elev=elevation, azim=azimuth, roll=roll)
-            if axes:
-                ax.set_xlabel("UMAP 1", labelpad=8)
-                ax.set_ylabel("UMAP 2", labelpad=8)
-                ax.set_zlabel("UMAP 3", labelpad=8)
-                ax.tick_params(axis='both', which='major', labelsize=8, pad=2)
-                ax.grid(grid)
-                for axis in (ax.xaxis, ax.yaxis, ax.zaxis):
-                    axis.pane.fill = False
-                    axis.pane.set_edgecolor('0.90')
-                    axis._axinfo["grid"].update({"linewidth": 0.35, "color": (0.78, 0.78, 0.78, 0.55)})
-                    axis._axinfo["axisline"].update({"linewidth": 0.8, "color": (0.15, 0.15, 0.15, 1.0)})
-            else:
-                ax.set_axis_off()
-            # legend (2D proxy)
-            handles = [Line2D([0],[0], marker='o', linestyle='',
-                            markerfacecolor=palette[lab], markeredgecolor='k' if outlines else palette[lab],
-                            markersize=6) for lab in uniq]
-            if axes and legend:
-                ax.legend(handles, [f"Cluster {lab}" for lab in uniq], frameon=False, title="Cluster", loc='upper left', bbox_to_anchor=(0.0, 1.0))
+            scatter = SimpleScatterplot3D(emb, labs, probs)
+            fig = scatter.plot(
+                colors=palette,
+                names=dict(zip(uniq, legend_labels)),
+                legend_order=uniq,
+                point_size=point_size,
+                outlines=outlines,
+                ellipsoids=ellipsoids,
+                ellipsoid_n_std=ellipsoid_n_std,
+                ellipsoid_opacity=ellipsoid_opacity,
+                ellipsoid_resolution=ellipsoid_resolution,
+                ellipsoid_ddof=ellipsoid_ddof,
+                lighting=ellipsoid_lighting,
+                light_azimuth=ellipsoid_light_azimuth,
+                light_altitude=ellipsoid_light_altitude,
+                light_strength=ellipsoid_light_strength,
+                ground_shadows=ellipsoid_ground_shadows,
+                ground_level=ellipsoid_ground_level,
+                shadow_opacity=ellipsoid_shadow_opacity,
+                shadow_stems=ellipsoid_shadow_stems,
+                shadow_stem_opacity=ellipsoid_shadow_stem_opacity,
+                show_ground_plane=ellipsoid_show_ground_plane,
+                elevation=elevation,
+                azimuth=azimuth,
+                roll=roll,
+                figsize=figsize,
+                dpi=dpi,
+                axis_labels=("UMAP 1", "UMAP 2", "UMAP 3"),
+                axes=axes,
+                grid=grid,
+                axis_color=axis_color,
+                axis_label_fontsize=axis_label_fontsize,
+                tick_label_fontsize=tick_label_fontsize,
+                axis_linewidth=axis_linewidth,
+                legend=legend,
+                legend_fontsize=legend_fontsize,
+                legend_title="Cluster",
+            )
+            self.cluster_separation_results = scatter.cluster_separation_results
+            self.cluster_separation_path = scatter.cluster_separation_path
 
         else:
             raise ValueError("Embedding must be 2D or 3D.")
 
-        plt.tight_layout()
+        if emb.shape[1] == 2:
+            plt.tight_layout()
         if out_path:
-            fig.savefig(out_path, dpi=dpi, bbox_inches='tight')
+            fig.savefig(
+                out_path,
+                dpi=dpi,
+                bbox_inches='tight' if emb.shape[1] == 2 else None,
+            )
+            if emb.shape[1] == 3 and self.cluster_separation_results is not None:
+                separation_path = SimpleScatterplot3D._separation_path_for_figure(
+                    out_path
+                )
+                self.cluster_separation_results.to_csv(separation_path, index=False)
+                self.cluster_separation_path = str(separation_path)
+                if self.verbose:
+                    print(
+                        "[BrainUmap] Cluster-separation results saved to: "
+                        f"{separation_path}"
+                    )
         return fig
 
     

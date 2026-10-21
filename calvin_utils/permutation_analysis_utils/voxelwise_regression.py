@@ -112,7 +112,7 @@ class VoxelwiseRegression:
         )
 
     ### REGRESSION HELPERS ###
-    def _get_targets(self, permutation):
+    def _get_targets(self, permutation, permutation_index=None):
         """
         Returns the regressor (design tensor) and regressand (outcome data), 
         optionally permuting the outcome data if permutation is True.
@@ -121,10 +121,38 @@ class VoxelwiseRegression:
         regressand = self.outcome_tensor
         weights = self.weight_vector
         if permutation:
-            resample_idx = self._get_permutation_index()
+            resample_idx = (
+                self._get_permutation_index()
+                if permutation_index is None
+                else self._validate_permutation_index(permutation_index)
+            )
             regressand = regressand[resample_idx, :, :]
             weights = weights[resample_idx]
         return regressor, regressand, weights  
+
+    def _validate_permutation_index(self, permutation_index):
+        """Validate one explicit observation permutation."""
+        index = np.asarray(permutation_index)
+        expected = np.arange(self.outcome_tensor.shape[0])
+        if index.ndim != 1 or len(index) != len(expected):
+            raise ValueError(
+                "permutation_index must be one-dimensional with one entry "
+                "per observation."
+            )
+        if not np.issubdtype(index.dtype, np.integer):
+            raise ValueError("permutation_index must contain integer indices.")
+        index = index.astype(int, copy=False)
+        if not np.array_equal(np.sort(index), expected):
+            raise ValueError(
+                "permutation_index must contain every observation index exactly once."
+            )
+        if self.exchangeability_blocks is not None:
+            blocks = self.exchangeability_blocks.ravel()
+            if not np.array_equal(blocks[index], blocks):
+                raise ValueError(
+                    "permutation_index moves observations across exchangeability blocks."
+                )
+        return index
 
     def _get_permutation_index(self):
         if self.exchangeability_blocks is None:
@@ -511,12 +539,20 @@ class VoxelwiseRegression:
             raise ValueError(f"Regression type {self.regression_type} not implemented. Please set regression_type='linear' or 'logistic'.")
         return B, T, R2, LOG_PRIORS
         
-    def voxelwise_regression(self, permutation=False, regression_idx=0):
+    def voxelwise_regression(
+        self,
+        permutation=False,
+        regression_idx=0,
+        permutation_index=None,
+    ):
         """
         Attemps to do a whole-brain broadcasting if possible. Otherwise defaults to standard looped regression.
         Anything that will be written to disk should be stored here
         """        
-        regressor, regressand, weights = self._get_targets(permutation)  
+        regressor, regressand, weights = self._get_targets(
+            permutation,
+            permutation_index=permutation_index,
+        )
         B, T, R2, LOG_PRIORS = self._run_voxelwise_model(regressor, regressand, weights, regression_idx, permutation)
         if (not permutation) and (self.regression_type=='naive_bayes'):
             self.LOG_PRIORS = LOG_PRIORS
@@ -969,13 +1005,43 @@ class VoxelwiseRegression:
             )
         return results
 
-    def run_single_multiout_regression(self, permutation=False):
-        """Runs regression across all outputs a single time and returns the associated arrays."""
+    def run_single_multiout_regression(
+        self,
+        permutation=False,
+        permutation_index=None,
+    ):
+        """Run every output with optional explicit row permutations.
+
+        A one-dimensional ``permutation_index`` is shared by all outputs. A
+        two-dimensional index of shape ``(n_outputs, n_observations)`` supplies
+        a separate, reproducible shuffle for each output. If no explicit index
+        is supplied, the historical behavior draws a new shuffle per output.
+        """
+        if permutation_index is not None:
+            permutation_index = np.asarray(permutation_index)
+            valid_shapes = {
+                (self.n_obs,),
+                (self.n_outputs, self.n_obs),
+            }
+            if permutation_index.shape not in valid_shapes:
+                raise ValueError(
+                    "permutation_index must have shape (n_observations,) or "
+                    "(n_outputs, n_observations)."
+                )
         B_multi = np.zeros((self.n_contrasts, self.n_voxels, self.n_outputs))
         T_multi = np.zeros((self.n_contrasts, self.n_voxels, self.n_outputs))
         R2_multi = np.zeros((self.n_contrasts, self.n_voxels, self.n_outputs))
         for j in range(self.n_outputs):
-            B_multi[:,:,j], T_multi[:,:,j], R2_multi[:,:,j] = self.voxelwise_regression(permutation=permutation, regression_idx=j)
+            output_permutation = (
+                permutation_index[j]
+                if permutation_index is not None and permutation_index.ndim == 2
+                else permutation_index
+            )
+            B_multi[:,:,j], T_multi[:,:,j], R2_multi[:,:,j] = self.voxelwise_regression(
+                permutation=permutation,
+                regression_idx=j,
+                permutation_index=output_permutation,
+            )
         
         if permutation is False:            # Store the results in the class attributes for use later
             self.B_multi, self.T_multi, self.R2_multi = B_multi, T_multi, R2_multi
