@@ -126,7 +126,7 @@ class NiftiIO:
     def _load_single_nifti(self, file_path):
         nifti_img = image.load_img(file_path)
         self.affines = tuple(nifti_img.affine.flatten())
-        return nifti_img.get_fdata().flatten()
+        return nifti_img.get_fdata(dtype=np.float32).flatten()
 
     def align_imported_matrices(self, file_paths):
         self.bbox = NiftiBoundingBox(file_paths)

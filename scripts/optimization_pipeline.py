@@ -1,17 +1,5 @@
 #!/usr/bin/env python3
-"""Nested validation and final fitting for regression-derived component maps.
-
-Map-generating, fitting, and test datasets use the same configuration schema.
-Supply either a DataLoader JSON or a dictionary whose entries define
-``csv_path``, ``nifti_column``, and ``symptom_column``. CSV inputs are packaged
-by the existing CCM regression-data preparer; raw array dictionaries are not
-accepted. Inner folds select weights from rebuilt regression maps. Outer folds
-test the complete map-building and weight-selection procedure on untouched
-patients. Optional test datasets are an independent cohort, opened only after
-the final map is frozen and scored exactly once.
-"""
-
-from __future__ import annotations
+"""Optionally add basis cohorts, then optimize the selected basis library."""
 
 import sys
 from pathlib import Path
@@ -20,139 +8,70 @@ PROJECT_DIR = Path(__file__).resolve().parents[1]
 if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
-from calvin_utils.neuroimaging_utils.ccm_utils.optimization.nested_cv import (
-    datasets_from_loader,
-    evaluate_regression_pipeline_outer_cv,
-    fit_weights_with_inner_cv,
-    map_inputs_from_loader,
-    save_fit,
-    save_history,
-    save_nested_cv,
-)
-from calvin_utils.neuroimaging_utils.ccm_utils.optimization.fixed_pipeline import (
-    make_dataset_loader,
-)
-from calvin_utils.neuroimaging_utils.ccm_utils.optimization.test_evaluation import (
-    evaluate_test_datasets,
-    fitting_ids_from_datasets,
-    save_test_evaluation,
-)
-from calvin_utils.neuroimaging_utils.ccm_utils.optimization.visualization import (
-    render_optimization_history,
-)
+from calvin_utils.neuroimaging_utils.ccm_utils.optimization.basis_maps import build
+from calvin_utils.neuroimaging_utils.ccm_utils.optimization.pipeline import basis_damage
+from calvin_utils.neuroimaging_utils.ccm_utils.optimization.run_optimization import RunOptimization
+from calvin_utils.neuroimaging_utils.ccm_utils.optimization.pipeline.pre_processing import datasets_from_loader, make_dataset_loader, optional_datasets
 
 
 # =============================================================================
 # CONFIG
 # =============================================================================
 
+BASIS_INPUTS = {}  # {"mask_path": ..., "transform": "rank", "cohorts": {...}}
+BASIS_DIR = basis_damage.BASIS_DIR
+BASIS_COHORTS = None
+BASIS_OVERRIDE = False
+
+FITTING_DATASETS = {}
+FITTING_MANIFEST_PATH = None
+TEST_DATASETS = {}
+TEST_MANIFEST_PATH = None
+OPTIMIZATION_TARGETS = ()
+
 OUT_DIR = ""
-MASK_PATH = None                 # NIfTI mask or ordered fiber atlas.
-MAP_OUTPUT_TYPE = None           # Required with MAP_MANIFEST_PATH; inferred for CSV dictionaries.
-SUBJECT_COL = None               # Optional default; each entry can set subject_column.
+MAP_OUTPUT_TYPE = None
+SUBJECT_COL = None
 
-MAP_DATASETS = {}                # {map_name: {'csv_path': ..., 'nifti_column': ..., 'symptom_column': ...}}
-MAP_MANIFEST_PATH = None         # Existing DataLoader JSON instead of MAP_DATASETS.
-FITTING_DATASETS = {}            # Same CSV dictionary schema; selects the weights.
-FITTING_MANIFEST_PATH = None     # Existing DataLoader JSON instead of FITTING_DATASETS.
-TEST_DATASETS = {}               # Optional, same schema; scored once on the frozen map.
-TEST_MANIFEST_PATH = None        # Existing DataLoader JSON instead of TEST_DATASETS.
-
-INNER_FOLDS = "loocv"           # Select weights inside each outer-training set.
-OUTER_FOLDS = 5                  # Test the complete fitted pipeline on unseen patients.
-DATA_TRANSFORM_METHOD = "rank"   # Regression maps: 'standardize', 'rank', or None.
+WITHIN_DATASET_FOLDS = None
+CROSS_DATASET_VALIDATION = False
+DATA_MODE = "memmap"
 RANDOM_SEED = 2026
-MAX_ITERS = 500
 WEIGHT_INIT_MODE = "unweighted"
-STORE_ITERS = False              # Save compact final-fit visualization history.
-RENDER_GIF = False               # Render a GIF plus NIfTI/fiber history stack.
-GIF_OPTIONS = {                  # Passed to render_optimization_history.
-    "fps": 5, "max_frames": 60, "view": "auto",
-}
+REGULARIZATION_STRENGTH = 0.1
+PROJECT_PREDICTION_VARIANCE = False
+WINNER_ONLY = False
+
+RUN_BASIS_MAP_REGRESSION = False
+N_PERMUTATIONS = 1000
+STORE_ITERS = False
+RENDER_GIF = False
+GIF_FPS = 5
+GIF_MAX_FRAMES = 60
+GIF_VIEW = "auto"
 
 
 def main():
-    if not OUT_DIR or not MASK_PATH:
-        raise ValueError("Set OUT_DIR and MASK_PATH.")
+    """Build requested bases, compare algorithms, and save fitting, validation, and test results."""
+    if not OUT_DIR:
+        raise ValueError("Set OUT_DIR.")
     out_dir = Path(OUT_DIR).expanduser()
-    map_loader = make_dataset_loader(
-        out_dir / "prepared_map_data", dataset_specs=MAP_DATASETS,
-        manifest_path=MAP_MANIFEST_PATH, mask_path=MASK_PATH,
-        subject_col=SUBJECT_COL,
-        # Fold-specific RegressionPrep calls transform only the training rows.
-        data_transform_method=None,
-    )
-    fitting_loader = make_dataset_loader(
-        out_dir / "prepared_fitting_data", dataset_specs=FITTING_DATASETS,
-        manifest_path=FITTING_MANIFEST_PATH, mask_path=MASK_PATH,
-        subject_col=SUBJECT_COL,
-        # Damage is calculated from native patient vectors. Transformation is
-        # confined to regression fitting inside each inner/outer training set.
-        data_transform_method=None,
-    )
-    output_type = getattr(map_loader, "output_type", MAP_OUTPUT_TYPE)
-    if not output_type:
-        raise ValueError("Set MAP_OUTPUT_TYPE when using MAP_MANIFEST_PATH.")
-    map_X, map_ids, map_outcomes = map_inputs_from_loader(map_loader)
-    fitting = datasets_from_loader(fitting_loader)
-
-    outer_results = evaluate_regression_pipeline_outer_cv(
-        map_X, map_ids, map_outcomes, fitting,
-        inner_folds=INNER_FOLDS, outer_folds=OUTER_FOLDS,
-        seed=RANDOM_SEED, data_transform_method=DATA_TRANSFORM_METHOD,
-        weight_mode=WEIGHT_INIT_MODE, max_iters=MAX_ITERS,
-        score_mode="reference_z",
-    )
-    if outer_results is not None:
-        save_nested_cv(out_dir / "outer_validation", *outer_results)
-
-    # After estimating generalization above, fit the production map on all
-    # patients. Its weights are still selected exclusively by inner CV.
-    capture_history = STORE_ITERS or RENDER_GIF
-    result = fit_weights_with_inner_cv(
-        map_X, map_ids, map_outcomes,
-        fitting, inner_folds=INNER_FOLDS, seed=RANDOM_SEED,
-        data_transform_method=DATA_TRANSFORM_METHOD,
-        weight_mode=WEIGHT_INIT_MODE, max_iters=MAX_ITERS,
-        score_mode="reference_z", store_iters=capture_history,
-        return_optimizer=capture_history,
-    )
-    if capture_history:
-        optimized_map, predictions, summary, weights, optimizer = result
-    else:
-        optimized_map, predictions, summary, weights = result
-    final_dir = out_dir / "final_model"
-    save_fit(
-        final_dir, optimized_map, predictions, summary, weights,
-        output_type, mask_path=MASK_PATH, prefix="inner_cv",
-    )
-    if capture_history:
-        history_path = save_history(
-            optimizer, final_dir / "optimization_history.npz",
-            output_type=output_type, mask_path=MASK_PATH,
-        )
-        if RENDER_GIF:
-            gif_path = render_optimization_history(
-                history_path, final_dir / "optimization.gif", **GIF_OPTIONS
-            )
-            print(f"Saved optimization GIF to: {gif_path}")
-
-    # The map is frozen above. Test patients are loaded only now and are never
-    # used to build maps, select weights, or calibrate scores.
-    if TEST_DATASETS or TEST_MANIFEST_PATH:
-        test_loader = make_dataset_loader(
-            out_dir / "prepared_test_data", dataset_specs=TEST_DATASETS,
-            manifest_path=TEST_MANIFEST_PATH, mask_path=MASK_PATH,
-            subject_col=SUBJECT_COL, data_transform_method=None,
-        )
-        test = datasets_from_loader(test_loader)
-        test_predictions, test_summary = evaluate_test_datasets(
-            optimized_map, test,
-            fitting_ids=fitting_ids_from_datasets(
-                fitting, map_ids
-            ),
-        )
-        save_test_evaluation(out_dir / "test_evaluation", test_predictions, test_summary)
+    if BASIS_INPUTS:
+        build.main(BASIS_INPUTS, BASIS_DIR, overwrite=BASIS_OVERRIDE)
+    mask_path = basis_damage.load_library(BASIS_COHORTS, BASIS_DIR)["mask_path"]
+    if OPTIMIZATION_TARGETS:
+        RunOptimization.run_targets(FITTING_DATASETS, OPTIMIZATION_TARGETS, test_specs=TEST_DATASETS, subject_col=SUBJECT_COL, basis_cohorts=BASIS_COHORTS, basis_dir=BASIS_DIR, weight_mode=WEIGHT_INIT_MODE, regularization_strength=REGULARIZATION_STRENGTH, project_prediction_variance=PROJECT_PREDICTION_VARIANCE, seed=RANDOM_SEED, within_dataset_folds=WITHIN_DATASET_FOLDS, cross_dataset_validation=CROSS_DATASET_VALIDATION, out_dir=out_dir, output_type=MAP_OUTPUT_TYPE, mask_path=mask_path, store_history=STORE_ITERS, render_gif=RENDER_GIF, gif_fps=GIF_FPS, gif_max_frames=GIF_MAX_FRAMES, gif_view=GIF_VIEW, winner_only=WINNER_ONLY, n_permutations=N_PERMUTATIONS if RUN_BASIS_MAP_REGRESSION else 0)
+        return
+    fitting_loader = make_dataset_loader(out_dir / "fitting_data", FITTING_DATASETS, FITTING_MANIFEST_PATH, mask_path, SUBJECT_COL)
+    fitting = datasets_from_loader(fitting_loader, data_mode=DATA_MODE)
+    test = optional_datasets(out_dir / "test_data", TEST_DATASETS, TEST_MANIFEST_PATH, mask_path, SUBJECT_COL, DATA_MODE)
+    output_type = getattr(fitting_loader, "output_type", None) or MAP_OUTPUT_TYPE
+    optimizer = RunOptimization(fitting, cohorts=BASIS_COHORTS, basis_dir=BASIS_DIR, weight_mode=WEIGHT_INIT_MODE, regularization_strength=REGULARIZATION_STRENGTH, project_prediction_variance=PROJECT_PREDICTION_VARIANCE, seed=RANDOM_SEED)
+    optimizer.orchestrate_run(within_dataset_folds=WITHIN_DATASET_FOLDS, cross_dataset_validation=CROSS_DATASET_VALIDATION, test_datasets=test)
+    optimizer.save(out_dir, output_type, mask_path, STORE_ITERS, RENDER_GIF, GIF_FPS, GIF_MAX_FRAMES, GIF_VIEW, winner_only=WINNER_ONLY)
+    if RUN_BASIS_MAP_REGRESSION:
+        inference_dir = out_dir if WINNER_ONLY else out_dir / optimizer.method
+        optimizer.result["basis_map_regression"] = optimizer.infer(optimizer.result, inference_dir, output_type, mask_path, N_PERMUTATIONS)
 
 
 if __name__ == "__main__":

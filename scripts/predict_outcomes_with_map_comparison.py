@@ -49,14 +49,14 @@ if str(CIRCUIT_PYPER_DIR) not in sys.path:
 
 
 # Input/output paths.
-INPUT_PATH = "/Volumes/HowExp2/datasets/02a_Corbetta_Stroke_Lesion/Study_Metadata/3month_arm_1clean.csv" # Form: "/path/to/input.csv" or "/path/to/input.xlsx"
+INPUT_PATH = "/Volumes/OneTouch/01x_Dhand_RCPStrokes/metadata/master.csv" # Form: "/path/to/input.csv" or "/path/to/input.xlsx"
 SHEET = None                            # Specify sheet if using excel (i.e. "Sheet1")
-OUT_DIR = "/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/results/optimzation/comparisons/corbetta_3mo/gdss_10-cerebellumOnly" # Form: "/path/to/output_dir"
+OUT_DIR = "/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/results/optimzation/prediction_comparisons/cognitive" # Form: "/path/to/output_dir"
 MASK_PATH = "/Users/cu135/Software_Local/calvin_utils_project/circuit_pyper/resources/MNI152_T1_2mm_brain_mask.nii"
 
 # Symptom setup.
 SYMPTOM_COLUMN = "gdss_10"       # Spreadsheet column to analyze. Run one symptom at a time.
-NIFTI_COL = "roi_path"           # Column containing patient neuroimaging files.
+NIFTI_COL = "Nifti_File_Path"           # Column containing patient neuroimaging files.
 Y_LABEL = None                          # Defaults to SYMPTOM_COLUMN. Example: "Memory Outcome"
 PATH_REPLACEMENTS = []                  # Example: [("/Volumes/HowExp/", "/Volumes/HowExp2/")]
 
@@ -65,20 +65,35 @@ PATH_REPLACEMENTS = []                  # Example: [("/Volumes/HowExp/", "/Volum
 # Comparator maps are the reference/prior maps every candidate is tested against.
 CONTROL_MAPS_DIR = "/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/results/optimzation/comparisons/control_maps"
 CANDIDATE_MAPS = {
-    "CNRSTotScore": '/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/results/optimzation/symptom_on_lhs/proper_regressions/CNRSTotScore-on-Nifti_File_Path/regression/contrast_tval_0.nii.gz',
-    "ScoreCol2B": '/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/results/optimzation/symptom_on_lhs/proper_regressions/ScoreCol2B-on-Nifti_File_Path/regression/contrast_tval_0.nii.gz',
-    "CNRS_Fibers": "/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/results/optimzation/symptom_on_lhs/standardized-perm1000-fibfilt/CNRSTotScore/regression_0/contrast_tval_0.nii.gz",
+    "Cognitive Map Optimal":       "/Volumes/OneTouch/01x_Dhand_RCPStrokes/results/prediction_by_schmahmann/fixed_map_transfer/allMaps_cognitive/final_model/optimized_map.nii.gz",
 }
+# COMPARATOR_MAPS = # MAPS_TO_PREDICT = [("Memory map", "/path/to/map.nii.gz")]
 COMPARATOR_MAPS = [
-    '/Users/cu135/Partners HealthCare Dropbox/Calvin Howard/studies/raynor_network_mapping/data/mikes_maps/emotion_regulation.nii',
-    '/Users/cu135/Partners HealthCare Dropbox/Calvin Howard/studies/raynor_network_mapping/data/nettekoven_maps/rois/resampled_cerebellum_roi_1-4_to_17-20_bilateral.nii.gz',
-    '/Users/cu135/Partners HealthCare Dropbox/Calvin Howard/studies/raynor_network_mapping/data/nettekoven_maps/rois/resampled_cerebellum_roi_5-7_to_21-23_bilateral.nii.gz',
-    '/Users/cu135/Partners HealthCare Dropbox/Calvin Howard/studies/raynor_network_mapping/data/nettekoven_maps/rois/resampled_cerebellum_roi_8-11_to_24-27_bilateral.nii.gz',
-    '/Users/cu135/Partners HealthCare Dropbox/Calvin Howard/studies/raynor_network_mapping/data/nettekoven_maps/rois/resampled_cerebellum_roi_12-16_to_28-32_bilateral.nii.gz'
+    ("Motor Map Optimal",           "/Volumes/OneTouch/01x_Dhand_RCPStrokes/results/prediction_by_schmahmann/fixed_map_transfer/allMaps_motor/final_model/optimized_map.nii.gz"),
+    ("Emotional Map Optimal",       "/Volumes/OneTouch/01x_Dhand_RCPStrokes/results/prediction_by_schmahmann/fixed_map_transfer/allMaps_emotional/final_model/optimized_map.nii.gz"),
+    ("Motor Map Finland",           "/Users/cu135/Partners HealthCare Dropbox/Calvin Howard/studies/raynor_network_mapping/data/finland_maps/LimbAtaxia_vs_NoLimbAtaxia_Baseline_tstat1.nii.gz"),
+    ("Cognitive Map Finland",       '/Users/cu135/Partners HealthCare Dropbox/Calvin Howard/studies/raynor_network_mapping/data/finland_maps/Total_Followup_MoCA_tstat1.nii.gz'),
+    ("Emotional Map Finland",       '/Users/cu135/Partners HealthCare Dropbox/Calvin Howard/studies/raynor_network_mapping/data/finland_maps/Total_Followup_GAD7_tstat1.nii.gz'),
+    ("Nettekoven Motor Maps",       '/Users/cu135/Partners HealthCare Dropbox/Calvin Howard/studies/raynor_network_mapping/data/nettekoven_maps/rois/resampled_cerebellum_roi_1-4_to_17-20_bilateral.nii.gz'),
+    ("Nettekoven Action Maps",      '/Users/cu135/Partners HealthCare Dropbox/Calvin Howard/studies/raynor_network_mapping/data/nettekoven_maps/rois/resampled_cerebellum_roi_5-7_to_21-23_bilateral.nii.gz'),
+    ("Nettekoven Demand Maps",      '/Users/cu135/Partners HealthCare Dropbox/Calvin Howard/studies/raynor_network_mapping/data/nettekoven_maps/rois/resampled_cerebellum_roi_8-11_to_24-27_bilateral.nii.gz'),
+    ("Nettekoven Sociolinguistic Maps", '/Users/cu135/Partners HealthCare Dropbox/Calvin Howard/studies/raynor_network_mapping/data/nettekoven_maps/rois/resampled_cerebellum_roi_12-16_to_28-32_bilateral.nii.gz'),
+    ("Motor Map Atrophy Cluster",   "/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/results/optimization/symptom_on_lhs/vlsm_regressions_clusters/cluster_regression_identity_standardized/Nifti_File_Path-on-cluster_motor-cluster_cognitive-cluster_emotional/regression/contrast_tval_FWE_0.nii.gz"),
+    ("Motor Map Network Cluster",   "/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/results/optimization/symptom_on_lhs/network_regressions_clusters/cluster_regression_identity_standardized/Nifti_File_Path-on-cluster_motor-cluster_cognitive-cluster_emotional/regression/contrast_tval_0.nii.gz"),
+    ("Motor Map Fiber Cluster",     "/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/results/optimization/symptom_on_lhs/fiber_regressions_clusters/cluster_regression_identity_standardized/Fiber_File_Path-on-cluster_motor-cluster_cognitive-cluster_emotional/regression/contrast_tval_0.nii.gz"),
+    
+    ("Cognitive Map Atrophy Cluster",   "/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/results/optimization/symptom_on_lhs/vlsm_regressions_clusters/cluster_regression_identity_standardized/Nifti_File_Path-on-cluster_motor-cluster_cognitive-cluster_emotional/regression/contrast_tval_FWE_1.nii.gz"),
+    ("Cognitive Map Network Cluster",   "/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/results/optimization/symptom_on_lhs/network_regressions_clusters/cluster_regression_identity_standardized/Nifti_File_Path-on-cluster_motor-cluster_cognitive-cluster_emotional/regression/contrast_tval_1.nii.gz"),
+    ("Cognitive Map Fiber Cluster",     "/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/results/optimization/symptom_on_lhs/fiber_regressions_clusters/cluster_regression_identity_standardized/Fiber_File_Path-on-cluster_motor-cluster_cognitive-cluster_emotional/regression/contrast_tval_1.nii.gz"),
+    
+    ("Emotional Map Atrophy Cluster",   "/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/results/optimization/symptom_on_lhs/vlsm_regressions_clusters/cluster_regression_identity_standardized/Nifti_File_Path-on-cluster_motor-cluster_cognitive-cluster_emotional/regression/contrast_tval_FWE_2.nii.gz"),
+    ("Emotional Map Network Cluster",   "/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/results/optimization/symptom_on_lhs/network_regressions_clusters/cluster_regression_identity_standardized/Nifti_File_Path-on-cluster_motor-cluster_cognitive-cluster_emotional/regression/contrast_tval_2.nii.gz"),
+    ("Emotional Map Fiber Cluster",     "/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/results/optimization/symptom_on_lhs/fiber_regressions_clusters/cluster_regression_identity_standardized/Fiber_File_Path-on-cluster_motor-cluster_cognitive-cluster_emotional/regression/contrast_tval_2.nii.gz"),
+    
 ]
 
 # Optional preprocessing.
-DROP_ROWS = [("focal_cerebellum", "equal", 0)]                          # Conditions for dropping rows. Example: [("group", "equal", "control"), ("age", "below", 18)]
+DROP_ROWS = []                          # Conditions for dropping rows. Example: [("group", "equal", "control"), ("age", "below", 18)]
 KEEP_ROWS = []                          # Conditions for keeping rows. Example: [("focal_cerebellum", 1)]
 COVARIATES_LIST = []                    # Loaded for compatibility with the CCM data API, but the ROI comparison does not use covariates.
 DATA_TRANSFORM_METHOD = "standardize"   # Options: 'standardize' | 'rank' | None

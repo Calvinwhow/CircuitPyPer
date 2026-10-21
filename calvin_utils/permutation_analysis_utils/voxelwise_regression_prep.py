@@ -243,17 +243,20 @@ class RegressionPrep:
         return z
 
     @staticmethod
-    def _rank_across_subjects(arr: np.ndarray, handle_ties: bool = True) -> np.ndarray:
+    def _rank_across_subjects(arr: np.ndarray, handle_ties: bool = True, chunk_columns: int = 4096) -> np.ndarray:
         """
         Efficient rank. If perfect tie handling is needed, use scipy.rankdata
         (slower). For maximum speed, use handle_ties=False--it is perfectly equivalent to the
         scipy.rankdata algorithm in the absence of ties. In presence of ties, it is approximate.
+        Tied ranks are computed in column chunks, which is exact and bounds scipy's float64/int64 temporaries.
         """
         subj = arr.shape[0]
         flat = arr.reshape(subj, -1)
 
         if handle_ties:
-            ranks = rankdata(flat, axis=0, method="average").astype(np.float32)
+            ranks = np.empty(flat.shape, dtype=np.float32)
+            for start in range(0, flat.shape[1], chunk_columns):
+                ranks[:, start:start + chunk_columns] = rankdata(flat[:, start:start + chunk_columns], axis=0, method="average")
 
         else:
             idx = np.argsort(flat, axis=0, kind="mergesort")

@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 
 from calvin_utils.file_utils.import_functions import GiiNiiFileImport
-from calvin_utils.neuroimaging_utils.ccm_utils.optimization.fold_maps import build_fold_maps
+from calvin_utils.neuroimaging_utils.ccm_utils.optimization.pipeline.pre_processing import build_basis_maps
 
 
 def load_native_patient_vectors(subject_files, mask_path, output_ftype, *, cache=None):
@@ -82,9 +82,9 @@ def cross_validated_map_damage(patient_values, outcomes, *, cv="loocv"):
         train_rows = np.ones(n, dtype=bool)
         if cv != "leave_all_in":
             train_rows[held_out] = False
-        maps, _ = build_fold_maps(
+        maps, _ = build_basis_maps(
             X, {"outcome": y}, train_rows,
-            data_transform_method="rank", validate_X=False,
+            transform="rank",
         )
         fitted_map = maps["outcome"]
         map_norm = np.linalg.norm(fitted_map)

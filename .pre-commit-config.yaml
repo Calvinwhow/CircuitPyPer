@@ -5,6 +5,7 @@ repos:
         name: Strip Jupyter notebook outputs
         entry: python scripts/strip_notebook_outputs.py
         language: system
+        stages: [pre-commit]
         types: [jupyter]
         pass_filenames: true
       - id: pytest-before-push

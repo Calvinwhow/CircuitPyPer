@@ -62,7 +62,7 @@ class FiberIO:
         self.threshold = threshold
         self._reference_fibers = None
         self._fiber_mask = None
-        self._density_projector_cache = None
+        self._density_projector_cache = {}
         self._mirror_neighbor_cache = {}
 
     def validate_for_output(self):
@@ -513,10 +513,19 @@ class FiberIO:
             return name[:-14]
         return os.path.splitext(name)[0]
 
-    def _get_density_projector(self):
-        """Build and cache the fiber-to-masked-MNI projection used by CV."""
-        if self._density_projector_cache is not None:
-            return self._density_projector_cache
+    def _get_density_projector(self, *, symmetric=True, unique_per_fiber=False):
+        """Build and cache a fiber-to-masked-MNI density projection.
+
+        ``symmetric=True`` preserves the established CV evaluation behavior.
+        Export-reconstruction workflows can request the ordinary atlas-only
+        transform with ``symmetric=False`` when source metadata says that no
+        mirrored streamlines were written.
+        """
+        symmetric = bool(symmetric)
+        unique_per_fiber = bool(unique_per_fiber)
+        cache_key = (symmetric, unique_per_fiber)
+        if cache_key in self._density_projector_cache:
+            return self._density_projector_cache[cache_key]
         if self.mask_path is None:
             raise ValueError("Fiber evaluation requires a canonical .npz fiber atlas.")
 
@@ -532,9 +541,13 @@ class FiberIO:
         voxel_chunks = []
         fiber_chunks = []
         for fiber_idx, fiber in enumerate(tqdm(fibers, desc="Building fiber density projector", unit="fiber")):
-            # Preserve the established CV behavior: evaluate the atlas and its
-            # left-right mirror without materializing either as a file.
-            for xyz in (fiber, self._mirror_fiber_xyz(fiber)):
+            # Preserve the established CV behavior by default, while allowing
+            # exact reconstruction of non-symmetric historical exports.
+            geometries = (
+                (fiber, self._mirror_fiber_xyz(fiber))
+                if symmetric else (fiber,)
+            )
+            for xyz in geometries:
                 ijk = self._world_to_ijk_for_density(xyz, inv_affine)
                 in_bounds = (
                     (ijk[:, 0] >= 0) & (ijk[:, 0] < mask_shape[0])
@@ -549,16 +562,18 @@ class FiberIO:
                 mask_idx = mask_idx[mask_idx >= 0]
                 if mask_idx.shape[0] == 0:
                     continue
+                if unique_per_fiber:
+                    mask_idx = np.unique(mask_idx)
                 voxel_chunks.append(mask_idx.astype(np.int64, copy=False))
                 fiber_chunks.append(np.full(mask_idx.shape[0], fiber_idx, dtype=np.int64))
 
-        self._density_projector_cache = {
+        self._density_projector_cache[cache_key] = {
             "n_fibers": len(fibers),
             "n_mask_voxels": int(mask_data.sum()),
             "voxel_indices": np.concatenate(voxel_chunks) if voxel_chunks else np.empty(0, dtype=np.int64),
             "fiber_indices": np.concatenate(fiber_chunks) if fiber_chunks else np.empty(0, dtype=np.int64),
         }
-        return self._density_projector_cache
+        return self._density_projector_cache[cache_key]
 
     @staticmethod
     def _world_to_ijk_for_density(xyz, inv_affine):

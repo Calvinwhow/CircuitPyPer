@@ -1,14 +1,8 @@
 import numpy as np
 import pytest
 
-from calvin_utils.neuroimaging_utils.ccm_utils.optimization.history import (
-    OptimizationHistory,
-)
-from calvin_utils.neuroimaging_utils.ccm_utils.optimization.visualization import (
-    export_optimization_map_stack,
-    optimization_stack_path,
-    render_gif,
-)
+from calvin_utils.neuroimaging_utils.ccm_utils.optimization.output.history import OptimizationHistory
+from calvin_utils.neuroimaging_utils.ccm_utils.optimization.output.visualization import export_optimization_map_stack, optimization_stack_path, render_gif
 
 
 def _history(*, output_type, mask_path, maps=None):

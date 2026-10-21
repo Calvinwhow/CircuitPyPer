@@ -30,3 +30,19 @@ def schmahmann_cohort() -> tuple[Path, pd.DataFrame]:
     for column in ("Nifti_File_Path", "fiber_path_guerrera"):
         cohort[column] = cohort[column].map(lambda relative: root / relative)
     return root, cohort
+
+
+@pytest.fixture
+def basis_shards(tmp_path):
+    """Write {name: voxel vector} maps as one float32 (voxels, bases) shard per cohort and return the directory."""
+    import json
+    import numpy as np
+
+    def write(maps, cohort="synthetic", pathology="Synthetic", directory=tmp_path / "basis_maps"):
+        directory.mkdir(parents=True, exist_ok=True)
+        np.save(directory / f"shard_{cohort}.npy", np.stack([np.asarray(values, dtype=np.float32) for values in maps.values()], axis=1))
+        sidecar = {"cohort": cohort, "pathology": pathology, "input_path": "synthetic.csv", "subject_column": "subject", "regressand_list": list(maps), "voxelwise_vars": ["nifti"], "mask_path": "mask.nii.gz", "transform": "rank", "patient_ids": [], "bases": [{"name": name, "regressand": name, "voxelwise_var": "nifti", "n": 40} for name in maps]}
+        (directory / f"shard_{cohort}.json").write_text(json.dumps(sidecar))
+        return directory
+
+    return write

@@ -81,6 +81,7 @@ def _notebook_paths(paths: Iterable[str]) -> list[Path]:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--stdin", action="store_true", help="Filter one notebook from standard input to standard output.")
     parser.add_argument(
         "--check",
         action="store_true",
@@ -92,6 +93,18 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.stdin:
+        raw_document = sys.stdin.read()
+        if not raw_document.strip():
+            sys.stdout.write(raw_document)
+            return 0
+        try:
+            document = json.loads(raw_document)
+        except json.JSONDecodeError as error:
+            print(f"Notebook cleanup failed: {error}", file=sys.stderr)
+            return 2
+        sys.stdout.write(json.dumps(document, ensure_ascii=False, indent=1) + "\n" if clean_notebook(document) else raw_document)
+        return 0
     changed_paths = []
     try:
         for path in _notebook_paths(args.paths):

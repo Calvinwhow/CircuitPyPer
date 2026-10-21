@@ -1,0 +1,5 @@
+{
+  "mask_path": "/Users/cu135/Software_Local/calvin_utils_project/circuit_pyper/resources/MNI152_T1_2mm_brain_mask.nii",
+  "transform": "rank",
+  "cohorts": {}
+}

@@ -24,6 +24,7 @@ import math
 import os
 import re
 import sys
+import threading
 import webbrowser
 from collections.abc import Mapping
 from pathlib import Path
@@ -597,6 +598,24 @@ def _quantitative_overlay_count(scene):
     )
 
 
+def _render_png(session, **kwargs):
+    """Render safely from this command-line process on every platform.
+
+    ``RenderSession.render`` normally owns VTK on a dedicated worker because
+    the web application serves requests from arbitrary threads.  Cocoa has the
+    opposite requirement: its off-screen ``NSWindow`` must be created on the
+    process main thread.  The orchestrator is a synchronous CLI, so on macOS
+    its main thread is already the one stable render thread we need.
+    """
+    on_macos_main = (
+        sys.platform == "darwin"
+        and threading.current_thread() is threading.main_thread()
+    )
+    if on_macos_main:
+        return session._render(**kwargs)
+    return session.render(**kwargs)
+
+
 def render_figure(source, output_dir, figure, session=None):
     """Render one scene, returning gallery cards and the reusable session."""
     name = _slug(figure.get("name") or "figure")
@@ -631,7 +650,8 @@ def render_figure(source, output_dir, figure, session=None):
     try:
         for view in views:
             session.set_spec(_scene_for_view(scene, view))
-            png = session.render(
+            png = _render_png(
+                session,
                 size=size,
                 quality="export",
                 scalar_bar=scalar_bars,

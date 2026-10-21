@@ -12,7 +12,8 @@ import matplotlib.cm as cm
 
 from calvin_utils.neuroimaging_utils.ccm_utils.npy_utils import DataLoader
 from calvin_utils.neuroimaging_utils.ccm_utils.stat_utils import CorrelationCalculator
-from calvin_utils.neuroimaging_utils.ccm_utils.optimization.convergent_map_optimizer import NiftiOptimizer
+from calvin_utils.neuroimaging_utils.ccm_utils.optimization.run_optimization import RunOptimization
+from calvin_utils.neuroimaging_utils.ccm_utils.optimization.pipeline.pre_processing import datasets_from_loader
 
 class ConvergentMapGenerator:
     """
@@ -187,9 +188,8 @@ class ConvergentMapGenerator:
         local_corr_map_dict = self.corr_map_dict
         if override_corr_map_dict is not None:
             local_corr_map_dict = override_corr_map_dict
-        optimizer = NiftiOptimizer(local_corr_map_dict, self.data_loader, load_in_time=True)
-        optimal_average_r_map = optimizer.optimize()
-        return optimal_average_r_map
+        optimizer = RunOptimization(local_corr_map_dict, datasets_from_loader(self.data_loader))
+        return optimizer.run()["symptom_map"]
 
     def generate_agreement_map(self, override_corr_map_dict=None):
         '''Generates mask of regions that share signs among all maps in set of [-1, 0, 1]'''

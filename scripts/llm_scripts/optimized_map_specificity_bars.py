@@ -25,7 +25,7 @@ CIRCUIT_PYPER_DIR = SCRIPTS_DIR.parent
 for p in (str(CIRCUIT_PYPER_DIR.parent), str(CIRCUIT_PYPER_DIR)):
     if p not in sys.path: sys.path.insert(0, p)
 from calvin_utils.neuroimaging_utils.ccm_utils.symptom_specificity import SpecificityAnalyzer
-from calvin_utils.neuroimaging_utils.ccm_utils.optimization.oof_pipeline import load_patient_images
+from calvin_utils.neuroimaging_utils.ccm_utils.optimization.pipeline.pre_processing import load_patient_images
 from calvin_utils.file_utils.import_functions import GiiNiiFileImport
 
 # =============================================================================

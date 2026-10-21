@@ -446,9 +446,9 @@ class VoxelwiseRegression:
 
     @classmethod
     def fit_linear_tmap(cls, X, Y, contrast=None, weights=None):
-        """Fit an in-memory linear model with the class's standard t-map code."""
-        X = np.asarray(X, dtype=float)
-        Y = np.asarray(Y, dtype=float)
+        """Fit an in-memory linear model with the class's standard t-map code, in float32."""
+        Y = np.asarray(Y, dtype=np.float32)
+        X = np.asarray(X, dtype=Y.dtype)
         if X.ndim == 1:
             X = X[:, None]
         if Y.ndim == 1:
@@ -459,14 +459,30 @@ class VoxelwiseRegression:
         model.n_obs, model.n_preds = X.shape
         model.contrast_matrix = np.asarray(
             np.ones((1, model.n_preds)) if contrast is None else contrast,
-            dtype=float,
+            dtype=Y.dtype,
         )
-        W = np.ones(model.n_obs, dtype=float) if weights is None else np.asarray(weights, dtype=float)
+        W = np.ones(model.n_obs, dtype=Y.dtype) if weights is None else np.asarray(weights, dtype=Y.dtype)
         if W.shape != (model.n_obs,) or np.any(W <= 0) or not np.isfinite(W).all():
             raise ValueError("weights must contain one finite positive value per row.")
         W = W / W.sum()
         _, t_values, _, _ = model._linear_regression(X, Y, W)
         return t_values
+
+    @classmethod
+    def from_arrays(cls, design_tensor, outcome_tensor, contrast_matrix, weight_vector, regression_type="linear"):
+        """Build a model from RegressionPrep's in-memory arrays; nothing is read from or written to disk, and weights and contrasts take the outcome's dtype."""
+        model = cls.__new__(cls)
+        model.json_path, model.out_dir, model.regression_type, model.n_permutations = None, None, regression_type, 0
+        model.design_tensor = np.asarray(design_tensor)
+        model.outcome_tensor = np.asarray(outcome_tensor)
+        model.contrast_matrix = np.asarray(contrast_matrix, dtype=model.outcome_tensor.dtype)
+        model.exchangeability_blocks = None
+        model.weight_vector = np.asarray(weight_vector, dtype=model.outcome_tensor.dtype)
+        model.n_obs, model.n_preds, model.dim3_X, model.dim3_Y, model.n_contrasts, model.n_voxels, model.n_outputs = model.set_variables()
+        model._validate_regression_type()
+        model.XTX_inv = np.zeros((model.n_preds, model.n_preds, model.n_voxels))
+        model.X_inv = None
+        return model
     
     def align_w(self, w, arr):
         if arr.shape[0] != w.shape[0]:

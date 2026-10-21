@@ -15,9 +15,7 @@ PROJECT_DIR = Path(__file__).resolve().parents[1]
 if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
-from calvin_utils.neuroimaging_utils.ccm_utils.optimization.visualization import (
-    render_optimization_history,
-)
+from calvin_utils.neuroimaging_utils.ccm_utils.optimization.output.visualization import render_optimization_history
 
 
 def main():

@@ -44,6 +44,7 @@ setup(
     install_requires=parse_requirements("requirements.txt"),
     extras_require={
         "ml": ["imbalanced-learn", "pysr", "scikit-optimize"],
+        "sdp": ["cvxpy>=1.6,<1.7"],
         "tract": ["vedo"],
         "legacy": ["nltools", "pathlib2"],
     },

@@ -1,17 +1,5 @@
-"""Convergent-map optimization utilities."""
+"""Symptom-basis optimization."""
 
-from .history import OptimizationHistory
-from .visualization import (
-    export_optimization_map_stack,
-    optimization_stack_path,
-    render_gif,
-    render_optimization_history,
-)
+from .run_optimization import RunOptimization
 
-__all__ = [
-    "OptimizationHistory",
-    "export_optimization_map_stack",
-    "optimization_stack_path",
-    "render_gif",
-    "render_optimization_history",
-]
+__all__ = ["RunOptimization"]
