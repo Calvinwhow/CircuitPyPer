@@ -8,7 +8,7 @@ import pandas as pd
 import pytest
 
 from calvin_utils.neuroimaging_utils.ccm_utils.optimization.basis_maps import build
-from calvin_utils.neuroimaging_utils.ccm_utils.optimization.pipeline import basis_damage
+from calvin_utils.neuroimaging_utils.ccm_utils.optimization.pipeline import basis_damage, pre_processing
 from calvin_utils.permutation_analysis_utils.voxelwise_regression import VoxelwiseRegression
 from calvin_utils.permutation_analysis_utils.voxelwise_regression_prep import RegressionPrep
 
@@ -48,19 +48,19 @@ def test_builder_writes_every_symptom_on_every_image_as_one_loadable_shard(tmp_p
     shard = library["shards"][0]
     assert shard["values"].dtype == np.float32 and shard["values"].shape == (18, 6)
     assert library["names"] == tuple(f"toy:{symptom}-on-{image}" for image in ("lesion", "network") for symptom in ("gait", "speech", "ataxia"))
-    assert library["sample_sizes"]["toy:gait-on-lesion"] == 15 and library["sample_sizes"]["toy:speech-on-network"] == 14
+    assert set(library["sample_sizes"].values()) == {14}
     sidecar = shard["sidecar"]
     assert sidecar["voxelwise_vars"] == ["lesion", "network"] and sidecar["drop_nans"] is True and sidecar["covariates_list"] == []
-    assert sidecar["pathology"] == "Stroke" and "sub-05" not in sidecar["patient_ids"] and len(sidecar["patient_ids"]) == 15
+    assert sidecar["pathology"] == "Stroke" and "sub-05" not in sidecar["patient_ids"] and "sub-03" not in sidecar["patient_ids"] and len(sidecar["patient_ids"]) == 14
 
 
-def test_each_symptom_map_equals_its_own_single_output_regression(tmp_path):
+def test_each_symptom_map_equals_its_single_output_regression_on_the_complete_rows(tmp_path):
     registry = toy_registry(tmp_path)
     entry = build.recipe(registry, "toy")
     palm, table = build.load_table(entry["input_path"], entry["regressand_list"], drop_rows=entry["drop_rows"])
     for image in entry["voxelwise_vars"]:
         maps = build.fit_bases(palm, table, image, entry["regressand_list"], registry["mask_path"], registry["transform"])
-        assert len(maps["gait"][1]) == len(maps["ataxia"][1]) == 15 and len(maps["speech"][1]) == 14
+        assert all(len(rows) == 14 for _, rows in maps.values())
         for symptom, (t_map, rows) in maps.items():
             reference = single_output_t_map(tmp_path, registry, table, symptom, image, rows)
             np.testing.assert_allclose(t_map, reference, rtol=2e-4, atol=1e-5)
@@ -123,3 +123,66 @@ def test_registry_entries_are_checked_for_missing_unknown_and_conflated_keys(tmp
 def test_repository_registry_is_valid():
     registry = build.read_registry()
     assert json.loads(build.REGISTRY_PATH.read_text()) == registry
+
+
+def toy_fitting_dataset(tmp_path, registry):
+    table = pd.read_csv(tmp_path / "table.csv")
+    table = table[table["selected"] != 0].reset_index(drop=True)
+    patients = pre_processing.load_patient_images(table, "lesion", registry["mask_path"])
+    return {"X": patients, "y": table["gait"].to_numpy(), "ids": table["subject"].to_numpy()}
+
+
+def test_a_cohort_refuses_a_symptom_its_complete_rows_leave_constant(tmp_path):
+    registry = toy_registry(tmp_path)
+    table = pd.read_csv(tmp_path / "table.csv")
+    table["rare"] = 0.0
+    table.to_csv(tmp_path / "table.csv", index=False)
+    entry = registry["cohorts"]["toy"]
+    registry = {**registry, "cohorts": {"toy": {**entry, "regressand_list": [*entry["regressand_list"], "rare"]}}}
+    with pytest.raises(ValueError, match="constant symptoms \\['rare'\\]"):
+        build.build_cohort(registry, "toy", tmp_path)
+
+
+def test_test_cohorts_cannot_have_built_the_bases(tmp_path):
+    from calvin_utils.neuroimaging_utils.ccm_utils.optimization.run_optimization import RunOptimization
+
+    registry = toy_registry(tmp_path)
+    directory = tmp_path / "basis_maps"
+    build.main(registry, directory)
+    fitting = toy_fitting_dataset(tmp_path, registry)
+    with pytest.raises(ValueError, match="built selected basis cohorts"):
+        RunOptimization({"elsewhere": {**fitting, "ids": np.asarray([f"elsewhere-{index}" for index in range(len(fitting["y"]))])}}, basis_dir=directory, methods=("elastic_net_ols",)).run(test_datasets={"toy": fitting})
+
+
+def test_fiber_columns_are_regressed_on_the_atlas_and_rasterized_like_tract_density(tmp_path):
+    from calvin_utils.neuroimaging_utils.tract_utils.tract_density import TractDensity
+
+    rng = np.random.default_rng(6)
+    mask = np.ones((6, 6, 6), dtype=np.float32)
+    mask[0] = 0
+    nib.save(nib.Nifti1Image(mask, np.eye(4)), tmp_path / "mask.nii.gz")
+    fibers = np.empty(25, dtype=object)
+    for index in range(25):
+        start = rng.uniform(0, 5, size=3)
+        fibers[index] = np.clip(start + np.outer(np.linspace(0, 4, 9), rng.normal(size=3)), -1, 6).astype(np.float32)
+    np.savez(tmp_path / "atlas.npz", fibers=fibers)
+    rows = []
+    for index in range(16):
+        values = rng.normal(size=25).astype(np.float32)
+        np.save(tmp_path / f"sub-{index:02d}.fib.npy", values)
+        rows.append({"subject": f"sub-{index:02d}", "fibers": str(tmp_path / f"sub-{index:02d}.fib.npy"), "gait": float(values[:5].mean() + rng.normal())})
+    pd.DataFrame(rows).to_csv(tmp_path / "table.csv", index=False)
+    entry = {"pathology": "Stroke", "input_path": str(tmp_path / "table.csv"), "subject_column": "subject", "regressand_list": ["gait"], "voxelwise_vars": ["fibers"]}
+    registry = {"mask_path": str(tmp_path / "mask.nii.gz"), "fiber_atlas": str(tmp_path / "atlas.npz"), "transform": "rank", "cohorts": {"toy": entry}}
+    build.main(registry, tmp_path / "basis_maps")
+    column = basis_damage.load_library(directory=tmp_path / "basis_maps")["shards"][0]["values"][:, 0]
+
+    palm, table = build.load_table(entry["input_path"], entry["regressand_list"])
+    t_map = build.fit_bases(palm, table, "fibers", ["gait"], registry["fiber_atlas"], "rank")["gait"][0]
+    density = TractDensity(fiber_path=tmp_path / "atlas.npz", reference_nifti_path=tmp_path / "mask.nii.gz", out_path=tmp_path / "density.nii.gz", values=t_map, fiberset="both", threshold=None, symmetric=False, show_progress=False).run()
+    expected = np.asarray(nib.load(tmp_path / "density.nii.gz").dataobj).reshape(-1)[mask.reshape(-1) > 0]
+    assert column.shape == (int(mask.sum()),) and np.any(column)
+    np.testing.assert_allclose(column, expected, rtol=1e-5, atol=1e-6)
+    registry.pop("fiber_atlas")
+    with pytest.raises(ValueError, match="fiber_atlas"):
+        build.main(registry, tmp_path / "missing_atlas")

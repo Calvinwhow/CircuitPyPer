@@ -378,7 +378,10 @@ class FiberFormatConverter:
         lengths = np.asarray([len(fiber) for fiber in streamlines], dtype=np.int64)
         values = fields.get("vals")
         if values is not None:
-            values = np.asarray(values, dtype=np.float32).reshape(-1)
+            # A fibre-filtering result keeps one vals vector per side (1 x 2,
+            # like its fibcell); joined in the same order as fibcell's fibres.
+            values = np.asarray(values, dtype=object)
+            values = np.concatenate([np.asarray(v, dtype=np.float32).reshape(-1) for v in values.flat]) if values.dtype == object and values.size and isinstance(values.flat[0], np.ndarray) else np.asarray(values, dtype=np.float32).reshape(-1)
             if len(values) != len(streamlines):
                 raise ValueError(
                     f"Lead-DBS MAT has {len(values)} vals for {len(streamlines)} fibers."

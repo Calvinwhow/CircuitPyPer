@@ -102,6 +102,46 @@ def test_functional_connectivity_processes_cohort_chunk_first(tmp_path):
     np.testing.assert_allclose(profiles, weights @ connectome)
 
 
+def test_functional_connectivity_defaults_to_sibling_conn_directory(tmp_path):
+    affine = np.eye(4)
+    input_dir = tmp_path / "sub-001" / "ses-01" / "roi"
+    input_dir.mkdir(parents=True)
+    lesion_path = input_dir / "sub-001_ses-01_mask.nii.gz"
+    mask_path = tmp_path / "mask.nii.gz"
+    chunk_index_path = tmp_path / "chunk_idx.nii.gz"
+    connectome_dir = tmp_path / "AvgR"
+    connectome_dir.mkdir()
+
+    nib.save(
+        nib.Nifti1Image(np.ones((2, 1, 1), dtype=np.float32), affine),
+        lesion_path,
+    )
+    nib.save(
+        nib.Nifti1Image(np.ones((2, 1, 1), dtype=np.uint8), affine),
+        mask_path,
+    )
+    nib.save(
+        nib.Nifti1Image(np.ones((2, 1, 1), dtype=np.int16), affine),
+        chunk_index_path,
+    )
+    np.save(connectome_dir / "1_AvgR.npy", np.eye(2, dtype=np.float32))
+
+    mapper = FunctionalConnectivity(
+        connectome_dir=connectome_dir,
+        mask_path=mask_path,
+        chunk_index_path=chunk_index_path,
+    )
+    saved_paths = mapper.save_profiles_from_niftis([lesion_path])
+
+    expected = (
+        input_dir.parent
+        / "conn"
+        / "sub-001_ses-01_mask_AvgR.nii.gz"
+    )
+    assert saved_paths == [expected]
+    assert expected.is_file()
+
+
 def test_functional_connectivity_does_not_open_inactive_chunks(tmp_path):
     affine = np.eye(4)
     mask_path = tmp_path / "mask.nii.gz"
@@ -208,3 +248,24 @@ def test_inverted_connectivity_matches_rowwise_cosine_and_pearson(tmp_path):
         dtype=np.float32,
     )
     np.testing.assert_allclose(pearson, expected_pearson, rtol=1e-6, atol=1e-6)
+
+
+def test_spatial_correlation_uses_connectome_mask(tmp_path):
+    affine = np.eye(4)
+    mask_path = tmp_path / "mask.nii.gz"
+    first_path = tmp_path / "first.nii.gz"
+    second_path = tmp_path / "second.nii.gz"
+    mask = np.array([1, 1, 1, 0], dtype=np.uint8).reshape(2, 2, 1)
+    first = np.array([1, 2, 3, 1000], dtype=np.float32).reshape(2, 2, 1)
+    second = np.array([2, 4, 6, -1000], dtype=np.float32).reshape(2, 2, 1)
+    nib.save(nib.Nifti1Image(mask, affine), mask_path)
+    nib.save(nib.Nifti1Image(first, affine), first_path)
+    nib.save(nib.Nifti1Image(second, affine), second_path)
+
+    mapper = FunctionalConnectivity(
+        connectome_dir=tmp_path,
+        mask_path=mask_path,
+        chunk_index_path=mask_path,
+    )
+
+    assert np.isclose(mapper.spatial_correlation(first_path, second_path), 1.0)

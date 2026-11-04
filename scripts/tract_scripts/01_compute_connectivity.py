@@ -1,63 +1,45 @@
 #!/usr/bin/env python3
-"""Generate configured NIfTI-to-fiber connectivity profiles."""
+"""Generate fiber-connectivity profiles from the lesion paths in a CSV."""
 
 import sys
 from pathlib import Path
+import pandas as pd
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
-if str(PROJECT_DIR) not in sys.path:
-    sys.path.insert(0, str(PROJECT_DIR))
+if str(PROJECT_DIR) not in sys.path: sys.path.insert(0, str(PROJECT_DIR))
 
-from calvin_utils.neuroimaging_utils.tract_utils.compute_connectivity import (
-    FiberConnectivity,
-)
+from calvin_utils.neuroimaging_utils.tract_utils.compute_connectivity import FiberConnectivity
+from calvin_utils.resource_paths import lazy_resource_path
 
 
 # =============================================================================
 # CONFIG
 # =============================================================================
 
-FIBER_ATLAS_PATH = ""
-REFERENCE_NIFTI_PATH = ""
-NIFTI_PATHS = []
-OUT_DIR = ""
+CSV_PATH = Path("/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/optimized_master_list_filtered.csv")
+NIFTI_COLUMN = "Nifti_File_Path"
+OUTPUT_COLUMN = "zarr5GB"
 
-MODE = "binary"                # 'binary', 'max', 'mean', or 'sum'
-BINARIZE = True
-THRESHOLD = 0
+FIBER_ATLAS_PATH = Path("/Volumes/OneTouch/resources/zarr5GB.npz")  # .npz fiber atlas from 00_seed_atlas.py
+REFERENCE_NIFTI_PATH = lazy_resource_path("MNI152_T1_2mm_brain_mask_dil.nii.gz")  # defines the voxel grid
+MODE = "max"  # 'binary', 'max', 'mean', or 'sum'
 STEP_SIZE_VOX = 0.5
 FIBER_MASK = None
 
-OUTPUT_SUFFIX = "_fiber_connectivity"
-SAVE_MATRIX = False
-MATRIX_NAME = "fiber_connectivity_matrix.npy"
+BINARIZE = False
+THRESHOLD = 0       # Only applied if Binarize is True
+OUTPUT_SUFFIX = ""
 
 
 def main():
-    if not FIBER_ATLAS_PATH or not REFERENCE_NIFTI_PATH:
-        raise ValueError(
-            "Set FIBER_ATLAS_PATH and REFERENCE_NIFTI_PATH in CONFIG."
-        )
-    if not NIFTI_PATHS or not OUT_DIR:
-        raise ValueError("Set NIFTI_PATHS and OUT_DIR in CONFIG.")
-
-    mapper = FiberConnectivity(fiber_indexer=None, mode=MODE)
-    mapper.generate_and_save_from_paths(
-        fiber_file_path=FIBER_ATLAS_PATH,
-        reference_nifti_path=REFERENCE_NIFTI_PATH,
-        nifti_paths=NIFTI_PATHS,
-        out_dir=Path(OUT_DIR).expanduser(),
-        mode=MODE,
-        binarize=BINARIZE,
-        threshold=THRESHOLD,
-        suffix=OUTPUT_SUFFIX,
-        step_size_vox=STEP_SIZE_VOX,
-        fiber_mask=FIBER_MASK,
-        save_matrix=SAVE_MATRIX,
-        matrix_name=MATRIX_NAME,
-    )
-    print(f"Saved fiber-connectivity profiles to: {OUT_DIR}")
+    df = pd.read_csv(CSV_PATH)
+    valid_rows = df[NIFTI_COLUMN].notna() & df[NIFTI_COLUMN].astype(str).str.strip().ne("")
+    nifti_paths = df.loc[valid_rows, NIFTI_COLUMN].map(Path).tolist()
+    mapper = FiberConnectivity.from_atlas(FIBER_ATLAS_PATH, REFERENCE_NIFTI_PATH, mode=MODE, step_size_vox=STEP_SIZE_VOX, fiber_mask=FIBER_MASK)
+    saved_paths = mapper.save_profiles_from_niftis(nifti_paths, binarize=BINARIZE, threshold=THRESHOLD, suffix=OUTPUT_SUFFIX)
+    df.loc[valid_rows, OUTPUT_COLUMN] = [str(path) for path in saved_paths]
+    df.to_csv(CSV_PATH, index=False)
+    print(f"Saved {len(saved_paths)} fiber-connectivity profiles and updated {CSV_PATH}")
 
 
-if __name__ == "__main__":
-    main()
+if __name__ == "__main__": main()

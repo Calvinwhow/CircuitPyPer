@@ -134,7 +134,7 @@ def export_optimization_map_stack(history, output_path, *, output_type=None, mas
             raise ValueError("A fiber optimization stack must end in .npy.")
         fiber_mask = exporter.io.fiber_mask
         n_fibers = len(exporter.io.reference_fibers)
-        n_features = history.maps.shape[1]
+        n_features = history.n_features
         if n_features not in {int(fiber_mask.sum()), n_fibers}:
             raise ValueError("Optimization map length does not match the masked or full " f"fiber atlas: {n_features} versus {int(fiber_mask.sum())} " f"masked / {n_fibers} full fibers.")
         full_stack = np.lib.format.open_memmap(output_path, mode="w+", dtype=np.float32, shape=(n_fibers, n_snapshots))
@@ -165,9 +165,9 @@ def render_gif(history, output_path, *, fps=5, max_frames=60, view="auto", outpu
     spatial = view == "spatial"
     circuit = view == "circuit"
     if circuit and output_type != "fiber":
-        raise ValueError("Circuit Viewer fiber rendering requires a fiber history.")
+        raise ValueError("General Neuroimage Viewer fiber rendering requires a fiber history.")
     if circuit and CircuitFiberFrames is None:
-        raise ImportError("Circuit rendering requires Circuit Viewer and PyVista.")
+        raise ImportError("Circuit rendering requires General Neuroimage Viewer and PyVista.")
     exporter = None
     if spatial or circuit:
         exporter = NeuroimageFileOutporter(output_ftype=output_type, mask_path=mask_path)
@@ -224,11 +224,11 @@ def render_gif(history, output_path, *, fps=5, max_frames=60, view="auto", outpu
     weight_ax.set_ylim(-limit, limit)
     weight_ax.axhline(0, color="0.3", linewidth=0.8)
 
-    steps = np.arange(1, n_iterations + 1)
+    steps = history.steps
     loss_ax.plot(steps, history.losses, color="0.75", linewidth=1.3)
     (completed,) = loss_ax.plot([], [], color="#247ba0", linewidth=2)
     (marker,) = loss_ax.plot([], [], "o", color="#e76f51")
-    loss_ax.set_xlim(1, max(n_iterations, 2))
+    loss_ax.set_xlim(steps[0], max(steps[-1], steps[0] + 1))
     lower, upper = float(np.min(history.losses)), float(np.max(history.losses))
     margin = max((upper - lower) * 0.1, 0.02)
     loss_ax.set_ylim(lower - margin, upper + margin)
@@ -247,14 +247,14 @@ def render_gif(history, output_path, *, fps=5, max_frames=60, view="auto", outpu
                     bar.set_height(weight)
                     bar.set_color("#247ba0" if weight >= 0 else "#e76f51")
                 completed.set_data(steps[: index + 1], history.losses[: index + 1])
-                marker.set_data([index + 1], [history.losses[index]])
+                marker.set_data([steps[index]], [history.losses[index]])
                 if spatial:
                     volume = _spatial_image(history.map_at(index), exporter)
                     for image, values in zip(images, _slices(volume, cuts)):
                         image.set_data(values)
                 elif circuit:
                     circuit_image.set_data(circuit_renderer.render(history.map_at(index), index))
-                fig.suptitle(f"Iteration {index + 1} / {n_iterations}  |  " f"{history.objective_label}: {history.losses[index]:.3f}")
+                fig.suptitle(f"Iteration {steps[index]} / {steps[-1]}  |  {history.objective_label}: {history.losses[index]:.3f}")
                 writer.grab_frame()
     finally:
         if circuit_renderer is not None:

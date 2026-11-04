@@ -9,13 +9,11 @@ try:
     from calvin_utils.neuroimaging_utils.ccm_utils.npy_utils import DataLoader
     from calvin_utils.permutation_analysis_utils.voxelwise_regression import VoxelwiseRegression
     from calvin_utils.permutation_analysis_utils.voxelwise_regression_prep import RegressionPrep
-    from calvin_utils.permutation_analysis_utils.map_damage_cv import load_native_patient_vectors
 except ModuleNotFoundError:
     DataLoader = None
     RegressionPrep = None
     GiiNiiFileImport = None
     VoxelwiseRegression = None
-    load_native_patient_vectors = None
 
 FEATURE_DTYPE = np.float32  # every array with a voxel or fiber axis; patient-by-basis arrays stay float64
 
@@ -68,8 +66,9 @@ def initial_weights(n_maps, mode="unweighted", *, sample_sizes=None, names=None,
 
 def load_patient_images(table, image_column, mask_path, output_type=None):
     """Load one patient-by-feature matrix in the maps' native space."""
-    if GiiNiiFileImport is None or load_native_patient_vectors is None:
+    if GiiNiiFileImport is None:
         raise ModuleNotFoundError("Patient-image loading requires the neuroimaging I/O dependencies.")
+    from calvin_utils.permutation_analysis_utils.map_damage_cv import load_native_patient_vectors
     paths = table[image_column].tolist()
     detected = GiiNiiFileImport(import_path=None, mask_path=mask_path)._import_type_switch(paths)
     if detected == "npy":
@@ -177,8 +176,11 @@ def target_datasets(cohorts, target):
     return {name: {"X": cohort["X"], "y": cohort["outcomes"][target], "ids": cohort["ids"]} for name, cohort in cohorts.items()}
 
 
-def main(datasets):
-    """Validate fitting datasets before basis scoring.
+def main(datasets, test_datasets=None, scheme=None):
+    """Validate fitting datasets before basis scoring; test datasets pass through, so patients without an outcome are reported rather than dropped.
+    Test datasets are scored by the map fitted on every patient, which only scheme=None produces, so folds skip them.
     datasets: dict[str, dict] of length D; each entry contains patient maps X with shape (N, V), outcomes y with shape (N,), and optional IDs with shape (N,).
     """
-    return {"datasets": validate_datasets(datasets)}
+    if scheme is not None and test_datasets:
+        print(f"cross_validation={scheme!r}: skipping test datasets, which are scored by the fit on every patient (cross_validation=None).", flush=True)
+    return {"datasets": validate_datasets(datasets), "test_datasets": test_datasets if scheme is None else None}

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Batch figures through Circuit Viewer.
+"""Batch figures through General Neuroimage Viewer.
 
 ``neuro_plotter`` is deliberately an adapter, not a second renderer.  Each
 entry in :data:`FIGURES` describes mesh groups, the NIfTI overlays painted on
 each mesh, and independent fiber groups.  The description is translated into a
-Circuit Viewer scene, saved as ``scene.json``, and rendered through one cached
+General Neuroimage Viewer scene, saved as ``scene.json``, and rendered through one cached
 ``RenderSession`` into individual SVG views and a combined SVG panel.
 
 The previous yabplot implementation is preserved beside this file as
@@ -32,15 +32,15 @@ from pathlib import Path
 import nibabel as nib
 
 
-# Make the source checkout usable before circuit-viewer is formally installed
+# Make the source checkout usable before gnv is formally installed
 # into this environment.  An installed package always wins.
 CIRCUIT_PYPER_DIR = Path(__file__).resolve().parents[1]
 if str(CIRCUIT_PYPER_DIR) not in sys.path:
     sys.path.insert(0, str(CIRCUIT_PYPER_DIR))
 
 try:
-    from circuit_viewer.session import RenderSession
-    from circuit_viewer.spec import (
+    from gnv.session import RenderSession
+    from gnv.spec import (
         new_fiber_layer,
         new_mesh_layer,
         new_overlay,
@@ -48,20 +48,20 @@ try:
         save_spec,
     )
 except ModuleNotFoundError as exc:
-    if exc.name != "circuit_viewer":
+    if exc.name != "gnv":
         raise
     viewer_root = Path(os.environ.get(
-        "CIRCUIT_VIEWER_ROOT",
-        CIRCUIT_PYPER_DIR.parent.parent / "circuit_viewer",
+        "GNV_ROOT",
+        CIRCUIT_PYPER_DIR.parent.parent / "gnv",
     )).expanduser()
-    if not (viewer_root / "circuit_viewer" / "__init__.py").is_file():
+    if not (viewer_root / "gnv" / "__init__.py").is_file():
         raise ModuleNotFoundError(
-            "circuit-viewer is required. Install it into this environment or "
-            "set CIRCUIT_VIEWER_ROOT to its source checkout."
+            "gnv is required. Install it into this environment or "
+            "set GNV_ROOT to its source checkout."
         ) from exc
     sys.path.insert(0, str(viewer_root))
-    from circuit_viewer.session import RenderSession
-    from circuit_viewer.spec import (
+    from gnv.session import RenderSession
+    from gnv.spec import (
         new_fiber_layer,
         new_mesh_layer,
         new_overlay,
@@ -106,7 +106,7 @@ OPEN_HTML = True
 SCALAR_BARS = True
 
 
-# One figure is one Circuit Viewer scene.  A mesh group owns its NIfTI overlay
+# One figure is one General Neuroimage Viewer scene.  A mesh group owns its NIfTI overlay
 # stack; fibers are sibling layers and never belong to a mesh.  ``$source`` is
 # replaced with the file passed to dispatch().
 FIGURES = [
@@ -270,7 +270,7 @@ def _resolve_path(value, source, label="file"):
 
 
 def _mesh_reference(value, source):
-    """Resolve paths while leaving registered Circuit Viewer mesh names alone."""
+    """Resolve paths while leaving registered General Neuroimage Viewer mesh names alone."""
     if isinstance(value, (list, tuple)):
         return [_mesh_reference(item, source) for item in value]
     if value in (None, "", "$source"):
@@ -466,7 +466,7 @@ def _build_fiber(raw, figure, source):
 
 
 def build_scene(source, figure):
-    """Translate one FIGURES entry into a validated Circuit Viewer scene."""
+    """Translate one FIGURES entry into a validated General Neuroimage Viewer scene."""
     source = Path(source).expanduser().resolve()
     layers = [
         _build_mesh(entry, figure, source) for entry in _mesh_entries(figure)
@@ -641,7 +641,7 @@ def render_figure(source, output_dir, figure, session=None):
 
     if scalar_bars and _quantitative_overlay_count(scene) > 1:
         print(
-            f"[warn] {name}: Circuit Viewer currently draws one scalar bar; "
+            f"[warn] {name}: General Neuroimage Viewer currently draws one scalar bar; "
             "multi-overlay colours remain correct, but only one scale can be shown."
         )
 
@@ -966,7 +966,7 @@ def dispatch(source_nifti, output_dir, figures=None, overrides=None,
 
 def parser():
     result = argparse.ArgumentParser(
-        description="Render configured mesh/NIfTI/fiber scenes with Circuit Viewer."
+        description="Render configured mesh/NIfTI/fiber scenes with General Neuroimage Viewer."
     )
     result.add_argument("--nifti", dest="nifti_path")
     result.add_argument("--output-dir")

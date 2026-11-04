@@ -47,14 +47,15 @@ from calvin_utils.neuroimaging_utils.output_functions import NeuroimageFileOutpo
 
 
 # Input/output paths.
-INPUT_PATH = "/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/results/optimzation/optimized_master_list_filtered_HigherIsWorse.csv" # Form: "/path/to/input.csv"
+INPUT_PATH = "/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/results/optimzation/optimized_master_list_filtered_HigherIsWorse_zarr5GB.csv" # Form: "/path/to/input.csv"
 SHEET = None # Specify sheet if using excel (i.e. "Sheet1")
-OUT_DIR = "/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/results/optimization/symptom_on_lhs/fiber_regressions" # Form: "/path/to/output_dir"
-MASK_PATH = "/Volumes/OneTouch/resources/Atlas_tck_MNI/Atlas_all30_MNI.npz" # Guerrero fibers use the original TCK-derived MNI geometry; the TRK-derived copy has an incorrect affine offset.
+OUT_DIR = "/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/results/optimization/symptom_on_lhs/fibers_HigherIsWorse_Winzarr5gb" # Form: "/path/to/output_dir"
+MASK_PATH = "/Volumes/OneTouch/resources/zarr5GB.npz" # zarr5GB connectome atlas; must match the atlas the zarr5GB profiles were generated from.
 
 # Model setup.
 
-var_list = [ 'CNRSTotScore','SematicFluencyFailS', 'PhonemicFluencyFailS', 'CategorySwitchFailS', 'DigitSpanForwardFailS', 'DigitSpanBackwardFailS', 'CubeDrawFailS', 'VerbalRecallFailS', 'SimiliarityFailS', 'GoNoGoFailS', 'AffectFailS' ]
+var_list = ['Gait', 'HeelToShinTestLeft', 'HeelToShinTestRight', 'FingerToNoseTestLeft', 'FingerToNoseTestRight', 'LimbAtaxia', 'Speech', 'Oculomotor', 'TotalBarsScore']
+# var_list = [ 'CNRSTotScore','SematicFluencyFailS', 'PhonemicFluencyFailS', 'CategorySwitchFailS', 'DigitSpanForwardFailS', 'DigitSpanBackwardFailS', 'CubeDrawFailS', 'VerbalRecallFailS', 'SimiliarityFailS', 'GoNoGoFailS', 'AffectFailS' ]
 # var_list = [
 #  'Gait', 'HeelToShinTestLeft', 'HeelToShinTestRight', 'FingerToNoseTestLeft', 'FingerToNoseTestRight', 'LimbAtaxia', 'Speech', 'Oculomotor', 'TotalBarsScore',
  
@@ -77,9 +78,9 @@ var_list = [ 'CNRSTotScore','SematicFluencyFailS', 'PhonemicFluencyFailS', 'Cate
 #  'ScoreCol5A', 'ScoreCol5B', 
 #  'TotalSection1Score', 'TotalSection2Score', 'TotalSection3Score', 'TotalSection4Score', 'TotalSection5Score', 'CNRSTotColAScore', 'CNRSTotColBScore', 'CNRSTotScore', 
 #  ]
-regressand_list = ["fiber_path_guerrera"]              # On left hand=side of the equation. Often is the outcome variable.         Will run an analysis for each value.
-regressor_list = var_list    # On right hand-side of the equation. Often is the neuroimaging variable.   Will run an analysis for each value. 
-VOXELWISE_VARS = ["fiber_path_guerrera"]    # Name the variables that are stored in neuroimaging files
+regressand_list = var_list              # On left hand=side of the equation. Often is the outcome variable.         Will run an analysis for each value.
+regressor_list = ["zarr5GB"]    # On right hand-side of the equation. Often is the neuroimaging variable.   Will run an analysis for each value. 
+VOXELWISE_VARS = ["zarr5GB"]    # Name the variables that are stored in neuroimaging files
 VOXELWISE_INTERACTIONS = []             # If you want interactions, specify them. 
 COVARIATES_LIST = []                    # List of all nuisance variables to adjust for. If you want interactions, make them in your spreadsheet and add them here. Will NOT trigger a new analysis for each value, but will be present in every analysis.
 ADD_INTERCEPT = False                  # Three exhaustive cluster indicators require no intercept (avoids perfect collinearity).
@@ -101,7 +102,7 @@ RUN_FIGURES = False                      # Delegate result-map visualization to 
 FIGURES_IN_SUBPROCESS = True            # Render each map in a fresh interpreter (frees the OpenGL context).
 SUMMARY_FILENAME = "regression_summary.csv"
 CV = "loocv"                            # None disables CV; "all" runs LOOCV, 2-, 5-, 10-fold, and leave-all-in.
-CV_INDEPENDENT_VAR = "fiber_path_guerrera"  # Patient fiber values scored against each training-fold fiber t map.
+CV_INDEPENDENT_VAR = "zarr5GB"  # Patient fiber values scored against each training-fold fiber t map.
 DROP_NANS = True                        # Apply the same row filtering to regression and cross-validation.
 
 _cv_native_vector_cache = {}

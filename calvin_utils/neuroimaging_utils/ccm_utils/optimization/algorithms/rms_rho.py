@@ -40,6 +40,20 @@ def target(weights, prepared, l1_strength, l2_strength):
     return merit(weights, prepared) - l1(weights, l1_strength) - l2(weights, l2_strength)
 
 
+def gradient(weights, prepared, l1_strength, l2_strength, step):
+    """Forward differences of the target for every coefficient at once: nudging weight j adds step * X[:, j] to the predictions, so each dataset ranks one (N, B) matrix."""
+    X, y = prepared
+    squares = []
+    for name in X:
+        nudged = rankdata((X[name] @ weights)[:, None] + step * X[name], axis=0, method="average")
+        nudged -= nudged.mean(axis=0)
+        outcome = rankdata(y[name], method="average")
+        outcome -= outcome.mean()
+        squares.append(np.square(outcome @ nudged / np.sqrt((nudged * nudged).sum(axis=0) * (outcome @ outcome))))
+    penalty = l1_strength * (np.abs(weights).sum() - np.abs(weights) + np.abs(weights + step)) + 0.5 * l2_strength * (weights @ weights + 2 * step * weights + step ** 2)
+    return (np.sqrt(np.mean(squares, axis=0)) - penalty - target(weights, prepared, l1_strength, l2_strength)) / step
+
+
 def project_constraint(weights, covariance):
     return prediction_variance.project(weights, covariance)
 
@@ -79,10 +93,11 @@ def main(X, y, *, solver, dataset_weights, initial_weights=None, n_starts=12, ga
     covariance = prediction_variance.gram(X, dataset_weights)
     project = partial(project_constraint, covariance=covariance)
     objective = partial(target, prepared=prepared, l1_strength=l1_strength, l2_strength=l2_strength)
+    derivative = partial(gradient, prepared=prepared, l1_strength=l1_strength, l2_strength=l2_strength, step=max(1e-5, 0.5 / n_components))
     fitted = []
     records = []
     for index, (kind, seed, initial) in enumerate(starts(n_components, initial_weights, n_starts, random_state, gaussian_mean, gaussian_std), start=1):
-        result = solver(objective, initial, project=project, learning_rate=learning_rate, max_iter=max_iter, tol=tol, finite_step=max(1e-5, 0.5 / n_components), gradient_clip=0.5)
+        result = solver(objective, initial, gradient=derivative, project=project, learning_rate=learning_rate, max_iter=max_iter, tol=tol, gradient_clip=0.5)
         fitted.append(result)
         records.append({"start": index, "initialization": kind, "seed": seed, "training_rms_rho": merit(result["weights"], prepared), "iterations": result["n_iterations"]})
     best = int(np.argmax([record["training_rms_rho"] for record in records]))

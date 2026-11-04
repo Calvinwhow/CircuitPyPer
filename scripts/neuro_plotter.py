@@ -16,7 +16,7 @@ import numpy as np
 from scipy.ndimage import map_coordinates
 import yabplot as yab
 
-from calvin_utils.plotting_utils.glass_mesh import build_bmesh
+from gnv.render.glass_mesh import build_bmesh
     
 import matplotlib
 matplotlib.use("Agg")  # Figures are written to disk only; never displayed.
@@ -50,7 +50,7 @@ PARCEL_SCORE_NONZERO_ONLY = True
 PARCEL_FILL_VALUE = float("nan")
 
 # Plot and geometry menus ------------------------------------------------------
-from calvin_utils.plotting_utils.brains import (  # noqa: E402
+from gnv.render.brains import (  # noqa: E402
     ATLASES as _ATLAS_SPECS,
     MESHES as _MESH_SPECS,
     atlas_name,
@@ -73,7 +73,7 @@ PLOTS = {
 
 # brains.py is the single source of truth.  Keeping a second hand-written menu
 # here made newly registered meshes invisible to the CLI and broke imports.
-MESHES = {name: spec["what"] for name, spec in _MESH_SPECS.items()}
+MESHES = {name: spec["hint"] for name, spec in _MESH_SPECS.items()}
 
 ATLASES = {
     "aal3": "[surface] AAL3 cortical parcellation",
@@ -439,7 +439,7 @@ def plot_yabplot(nifti_path, export_path, spec, views=None):
         if len(pieces) == 1:
             tract_bmesh = mesh_bmesh(spec["mesh"])
         else:
-            from calvin_utils.plotting_utils.glass_mesh import build_bmesh
+            from gnv.render.glass_mesh import build_bmesh
 
             plot_kwargs.setdefault("bmesh", build_bmesh(pieces))
 
@@ -499,7 +499,7 @@ def glassify(spec):
     envelope marching-cubed from a brain mask. Everything else about the two
     modes is identical.
     """
-    from calvin_utils.plotting_utils.glass_mesh import build_bmesh
+    from gnv.render.glass_mesh import build_bmesh
 
     spec = dict(spec)
     plot_kwargs = dict(spec["plot_kwargs"])
@@ -637,7 +637,7 @@ def plot_multi_overlay(export_path, spec, views=None):
     plot_kwargs.setdefault("export_path", str(export_path))
 
     if spec["plot"] == "mesh":
-        from calvin_utils.plotting_utils.glass_mesh import build_bmesh
+        from gnv.render.glass_mesh import build_bmesh
 
         plot_kwargs.setdefault("bmesh", build_bmesh(mesh_pieces(spec["mesh"])))
         plot_kwargs.setdefault("bmesh_alpha", spec["mesh_alpha"])

@@ -1,0 +1,11 @@
+# The light install: what calvin_utils' tract file reading needs
+# (neuroimaging_utils/tract_utils: fiber_converter, fiber_descriptor,
+# fiber_atlas_converter, fiber_intersection, fiber_io), and nothing else.
+# It is what `pip install calvin_utils` gives -- and what the General
+# Neuroimage Viewer (gnv) installs. The whole analysis stack is
+# requirements.txt, the `full` extra:  pip install -e ".[full]"
+numpy
+scipy
+nibabel
+h5py
+tqdm

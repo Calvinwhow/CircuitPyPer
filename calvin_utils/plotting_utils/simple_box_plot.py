@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
+from matplotlib.patches import Patch, PathPatch
 from scipy.stats import f_oneway, ttest_1samp, ttest_ind, mannwhitneyu
 import statsmodels.formula.api as smf
 from statsmodels.stats.anova import anova_lm
@@ -39,6 +40,11 @@ class SimpleBoxPlot:
         ttest_ref: float = 0.0,
         strip_size: float = 4,
         strip_alpha: float = 0.25,
+        box_colors: Iterable[str] | None = None,
+        legend: dict[str, str] | None = None,
+        annotate: bool = True,
+        xtick_rotation: float = 0,
+        showfliers: bool = True,
     ):
         self.df = df
         self.group_col = group_col
@@ -58,6 +64,11 @@ class SimpleBoxPlot:
         self.ttest_ref = ttest_ref
         self.strip_size = strip_size
         self.strip_alpha = strip_alpha
+        self.box_colors = list(box_colors) if box_colors is not None else None
+        self.legend = legend
+        self.annotate = annotate
+        self.xtick_rotation = xtick_rotation
+        self.showfliers = showfliers
 
         self._order = None
         self._ax = None
@@ -164,6 +175,7 @@ class SimpleBoxPlot:
             color=self.box_color,
             ax=ax,
             linewidth=2,
+            showfliers=self.showfliers,
         )
         sns.stripplot(
             data=self.df,
@@ -175,6 +187,9 @@ class SimpleBoxPlot:
             alpha=self.strip_alpha,
             ax=ax,
         )
+        if self.box_colors is not None:
+            for box, color in zip([patch for patch in ax.patches if isinstance(patch, PathPatch)], self.box_colors):
+                box.set_facecolor(color)
 
         ax.set_title(self.dataset_name, fontsize=self.title_fontsize)
         ax.set_xlabel(self.xlabel if self.xlabel is not None else self.group_col, fontsize=self.label_fontsize)
@@ -183,8 +198,13 @@ class SimpleBoxPlot:
         ax.tick_params(axis="both", labelsize=self.tick_fontsize)
         for spine in ax.spines.values():
             spine.set_linewidth(self.spine_width)
+        if self.xtick_rotation:
+            plt.setp(ax.get_xticklabels(), rotation=self.xtick_rotation, ha="right", rotation_mode="anchor")
+        if self.legend is not None:
+            ax.legend(handles=[Patch(facecolor=color, label=label) for label, color in self.legend.items()], frameon=False, fontsize=self.tick_fontsize)
 
-        self._annotate_stats(ax)
+        if self.annotate:
+            self._annotate_stats(ax)
 
         if ax is not None and ax.figure is not None:
             if self.output_path:

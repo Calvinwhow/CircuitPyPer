@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
+from matplotlib.patches import Patch
 from scipy.stats import f_oneway, ttest_1samp, ttest_ind, ttest_rel
 import statsmodels.formula.api as smf
 from statsmodels.stats.anova import anova_lm
@@ -12,7 +13,9 @@ from statsmodels.stats.anova import anova_lm
 
 class SimpleDynamitePlot:
     """
-    Create a single-group dynamite plot (mean ± SEM) for a categorical grouping.
+    Create a single-group dynamite plot for a categorical grouping: mean ± SEM, or with statistic="rms_sd" the root mean
+    square ± the standard deviation of the absolute values. statistics=(centers, errors), two Series indexed by group, plots
+    supplied values instead. reference_lines={label: y} draws each as a dashed grey line labelled at the right edge.
 
     This mirrors the formatting of simple_scatter for consistent styling.
     """
@@ -36,6 +39,13 @@ class SimpleDynamitePlot:
         spine_width: int = 2,
         ttest_ref: float = 0.0,
         yminmax: tuple | None = None,
+        statistic: Literal["mean_sem", "rms_sd"] = "mean_sem",
+        bar_colors: Iterable[str] | None = None,
+        legend: dict[str, str] | None = None,
+        annotate: bool = True,
+        xtick_rotation: float = 0,
+        statistics: tuple[pd.Series, pd.Series] | None = None,
+        reference_lines: dict[str, float] | None = None,
     ):
         self.df = df
         self.group_col = group_col
@@ -53,9 +63,16 @@ class SimpleDynamitePlot:
         self.spine_width = spine_width
         self.ttest_ref = ttest_ref
         self.yminmax = yminmax
+        self.statistic = statistic
+        self.bar_colors = list(bar_colors) if bar_colors is not None else None
+        self.legend = legend
+        self.annotate = annotate
+        self.xtick_rotation = xtick_rotation
+        self.statistics = statistics
+        self.reference_lines = reference_lines
 
         self._means = None
-        self._sems = None
+        self._errors = None
         self._order = None
         self._ax = None
 
@@ -118,7 +135,7 @@ class SimpleDynamitePlot:
         self._validate_columns()
         self._compute_stats()
         self._plot(ax=ax)
-        return self._means, self._sems
+        return self._means, self._errors
 
     # ---- internal ----
     def _validate_columns(self):
@@ -128,8 +145,14 @@ class SimpleDynamitePlot:
 
     def _compute_stats(self):
         grouped = self.df.groupby(self.group_col)[self.value_col]
-        self._means = grouped.mean()
-        self._sems = grouped.sem()
+        if self.statistics is not None:
+            self._means, self._errors = self.statistics
+        elif self.statistic == "rms_sd":
+            self._means = grouped.apply(lambda values: float(np.sqrt(np.mean(np.square(values.dropna())))))
+            self._errors = grouped.apply(lambda values: float(np.abs(values.dropna()).std(ddof=1)))
+        else:
+            self._means = grouped.mean()
+            self._errors = grouped.sem()
         self._order = self.order if self.order is not None else list(self._means.index)
 
     def _plot(self, ax=None):
@@ -148,10 +171,13 @@ class SimpleDynamitePlot:
             linewidth=2,
             alpha=0.98,
         )
+        if self.bar_colors is not None:
+            for patch, color in zip(ax.patches, self.bar_colors):
+                patch.set_facecolor(color)
         ax.errorbar(
             x=np.arange(len(self._order)),
             y=[self._means.loc[g] for g in self._order],
-            yerr=[self._sems.loc[g] for g in self._order],
+            yerr=[self._errors.loc[g] for g in self._order],
             fmt="none",
             ecolor="black",
             capsize=4,
@@ -186,8 +212,16 @@ class SimpleDynamitePlot:
         
         if self.yminmax is not None:
             ax.set_ylim(self.yminmax[0], self.yminmax[1])
+        if self.xtick_rotation:
+            plt.setp(ax.get_xticklabels(), rotation=self.xtick_rotation, ha="right", rotation_mode="anchor")
+        for label, value in (self.reference_lines or {}).items():
+            ax.axhline(value, color="0.5", linestyle="--", linewidth=1.5, zorder=4)
+            ax.text(1.0, value, f" {label}", transform=ax.get_yaxis_transform(), color="0.4", fontsize=self.tick_fontsize, va="center", ha="left")
+        if self.legend is not None:
+            ax.legend(handles=[Patch(facecolor=color, label=label) for label, color in self.legend.items()], frameon=False, fontsize=self.tick_fontsize)
 
-        self._annotate_stats(ax)
+        if self.annotate:
+            self._annotate_stats(ax)
 
         if self.out_dir and ax is not None and ax.figure is not None:
             os.makedirs(os.path.join(self.out_dir, "dynamite_plots"), exist_ok=True)

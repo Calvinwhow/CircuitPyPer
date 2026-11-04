@@ -9,6 +9,7 @@ import nibabel as nib
 import numpy as np
 from tqdm import tqdm
 
+from calvin_utils.neuroimaging_utils.fmri_utils.fp8 import COMBO_FP8_SCALE, decode_e4m3
 from calvin_utils.neuroimaging_utils.nifti_utils.volume_io import NiftiIO
 from calvin_utils.resource_paths import lazy_resource_path
 
@@ -31,6 +32,10 @@ class FunctionalConnectivity:
         chunk_pattern="{chunk}_AvgR.npy",
         row_batch_mb=256,
         similarity_stats_path=None,
+        combo_dir=None,
+        combo_pattern="{chunk}_Combo.npy",
+        std_mask_path=None,
+        norm_mask_path=None,
     ):
         self.connectome_dir = connectome_dir
         self.mask_path = mask_path
@@ -43,6 +48,14 @@ class FunctionalConnectivity:
         self._chunk_labels = None
         self._chunk_rows = None
         self._row_stats = None
+        # Seed-normalization resources default to the precomputed-connectome layout beside connectome_dir:
+        # <root>/Combo/{chunk}_Combo.npy and <root>/<root name>_{std,norm}_weighted_mask.nii.gz.
+        self.combo_dir = combo_dir
+        self.combo_pattern = combo_pattern
+        self.std_mask_path = std_mask_path
+        self.norm_mask_path = norm_mask_path
+        self._voxel_std = None
+        self._voxel_norm = None
 
     @property
     def chunk_labels(self):
@@ -74,6 +87,14 @@ class FunctionalConnectivity:
             )
         return self._chunk_rows
 
+    @property
+    def connectome_label(self):
+        """Return <connectome>-<stat>[-fp8] for output filenames, e.g. yeo1000_dil-T-fp8, read from the chunks actually used."""
+        connectome_dir = Path(self.connectome_dir)
+        chunk, global_rows = self.chunk_rows[0]
+        storage = "-fp8" if self._load_chunk(chunk, global_rows).dtype == np.uint8 else ""
+        return f"{connectome_dir.parent.name}-{connectome_dir.name.removesuffix('_fp8')}{storage}"
+
     @staticmethod
     def _binarize_data(data, threshold):
         if threshold is None:
@@ -100,6 +121,23 @@ class FunctionalConnectivity:
         ).import_nifti_to_numpy_array([lesion_img])[:, 0]
         return weights.astype(np.float32, copy=False)
 
+    def spatial_correlation(self, first_nifti_path, second_nifti_path):
+        """Return masked voxelwise Pearson correlation between two NIfTIs."""
+        first = self._load_lesion_weights(first_nifti_path)
+        second = self._load_lesion_weights(second_nifti_path)
+        finite = np.isfinite(first) & np.isfinite(second)
+        if np.count_nonzero(finite) < 2:
+            raise ValueError("Spatial correlation requires two finite voxels.")
+
+        first = first[finite].astype(np.float64, copy=False)
+        second = second[finite].astype(np.float64, copy=False)
+        first -= np.mean(first)
+        second -= np.mean(second)
+        denominator = np.linalg.norm(first) * np.linalg.norm(second)
+        if denominator == 0:
+            raise ValueError("Spatial correlation is undefined for a constant map.")
+        return float(np.dot(first, second) / denominator)
+
     def _chunk_path(self, chunk):
         file_name = self.chunk_pattern.format(chunk=int(chunk))
         return Path(self.connectome_dir) / file_name
@@ -118,26 +156,129 @@ class FunctionalConnectivity:
             )
         return chunk_data
 
+    @staticmethod
+    def _rows_float32(chunk_data, rows):
+        """Return chunk rows as float32, decoding float8 e4m3fn bytes when the connectome is stored as uint8.
+
+        NaN entries in float32 chunks (sporadic in yeo1000_dil) are read as 0, matching how the float8 converter stores them.
+        """
+        if chunk_data.dtype == np.uint8: return decode_e4m3(chunk_data[rows, :])
+        return np.nan_to_num(np.asarray(chunk_data[rows, :], dtype=np.float32, order="C"), copy=False, nan=0.0)
+
     def _rows_per_batch(self):
         bytes_per_row = self.chunk_labels.size * np.dtype(np.float32).itemsize
         return max(1, self.row_batch_bytes // bytes_per_row)
 
+    def _seed_weights(self, weights):
+        """Return seed weights as (n_seeds, n_masked_voxels) float32, treating NaN background as zero weight."""
+        weights = np.asarray(weights, dtype=np.float32)
+        if weights.ndim == 1: weights = weights[None, :]
+        if weights.ndim != 2 or weights.shape[1] != self.chunk_labels.size: raise ValueError(f"weights must have shape (n_seeds, n_masked_voxels); got {weights.shape}.")
+        if np.isinf(weights).any(): raise ValueError("Seed weights contain infinite values.")
+        missing = np.isnan(weights)
+        if missing.any():
+            warnings.warn(f"{int(missing.sum())} NaN seed weights in {int(missing.any(axis=1).sum())} of {weights.shape[0]} map(s) were treated as 0.", RuntimeWarning, stacklevel=3)
+            weights = np.where(missing, np.float32(0), weights)
+        return weights
+
+    def _connectome_root(self):
+        return Path(self.connectome_dir).parent
+
+    def _mask_values(self, nifti_path):
+        values = NiftiIO(mask_path=str(self.mask_path)).import_nifti_to_numpy_array([str(nifti_path)])[:, 0]
+        if not np.all(np.isfinite(values)) or np.any(values <= 0): raise ValueError(f"{nifti_path} must be finite and positive at every connectome voxel.")
+        return values.astype(np.float64, copy=False)
+
+    @property
+    def voxel_std(self):
+        """Return each masked voxel's BOLD standard deviation, pooled over connectome subjects and timepoints."""
+        if self._voxel_std is None:
+            root = self._connectome_root()
+            self._voxel_std = self._mask_values(self.std_mask_path if self.std_mask_path is not None else root / f"{root.name}_std_weighted_mask.nii.gz")
+        return self._voxel_std
+
+    @property
+    def voxel_norm(self):
+        """Return each masked voxel's BOLD norm, pooled over connectome subjects and timepoints."""
+        if self._voxel_norm is None:
+            root = self._connectome_root()
+            self._voxel_norm = self._mask_values(self.norm_mask_path if self.norm_mask_path is not None else root / f"{root.name}_norm_weighted_mask.nii.gz")
+        return self._voxel_norm
+
+    def _combo_path(self, chunk):
+        combo_dir = Path(self.combo_dir) if self.combo_dir is not None else self._connectome_root() / "Combo"
+        return combo_dir / self.combo_pattern.format(chunk=int(chunk))
+
+    def _combo_chunk(self, chunk, global_rows):
+        combo_path = self._combo_path(chunk)
+        if not combo_path.is_file(): raise FileNotFoundError(f"Combo chunk not found: {combo_path}")
+        try:
+            combo = np.load(combo_path, mmap_mode="r", allow_pickle=False)
+        except ValueError as error:
+            raise ValueError(f"{combo_path} is not a valid .npy file (damaged or incomplete); rerun 00_convert_connectome_fp8.py to rebuild it.") from error
+        if combo.shape != (global_rows.size, self.chunk_labels.size) or not combo.flags.c_contiguous: raise ValueError(f"Combo chunk {combo_path} must be a row-major array of shape {(global_rows.size, self.chunk_labels.size)}.")
+        return combo
+
+    def _combo_rows(self, combo, row_voxels, local_rows, first, last):
+        """Return Combo rows (columns first:last) as float32, undoing the float8 pooled-correlation encoding for uint8 chunks."""
+        if combo.dtype != np.uint8: return np.asarray(combo[local_rows, first:last], dtype=np.float32)
+        norms = self.voxel_norm.astype(np.float32)
+        return decode_e4m3(combo[local_rows, first:last]) * (norms[row_voxels][:, None] / np.float32(COMBO_FP8_SCALE)) * norms[first:last]
+
+    def _seed_signal_norms(self, weights):
+        """Return sqrt(w^T Combo w) per seed: the norm of the seed's weighted-sum BOLD signal over all subjects."""
+        active_columns = np.flatnonzero(np.any(weights != 0, axis=0))
+        first, last = int(active_columns[0]), int(active_columns[-1]) + 1
+        column_weights = np.ascontiguousarray(weights[:, first:last].T)
+        rows_per_batch = max(1, self.row_batch_bytes // ((last - first) * np.dtype(np.float32).itemsize))
+        quadratic = np.zeros(weights.shape[0], dtype=np.float64)
+        for chunk, global_rows in tqdm(self.chunk_rows, desc="Streaming combo chunks"):
+            chunk_weights = weights[:, global_rows]
+            active_rows = np.flatnonzero(np.any(chunk_weights != 0, axis=0))
+            if active_rows.size == 0: continue
+            combo = self._combo_chunk(chunk, global_rows)
+            for start in range(0, active_rows.size, rows_per_batch):
+                local_rows = active_rows[start : start + rows_per_batch]
+                # Only the column span covering the seeds is read from each row.
+                projected = self._combo_rows(combo, global_rows[local_rows], local_rows, first, last) @ column_weights
+                quadratic += np.einsum("sr,rs->s", chunk_weights[:, local_rows].astype(np.float64), projected.astype(np.float64))
+        if np.any(quadratic <= 0): raise ValueError("A seed's summed BOLD signal has zero energy, so its map cannot be normalized.")
+        return np.sqrt(quadratic)
+
+    def _seed_maps(self, weights):
+        """Return seed maps normalized like a seed whose BOLD signal is the weighted voxel sum.
+
+        w_i: seed weight at voxel i; s_i, n_i: voxel BOLD standard deviation and norm (voxel_std, voxel_norm);
+        C: the connectome stat matrix (T, AvgR, ...); Combo: summed BOLD cross-products. For each seed,
+        map_j = [sum_i w_i s_i C_ij / sum_i w_i s_i] * [sum_i w_i n_i / sqrt(w^T Combo w)],
+        the same normalization as pfc-toolkit's precomputed-connectome lesion mapping.
+        """
+        weights = self._seed_weights(weights)
+        if not np.all(np.any(weights != 0, axis=1)): raise ValueError("Every seed needs at least one nonzero weight.")
+        # Fail before streaming the connectome if any Combo chunk the seeds need is missing.
+        needed = [(chunk, global_rows) for chunk, global_rows in self.chunk_rows if np.any(weights[:, global_rows] != 0)]
+        missing = [int(chunk) for chunk, _ in needed if not self._combo_path(chunk).is_file()]
+        if missing: raise FileNotFoundError(f"{len(missing)} Combo chunk(s) needed by these seeds are missing from {self._combo_path(missing[0]).parent}: {missing}")
+        for chunk, global_rows in needed: self._combo_chunk(chunk, global_rows)
+        std_weights = weights * self.voxel_std.astype(np.float32)
+        std_totals = std_weights.sum(axis=1, dtype=np.float64)
+        if np.any(std_totals == 0): raise ValueError("A seed's BOLD-standard-deviation weights sum to zero, so its map cannot be normalized.")
+        maps = self._stream_connectivity(std_weights).astype(np.float64)
+        scale = (weights.astype(np.float64) @ self.voxel_norm) / (std_totals * self._seed_signal_norms(weights))
+        return (maps * scale[:, None]).astype(np.float32)
+
     def _stream_connectivity(self, weights):
         """Multiply one or more lesion vectors by only their active chunk rows."""
-        weights = np.asarray(weights, dtype=np.float32)
-        if weights.ndim == 1:
-            weights = weights[None, :]
-        if weights.ndim != 2 or weights.shape[1] != self.chunk_labels.size:
-            raise ValueError(
-                "weights must have shape (n_lesions, n_masked_voxels); "
-                f"got {weights.shape}."
-            )
+        weights = self._seed_weights(weights)
 
         connectivity = np.zeros(weights.shape, dtype=np.float32)
         scratch = np.empty_like(connectivity)
         rows_per_batch = self._rows_per_batch()
 
-        for chunk, global_rows in self.chunk_rows:
+        for chunk, global_rows in tqdm(
+            self.chunk_rows,
+            desc="Streaming connectome chunks",
+        ):
             chunk_weights = weights[:, global_rows]
             active_rows = np.flatnonzero(np.any(chunk_weights != 0, axis=0))
             if active_rows.size == 0:
@@ -145,22 +286,43 @@ class FunctionalConnectivity:
 
             chunk_data = self._load_chunk(chunk, global_rows)
 
-            # Dense weights are fastest as one BLAS operation directly from mmap.
+            # Lesion cohorts usually activate different rows. Multiplying the
+            # union of those rows for every lesion wastes most FLOPs on known
+            # zeros, so process each lesion independently when the weight
+            # matrix is sparse enough to offset any repeated row reads.
+            nonzero_weights = np.count_nonzero(chunk_weights[:, active_rows])
+            dense_weight_slots = weights.shape[0] * active_rows.size
             if (
-                active_rows.size == global_rows.size
-                and chunk_data.dtype == np.float32
+                weights.shape[0] > 1
+                and nonzero_weights * 2 < dense_weight_slots
             ):
-                np.matmul(chunk_weights, chunk_data, out=scratch)
-                np.add(connectivity, scratch, out=connectivity)
+                for start in range(0, active_rows.size, rows_per_batch):
+                    local_rows = active_rows[start : start + rows_per_batch]
+                    data_block = self._rows_float32(chunk_data, local_rows)
+                    block_weights = chunk_weights[:, local_rows]
+                    for profile_index in range(weights.shape[0]):
+                        profile_rows = np.flatnonzero(
+                            block_weights[profile_index] != 0
+                        )
+                        if profile_rows.size == 0:
+                            continue
+                        np.matmul(
+                            block_weights[profile_index, profile_rows],
+                            data_block[profile_rows, :],
+                            out=scratch[profile_index],
+                        )
+                        np.add(
+                            connectivity[profile_index],
+                            scratch[profile_index],
+                            out=connectivity[profile_index],
+                        )
                 continue
 
             # Sparse lesions read only the required rows instead of scanning the
             # entire multi-gigabyte chunk. Batching bounds the temporary buffer.
             for start in range(0, active_rows.size, rows_per_batch):
                 local_rows = active_rows[start : start + rows_per_batch]
-                data_block = np.asarray(
-                    chunk_data[local_rows, :], dtype=np.float32, order="C"
-                )
+                data_block = self._rows_float32(chunk_data, local_rows)
                 np.matmul(chunk_weights[:, local_rows], data_block, out=scratch)
                 np.add(connectivity, scratch, out=connectivity)
 
@@ -203,9 +365,7 @@ class FunctionalConnectivity:
             chunk_data = self._load_chunk(chunk, global_rows)
             for start in range(0, global_rows.size, rows_per_batch):
                 stop = min(start + rows_per_batch, global_rows.size)
-                data_block = np.asarray(
-                    chunk_data[start:stop, :], dtype=np.float32, order="C"
-                )
+                data_block = self._rows_float32(chunk_data, slice(start, stop))
                 destination = global_rows[start:stop]
                 row_sum[destination] = np.sum(
                     data_block, axis=1, dtype=np.float64
@@ -260,14 +420,7 @@ class FunctionalConnectivity:
         if similarity not in {"cosine", "pearson"}:
             raise ValueError("similarity must be 'cosine' or 'pearson'.")
 
-        weights = np.asarray(weights, dtype=np.float32)
-        if weights.ndim == 1:
-            weights = weights[None, :]
-        if weights.ndim != 2 or weights.shape[1] != self.chunk_labels.size:
-            raise ValueError(
-                "weights must have shape (n_lesions, n_masked_voxels); "
-                f"got {weights.shape}."
-            )
+        weights = self._seed_weights(weights)
 
         row_sum, row_square_sum = self._get_similarity_stats()
 
@@ -347,7 +500,7 @@ class FunctionalConnectivity:
                 f"contains {labels.size}."
             )
 
-        return self._stream_connectivity(weights)[0]
+        return self._seed_maps(weights)[0]
 
     def generate_profiles_from_niftis(
         self, nifti_paths, binarize=False, threshold=None
@@ -361,7 +514,7 @@ class FunctionalConnectivity:
         ).astype(np.float32, copy=False)
         if binarize:
             weights = self._binarize_data(weights, threshold)
-        return self._stream_connectivity(weights)
+        return self._seed_maps(weights)
 
     def generate_inverted_connectivity_profile(
         self,
@@ -399,6 +552,19 @@ class FunctionalConnectivity:
         path = Path(path)
         return path.name[:-7] if path.name.endswith(".nii.gz") else path.stem
 
+    @staticmethod
+    def _profile_output_path(nifti_path, suffix, out_dir=None):
+        """Return a profile path, defaulting to a sibling ``conn`` directory."""
+        nifti_path = Path(nifti_path).expanduser()
+        destination = (
+            Path(out_dir).expanduser()
+            if out_dir is not None
+            else nifti_path.parent.parent / "conn"
+        )
+        return destination / (
+            f"{FunctionalConnectivity._safe_stem(nifti_path)}{suffix}.nii.gz"
+        )
+
     def save_profile(self, connectivity, out_path):
         """Save a masked connectivity vector in the connectome's NIfTI space."""
         out_path = Path(out_path)
@@ -420,14 +586,13 @@ class FunctionalConnectivity:
     def save_profiles_from_niftis(
         self,
         nifti_paths,
-        out_dir,
+        out_dir=None,
         binarize=False,
         threshold=None,
-        suffix="_functional_connectivity",
+        suffix="",
     ):
-        """Compute and save one NIfTI connectivity map per lesion."""
+        """Save each map to a sibling ``conn`` or an explicit directory, named <stem>_<connectome_label><suffix>."""
         nifti_paths = list(nifti_paths)
-        out_dir = Path(out_dir)
         saved_paths = []
         profiles = self.generate_profiles_from_niftis(
             nifti_paths, binarize, threshold
@@ -438,7 +603,7 @@ class FunctionalConnectivity:
             total=len(nifti_paths),
             desc="Saving functional connectivity profiles",
         ):
-            out_path = out_dir / f"{self._safe_stem(nifti_path)}{suffix}.nii.gz"
+            out_path = self._profile_output_path(nifti_path, f"_{self.connectome_label}{suffix}", out_dir=out_dir)
             saved_paths.append(self.save_profile(connectivity, out_path))
 
         return saved_paths
@@ -446,13 +611,13 @@ class FunctionalConnectivity:
     def save_inverted_profiles_from_niftis(
         self,
         nifti_paths,
-        out_dir,
+        out_dir=None,
         similarity="cosine",
         binarize=False,
         threshold=None,
         suffix=None,
     ):
-        """Compute and save one row-similarity NIfTI per input map."""
+        """Save each map to a sibling ``conn`` or an explicit directory."""
         nifti_paths = list(nifti_paths)
         profiles = self.generate_inverted_profiles_from_niftis(
             nifti_paths,
@@ -460,7 +625,6 @@ class FunctionalConnectivity:
             binarize=binarize,
             threshold=threshold,
         )
-        out_dir = Path(out_dir)
         suffix = suffix or f"_{similarity.lower()}_inverted_connectivity"
         saved_paths = []
 
@@ -469,7 +633,7 @@ class FunctionalConnectivity:
             total=len(nifti_paths),
             desc="Saving inverted connectivity profiles",
         ):
-            out_path = out_dir / f"{self._safe_stem(nifti_path)}{suffix}.nii.gz"
+            out_path = self._profile_output_path(nifti_path, f"_{self.connectome_label}{suffix}", out_dir=out_dir)
             saved_paths.append(self.save_profile(profile, out_path))
 
         return saved_paths

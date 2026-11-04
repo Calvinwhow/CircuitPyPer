@@ -35,9 +35,9 @@ def main():
     parser.add_argument("--mask-path", help="Override the history's image mask or fiber atlas")
     parser.add_argument("--vmax", type=float, help="Fixed absolute limit for spatial colors")
     parser.add_argument("--max-lines", type=int, default=10000,
-                        help="Maximum fibers drawn per Circuit Viewer frame")
+                        help="Maximum fibers drawn per General Neuroimage Viewer frame")
     parser.add_argument("--viewer-url",
-                        help="Read camera and lighting from a running Circuit Viewer")
+                        help="Read camera and lighting from a running General Neuroimage Viewer")
     parser.add_argument(
         "--map-stack", type=Path,
         help=("Output 4D NIfTI or 2D fiber NumPy path (default: use the GIF "

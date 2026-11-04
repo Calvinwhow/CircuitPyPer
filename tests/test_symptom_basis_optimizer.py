@@ -9,8 +9,8 @@ from scipy.stats import spearmanr
 
 from calvin_utils.neuroimaging_utils.ccm_utils.optimization.algorithms import elastic_net_ols, pairwise_proxy, rayleigh_refinement, rms_rho
 from calvin_utils.neuroimaging_utils.ccm_utils.optimization.run_optimization import RunOptimization
-from calvin_utils.neuroimaging_utils.ccm_utils.optimization.pipeline import basis_damage, cross_validation, pre_processing
-from calvin_utils.neuroimaging_utils.ccm_utils.optimization.pipeline.prediction import score
+from calvin_utils.neuroimaging_utils.ccm_utils.optimization.output import saving
+from calvin_utils.neuroimaging_utils.ccm_utils.optimization.pipeline import basis_damage, cross_validation, pre_processing, prediction
 from calvin_utils.neuroimaging_utils.ccm_utils.optimization.projections import prediction_variance
 from calvin_utils.neuroimaging_utils.ccm_utils.optimization.selection import prepare_regularization
 from calvin_utils.neuroimaging_utils.ccm_utils.optimization.solvers import adam, proximal_gradient
@@ -46,13 +46,16 @@ def test_damage_reproduces_weighted_map_projection(basis_shards):
     maps, datasets = synthetic_data()
     damage = basis_damage.main(datasets, directory=basis_shards(maps))
     beta = np.array([0.8, -0.4, 0.2, 0.1])
-    normalized = np.stack([values / np.max(np.abs(values)) for values in maps.values()])
+    normalized = np.stack([values / np.linalg.norm(values) for values in maps.values()])
     symptom_map = beta @ normalized
     patients = datasets["score"]["X"]
     projection = (patients @ symptom_map) / np.linalg.norm(patients, axis=1)
 
     assert damage["datasets"]["score"]["X"].dtype == np.float64
-    np.testing.assert_allclose(score(damage["datasets"]["score"]["X"], beta), projection, rtol=1e-5)
+    np.testing.assert_allclose(damage["datasets"]["score"]["X"] @ beta, projection, rtol=1e-5)
+    cosines = (patients / np.linalg.norm(patients, axis=1)[:, None]) @ normalized.T
+    np.testing.assert_allclose(damage["datasets"]["score"]["X"], cosines, rtol=1e-5, atol=1e-6)
+    np.testing.assert_allclose(prediction.score(patients, symptom_map), projection, rtol=1e-5)
     np.testing.assert_allclose(basis_damage.combine(beta, damage["library"], damage["scales"]), symptom_map, rtol=1e-5, atol=1e-6)
     assert damage["map_names"] == tuple(f"synthetic:{name}" for name in maps)
 
@@ -74,20 +77,22 @@ def test_regularization_calibration_splits_the_target_budget_equally():
 
 def test_final_weights_are_normalized_after_unconstrained_optimization(basis_shards):
     maps, datasets = synthetic_data()
-    optimizer = RunOptimization(datasets, basis_dir=basis_shards(maps), method="elastic_net_ols")
-    result = optimizer.run()
+    optimizer = RunOptimization(datasets, basis_dir=basis_shards(maps), methods=("elastic_net_ols",))
+    optimizer.run()
+    result = optimizer.result
     X = {"score": optimizer.damage["datasets"]["score"]["X"]}
     covariance = prediction_variance.gram(X, {"score": 1.0})
 
     assert result["weights"] @ covariance @ result["weights"] == pytest.approx(1.0)
-    assert np.var(result["predictions"]["score"]) == pytest.approx(1.0)
+    assert np.var([record["prediction"] for record in result["apparent"]["predictions"]]) == pytest.approx(1.0, rel=1e-5)
     assert result["map_names"] == tuple(f"synthetic:{name}" for name in maps)
 
 
 def test_gradient_step_updates_state_and_returns_native_merit(basis_shards):
     maps, datasets = synthetic_data()
-    optimizer = RunOptimization(datasets, basis_dir=basis_shards(maps), method="elastic_net_ols")
-    result = optimizer.run()
+    optimizer = RunOptimization(datasets, basis_dir=basis_shards(maps), methods=("elastic_net_ols",))
+    optimizer.run()
+    result = optimizer.result
     previous = result["weights"].copy()
     gradient = np.asarray([0.2, -0.1, 0.3, -0.4])
     merit = optimizer.gradient_step(gradient, learning_rate=0.5)
@@ -156,89 +161,111 @@ def test_initial_weights_are_not_l1_normalized():
     np.testing.assert_array_equal(weights, [20.0, 10.0, 5.0])
 
 
-def test_optimizer_runs_one_linear_pipeline_and_cross_validation(basis_shards):
+def test_cross_validation_fits_only_its_folds_and_no_scheme_fits_every_patient(basis_shards):
     maps, datasets = synthetic_data()
-    result = RunOptimization(datasets, basis_dir=basis_shards(maps), method="elastic_net_ols", seed=11).run(within_dataset_folds=4)
+    optimizer = RunOptimization(datasets, basis_dir=basis_shards(maps), methods=("elastic_net_ols",), seed=11)
+    comparison = optimizer.run(cross_validation=4)
+    result = optimizer.result
 
-    assert result["weights"].shape == (len(maps),)
-    assert result["symptom_map"].shape == (24,)
-    assert result["performance"]["score"]["spearman_rho"] > 0.95
-    assert result["within_dataset_validation"]["summary"]["score"]["spearman_rho"] > 0.9
+    assert comparison["winner"] == "elastic_net_ols"
+    assert result["symptom_map"] is None and result["apparent"] is None and "weights" not in result
+    assert result["cross_validation"]["summary"]["score"]["spearman_rho"] > 0.9
+    assert result["cross_validation"]["summary"]["score"]["rho_method"] == "mean_of_folds"
+    assert len(result["cross_validation"]["predictions"]) == len(datasets["score"]["y"])
+
+    optimizer.run()
+    result = optimizer.result
+    assert result["weights"].shape == (len(maps),) and result["symptom_map"].shape == (24,) and result["cross_validation"] is None
+    assert result["apparent"]["summary"]["score"]["spearman_rho"] > 0.95
 
 
-def test_validation_branches_use_isolated_patients_and_held_out_datasets():
+def test_sparse_semidefinite_is_off_unless_requested():
+    assert "sparse_semidefinite" not in RunOptimization({}).fit_models.keywords["methods"]
+    assert "sparse_semidefinite" in RunOptimization({}, sparse_semidefinite=True).fit_models.keywords["methods"]
+
+
+def test_held_out_algorithm_predictions_are_damage_at_weights(basis_shards):
+    maps, datasets = synthetic_data()
+    damage = basis_damage.main(datasets, directory=basis_shards(maps))
+    weights = np.array([0.8, -0.4, 0.2, 0.1])
+    voxel = prediction.score(damage["datasets"]["score"]["patients"], basis_damage.combine(weights, damage["library"], damage["scales"]))
+    np.testing.assert_allclose(cross_validation.held_out_predictions({"weights": weights}, damage["datasets"]["score"]), voxel, rtol=1e-4, atol=1e-5)
+
+def two_cohorts():
     datasets = {}
     for index, name in enumerate(("first", "second")):
-        X = np.arange(18, dtype=float).reshape(6, 3) + index
-        datasets[name] = {"X": X, "y": np.arange(6, dtype=float), "ids": np.asarray([f"{name}_{row}" for row in range(6)])}
-    damage = {"datasets": datasets, "map_names": ("a", "b", "c"), "sample_sizes": {}}
-    calls = []
-
-    def fit(X, y, names, sample_sizes, seed):
-        calls.append(tuple(X))
-        return {"weights": np.ones(3)}
-
-    result = cross_validation.main(damage, fit, within_dataset_folds=3, cross_dataset=True)
-
-    assert calls[:6] == [("first",)] * 3 + [("second",)] * 3
-    assert calls[6:8] == [("second",), ("first",)]
-    assert calls[-1] == ("first", "second")
-    assert set(result["within_dataset"]["summary"]) == set(datasets)
-    assert set(result["cross_dataset"]["summary"]) == set(datasets)
+        X = np.arange(30, dtype=np.float32).reshape(10, 3) + index
+        datasets[name] = {"X": X, "y": np.arange(10, dtype=float), "ids": np.asarray([f"{name}_{row}" for row in range(10)])}
+    return datasets
 
 
-def test_optimizer_comparison_ranks_validation_performance(monkeypatch, capsys, basis_shards):
-    maps, datasets = synthetic_data()
+def test_patient_folds_hold_out_every_dataset_at_once_and_lodo_holds_out_whole_datasets():
+    datasets = two_cohorts()
+    folds = cross_validation.patient_folds(datasets, 5, seed=3)
+    assert len(folds) == 5 and all(set(fold) == {"first", "second"} and all(len(ids) == 2 for ids in fold.values()) for fold in folds)
+    for name in datasets:
+        held = np.concatenate([fold[name] for fold in folds])
+        assert sorted(held) == sorted(datasets[name]["ids"])
+    training, evaluated = cross_validation.split(datasets, folds[0])
+    assert {name: len(data["y"]) for name, data in training.items()} == {"first": 8, "second": 8}
+    assert {name: len(data["y"]) for name, data in evaluated.items()} == {"first": 2, "second": 2}
+    lodo = cross_validation.dataset_folds(datasets)
+    training, evaluated = cross_validation.split(datasets, lodo[0])
+    assert set(training) == {"second"} and set(evaluated) == {"first"} and len(evaluated["first"]["y"]) == 10
 
-    def run_method(self, within_dataset_folds, cross_dataset_validation):
-        rho = {"elastic_net_ols": 0.8, "pairwise_proxy": -0.9}[self.method]
-        return {"symptom_map": np.asarray([rho]), "within_dataset_validation": {"summary": {"score": {"spearman_rho": rho}}}, "performance": {"score": {"spearman_rho": 1.0}}}
 
-    monkeypatch.setattr(RunOptimization, "_run_method", run_method)
-    optimizer = RunOptimization(datasets, basis_dir=basis_shards(maps))
-    comparison = optimizer.orchestrate_run(("elastic_net_ols", "pairwise_proxy"), within_dataset_folds=4)
+def test_fold_summary_is_the_mean_of_fold_rhos_and_loocv_falls_back_to_pooled():
+    records = [{"dataset": "first", "fold": fold, "patient_id": f"{fold}_{row}", "observed": float(row), "prediction": float(row if fold == 1 else -row)} for fold in (1, 2) for row in range(4)]
+    summary = cross_validation.summary(records, {"first": None}, by_fold=True)["first"]
+    assert summary["fold_rhos"] == [1.0, -1.0] and summary["spearman_rho"] == 0.0 and summary["rho_method"] == "mean_of_folds"
+    loocv = [{**record, "fold": index} for index, record in enumerate(records[:4])]
+    summary = cross_validation.summary(loocv, {"first": None}, by_fold=True)["first"]
+    assert summary["rho_method"] == "pooled" and summary["spearman_rho"] == summary["pooled_spearman_rho"] == 1.0
 
-    assert comparison["winner"] == "pairwise_proxy"
+
+def test_patient_folds_fit_all_datasets_jointly(basis_shards):
+    rng = np.random.default_rng(5)
+    maps = {f"basis_{index}": rng.normal(size=3) for index in range(2)}
+    damage = basis_damage.main(two_cohorts(), directory=basis_shards(maps))
+    seen = []
+
+    def fit_models(damage, seed, final):
+        seen.append({name: len(data["y"]) for name, data in damage["datasets"].items()})
+        return {"elastic_net_ols": {"weights": np.ones(2), "map_names": damage["map_names"]}}
+
+    validation = cross_validation.validate(damage, 5, fit_models, 0)["elastic_net_ols"]["cross_validation"]
+    assert seen == [{"first": 8, "second": 8}] * 5
+    assert len(validation["predictions"]) == 20 and set(validation["summary"]) == {"first", "second"}
+    seen.clear()
+    validation = cross_validation.validate(damage, "lodo", fit_models, 0)["elastic_net_ols"]["cross_validation"]
+    assert seen == [{"second": 10}, {"first": 10}] and "rho_method" not in validation["summary"]["first"]
+
+
+def summarized(rho, dataset="score"):
+    return {"summary": {dataset: {"spearman_rho": rho}}}
+
+
+def test_ranking_uses_cross_validation_rms_rho(capsys):
+    results = {method: {"test": None, "cross_validation": summarized(rho), "apparent": summarized(1.0)} for method, rho in (("elastic_net_ols", 0.8), ("pairwise_proxy", -0.9))}
+    comparison = prediction.rank(results)
+
+    assert comparison["winner"] == "pairwise_proxy" and comparison["ranking"] == ["pairwise_proxy", "elastic_net_ols"]
     assert comparison["performance"]["pairwise_proxy"] == pytest.approx(0.9)
-    assert optimizer.result is comparison["results"]["pairwise_proxy"]
     assert "pairwise_proxy: 0.900000" in capsys.readouterr().out
 
 
-def test_optimizer_comparison_prefers_held_out_performance(monkeypatch, basis_shards):
-    maps, datasets = synthetic_data()
-    held_out = {"held_out": {**datasets["score"], "ids": np.asarray([f"held_{index}" for index in range(len(datasets["score"]["y"]))])}}
-
-    def run_method(self, within_dataset_folds, cross_dataset_validation):
-        test_rho = {"elastic_net_ols": 0.95, "pairwise_proxy": 0.2}[self.method]
-        fold_rho = {"elastic_net_ols": 0.1, "pairwise_proxy": 0.9}[self.method]
-        assert tuple(self.damage["test_datasets"]) == ("held_out",)
-        return {"symptom_map": np.asarray([test_rho]), "test": {"summary": {"held_out": {"spearman_rho": test_rho}}}, "within_dataset_validation": {"summary": {"score": {"spearman_rho": fold_rho}}}, "performance": {"score": {"spearman_rho": 1.0}}}
-
-    monkeypatch.setattr(RunOptimization, "_run_method", run_method)
-    comparison = RunOptimization(datasets, basis_dir=basis_shards(maps)).orchestrate_run(("elastic_net_ols", "pairwise_proxy"), within_dataset_folds=4, test_datasets=held_out)
-
-    assert comparison["winner"] == "elastic_net_ols"
+def test_ranking_prefers_test_performance():
+    results = {method: {"test": summarized(test, "held_out"), "cross_validation": summarized(fold), "apparent": summarized(1.0)} for method, test, fold in (("elastic_net_ols", 0.95, 0.1), ("pairwise_proxy", 0.2, 0.9))}
+    assert prediction.rank(results)["winner"] == "elastic_net_ols"
 
 
-def test_optimizer_saves_all_comparison_results_unless_winner_only(monkeypatch, tmp_path):
-    maps, datasets = synthetic_data()
-    optimizer = RunOptimization(datasets)
-    optimizer.method = "pairwise_proxy"
-    optimizer.result = {"method": "pairwise_proxy"}
-    optimizer.results = {"elastic_net_ols": {"method": "elastic_net_ols"}, "pairwise_proxy": optimizer.result}
-    saved = []
-
-    def save(result, out_dir, **options):
-        saved.append((result["method"], Path(out_dir)))
-
-    monkeypatch.setattr("calvin_utils.neuroimaging_utils.ccm_utils.optimization.run_optimization.saving.main", save)
-    optimizer.save(tmp_path, None, None, False, False, 5, 60, "auto")
-    assert saved == [("elastic_net_ols", tmp_path / "elastic_net_ols"), ("pairwise_proxy", tmp_path / "pairwise_proxy")]
-
-    saved.clear()
-    optimizer.save(tmp_path, None, None, False, False, 5, 60, "auto", winner_only=True)
-    assert saved == [("pairwise_proxy", tmp_path)]
-
+def test_every_model_is_saved_in_its_own_directory_unless_winner_only(monkeypatch, tmp_path):
+    monkeypatch.setattr(saving, "save_model", lambda result, damage, root, *options: root)
+    results = {"elastic_net_ols": {}, "pairwise_proxy": {}}
+    options = (None, None, False, False, 5, 60, "auto")
+    assert saving.main(results, None, tmp_path, "pairwise_proxy", False, *options) == {"elastic_net_ols": tmp_path / "elastic_net_ols", "pairwise_proxy": tmp_path / "pairwise_proxy"}
+    assert saving.main(results, None, tmp_path, "pairwise_proxy", True, *options) == {"pairwise_proxy": tmp_path}
+    assert saving.main(results, None, None, "pairwise_proxy", False, *options) == {}
 
 def test_damage_is_independent_of_voxel_chunk_size(basis_shards):
     maps, datasets = synthetic_data()
@@ -249,6 +276,13 @@ def test_damage_is_independent_of_voxel_chunk_size(basis_shards):
 
     np.testing.assert_allclose(small["datasets"]["score"]["X"], whole["datasets"]["score"]["X"], rtol=1e-5, atol=1e-6)
     assert small["map_names"] == ("first:basis_0", "first:basis_1", "second:basis_2", "second:basis_3")
+
+
+def test_library_symptoms_are_every_regressand_once_in_shard_order(basis_shards):
+    maps, _ = synthetic_data()
+    directory = basis_shards({name: maps[name] for name in ("basis_0", "basis_1")}, cohort="first")
+    basis_shards({name: maps[name] for name in ("basis_1", "basis_2")}, cohort="second")
+    assert basis_damage.symptoms(basis_damage.load_library(directory=directory)) == ("basis_0", "basis_1", "basis_2")
 
 
 def test_cohort_selection_loads_only_the_named_shards(basis_shards):
@@ -301,6 +335,14 @@ def test_rms_requires_multistart_and_is_reproducible():
         assert "n_starts >= 10" in str(error)
     else:
         raise AssertionError("RMS rho accepted fewer than ten starts.")
+
+
+def test_rms_gradient_is_the_forward_difference_of_its_target():
+    rng = np.random.default_rng(9)
+    prepared = ({"a": rng.normal(size=(20, 6)), "b": rng.normal(size=(15, 6))}, {"a": rng.normal(size=20), "b": rng.normal(size=15)})
+    weights = rng.normal(size=6)
+    expected = adam.finite_difference(lambda values: rms_rho.target(values, prepared, 0.01, 0.02), weights, 0.05)
+    np.testing.assert_allclose(rms_rho.gradient(weights, prepared, 0.01, 0.02, 0.05), expected, rtol=1e-9, atol=1e-12)
 
 
 def test_rms_enforces_unit_prediction_variance():

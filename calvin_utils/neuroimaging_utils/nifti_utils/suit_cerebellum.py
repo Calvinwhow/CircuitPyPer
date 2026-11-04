@@ -508,7 +508,7 @@ class SuitCerebellumAtlas:
         """Delegate to the shared parcel-mesh pipeline.
 
         The blur/iso-level/smoothing logic lives in
-        :mod:`calvin_utils.neuroimaging_utils.nifti_utils.parcel_meshes` so
+        :mod:`gnv.convert.parcel_meshes` so
         cerebellar and cerebral parcels are built by exactly the same code and
         can sit in one directory without looking like two atlases.
 
@@ -516,7 +516,7 @@ class SuitCerebellumAtlas:
         transfers between atlases: stair-steps are one voxel tall regardless of
         what a voxel measures.
         """
-        from calvin_utils.neuroimaging_utils.nifti_utils.parcel_meshes import (
+        from gnv.convert.parcel_meshes import (
             mesh_from_mask,
         )
 

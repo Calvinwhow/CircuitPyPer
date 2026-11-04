@@ -308,7 +308,7 @@ class GiiNiiFileImport:
     
     def import_from_series(self):
         print('Attempting to import from pandas series. expecting PD series full of filenames. Will fail unless a series is provided using df["path_column"]')
-        file_paths = list(self.import_path.to_numpy())
+        file_paths = [str(path) if isinstance(path, Path) else path for path in self.import_path.to_numpy()]
         return self._import_matrices(file_paths), file_paths
 
     def detect_input_type(self):

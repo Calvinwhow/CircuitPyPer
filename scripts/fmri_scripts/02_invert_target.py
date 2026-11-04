@@ -21,7 +21,9 @@ from calvin_utils.neuroimaging_utils.fmri_utils.compute_connectivity import (
 # =============================================================================
 
 TARGET_NIFTI_PATHS = []
-OUT_DIR = ""
+# Leave as None to replace the input folder (for example, roi/) with conn/.
+# Set a path only when all outputs should be collected in one directory.
+OUT_DIR = None
 
 CONNECTOME_DIR = DEFAULT_CONNECTOME_DIR
 MASK_PATH = DEFAULT_MASK
@@ -33,12 +35,12 @@ SIMILARITY_STATS_PATH = None
 SIMILARITY = "cosine"          # 'cosine' or 'pearson'
 BINARIZE = False
 THRESHOLD = None
-OUTPUT_SUFFIX = None            # Default includes the selected similarity.
+OUTPUT_SUFFIX = None            # Default includes the selected similarity; the connectome label is always added before it.
 
 
 def main():
-    if not TARGET_NIFTI_PATHS or not OUT_DIR:
-        raise ValueError("Set TARGET_NIFTI_PATHS and OUT_DIR in CONFIG.")
+    if not TARGET_NIFTI_PATHS:
+        raise ValueError("Set TARGET_NIFTI_PATHS in CONFIG.")
 
     mapper = FunctionalConnectivity(
         connectome_dir=CONNECTOME_DIR,
@@ -50,7 +52,7 @@ def main():
     )
     saved_paths = mapper.save_inverted_profiles_from_niftis(
         nifti_paths=TARGET_NIFTI_PATHS,
-        out_dir=Path(OUT_DIR).expanduser(),
+        out_dir=Path(OUT_DIR).expanduser() if OUT_DIR else None,
         similarity=SIMILARITY,
         binarize=BINARIZE,
         threshold=THRESHOLD,

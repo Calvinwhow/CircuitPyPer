@@ -58,20 +58,39 @@ def load_library(cohorts=None, directory=BASIS_DIR):
     return {"shards": shards, "names": names, "n_voxels": n_voxels.pop(), "mask_path": mask_paths.pop(), "sample_sizes": sample_sizes}
 
 
+def symptoms(library):
+    """Every symptom the selected shards have bases for, in shard order."""
+    return tuple(dict.fromkeys(basis["regressand"] for shard in library["shards"] for basis in shard["sidecar"]["bases"]))
+
+
 def sweep(shards, patients, chunk_voxels):
-    """Read every shard once, accumulating patient-by-basis dot products and each basis's max absolute value."""
+    """Read every shard once, accumulating patient-by-basis dot products and each basis's L2 norm."""
     n_voxels = shards[0]["values"].shape[0]
     n_bases = sum(shard["values"].shape[1] for shard in shards)
     products = {key: np.zeros((len(values), n_bases)) for key, values in patients.items()}
-    scales = np.zeros(n_bases)
+    squares = np.zeros(n_bases)
     for start in range(0, n_voxels, chunk_voxels):
         block = np.hstack([shard["values"][start:start + chunk_voxels] for shard in shards])
         if not np.isfinite(block).all():
             raise ValueError(f"Basis shards contain NaN or infinity in voxels {start} to {start + len(block)}.")
-        scales = np.maximum(scales, np.abs(block).max(axis=0))
+        squares += np.square(block, dtype=np.float64).sum(axis=0)
         for key, values in patients.items():
             products[key] += values[:, start:start + chunk_voxels] @ block
-    return products, scales
+    return products, np.sqrt(squares)
+
+
+def bare_subjects(name, ids):
+    """Subject IDs without the "{dataset}:" prefix fitting IDs may carry and sidecars do not."""
+    prefix = f"{name}:"
+    return np.asarray([value[len(prefix):] if value.startswith(prefix) else value for value in np.asarray(ids).astype(str)])
+
+
+def check_leakage(test_datasets, library):
+    """Refuse a test dataset named like a selected basis cohort whose patients built that cohort's bases."""
+    sidecars = {shard["sidecar"]["cohort"]: shard["sidecar"] for shard in library["shards"]}
+    leaking = sorted(name for name in set(test_datasets) & set(sidecars) if set(bare_subjects(name, test_datasets[name]["ids"])) & set(map(str, sidecars[name]["patient_ids"])))
+    if leaking:
+        raise ValueError(f"Test datasets {leaking} contain patients that built selected basis cohorts; leave those cohorts out of cohorts= or test on other patients.")
 
 
 def main(datasets, test_datasets=None, cohorts=None, directory=BASIS_DIR, chunk_voxels=16384):
@@ -83,6 +102,7 @@ def main(datasets, test_datasets=None, cohorts=None, directory=BASIS_DIR, chunk_
     chunk_voxels: int; number of voxel rows read from each shard per sweep block.
     """
     library = load_library(cohorts, directory)
+    check_leakage(test_datasets or {}, library)
     groups = {"datasets": datasets, "test_datasets": test_datasets or {}}
     patients = {}
     for group, members in groups.items():
@@ -96,7 +116,7 @@ def main(datasets, test_datasets=None, cohorts=None, directory=BASIS_DIR, chunk_
     if empty:
         raise ValueError(f"Basis maps {empty} contain no nonzero value.")
     damage = {key: products[key] / scales / np.linalg.norm(values, axis=1)[:, None] for key, values in patients.items()}
-    scored = {group: {name: {"X": damage[group, name], "y": np.asarray(data["y"], dtype=float).reshape(-1), "ids": np.asarray(data["ids"]).astype(str).reshape(-1)} for name, data in members.items()} for group, members in groups.items()}
+    scored = {group: {name: {"X": damage[group, name], "patients": patients[group, name], "y": np.asarray(data["y"], dtype=float).reshape(-1), "ids": np.asarray(data["ids"]).astype(str).reshape(-1)} for name, data in members.items()} for group, members in groups.items()}
     return {"library": library, "map_names": library["names"], "sample_sizes": library["sample_sizes"], "scales": scales, "datasets": scored["datasets"], "test_datasets": scored["test_datasets"] if test_datasets is not None else None}
 
 

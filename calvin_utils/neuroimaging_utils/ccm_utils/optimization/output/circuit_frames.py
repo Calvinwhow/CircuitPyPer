@@ -1,4 +1,4 @@
-"""Circuit Viewer adapter for rendering fiber optimization frames."""
+"""General Neuroimage Viewer adapter for rendering fiber optimization frames."""
 
 import io
 import os
@@ -16,17 +16,17 @@ except ImportError:
     pv = None
 
 try:
-    from circuit_viewer.session import RenderSession
-    from circuit_viewer.spec import new_fiber_layer, new_overlay, new_spec
+    from gnv.session import RenderSession
+    from gnv.spec import new_fiber_layer, new_overlay, new_spec
 except ModuleNotFoundError as exc:
-    if exc.name != "circuit_viewer":
+    if exc.name != "gnv":
         raise
-    viewer_root = Path(os.environ.get("CIRCUIT_VIEWER_ROOT", Path(__file__).resolve().parents[7] / "circuit_viewer")).expanduser()
-    if not (viewer_root / "circuit_viewer" / "__init__.py").is_file():
-        raise ModuleNotFoundError("circuit-viewer is required. Install it or set CIRCUIT_VIEWER_ROOT.") from exc
+    viewer_root = Path(os.environ.get("GNV_ROOT", Path(__file__).resolve().parents[7] / "gnv")).expanduser()
+    if not (viewer_root / "gnv" / "__init__.py").is_file():
+        raise ModuleNotFoundError("gnv is required. Install it or set GNV_ROOT.") from exc
     sys.path.insert(0, str(viewer_root))
-    from circuit_viewer.session import RenderSession
-    from circuit_viewer.spec import new_fiber_layer, new_overlay, new_spec
+    from gnv.session import RenderSession
+    from gnv.spec import new_fiber_layer, new_overlay, new_spec
 
 
 class CircuitFiberFrames:

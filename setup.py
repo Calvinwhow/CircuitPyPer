@@ -41,9 +41,14 @@ setup(
     packages=find_packages(),
     package_data={"calvin_utils.testing_utils": ["nouns.txt"]},
     data_files=shared_data_files(),
-    install_requires=parse_requirements("requirements.txt"),
+    # Light by default: only what reading the tract file formats needs, which is
+    # what the viewer (gnv) installs. The analysis stack is the "full" extra:
+    #     pip install -e ".[full]"
+    install_requires=parse_requirements("requirements_io.txt"),
     extras_require={
+        "full": parse_requirements("requirements.txt"),
         "ml": ["imbalanced-learn", "pysr", "scikit-optimize"],
+        "neural": ["torch>=2.2"],
         "sdp": ["cvxpy>=1.6,<1.7"],
         "tract": ["vedo"],
         "legacy": ["nltools", "pathlib2"],
