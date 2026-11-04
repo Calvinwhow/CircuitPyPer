@@ -262,7 +262,7 @@ def test_ranking_prefers_test_performance():
 def test_every_model_is_saved_in_its_own_directory_unless_winner_only(monkeypatch, tmp_path):
     monkeypatch.setattr(saving, "save_model", lambda result, damage, root, *options: root)
     results = {"elastic_net_ols": {}, "pairwise_proxy": {}}
-    options = (None, None, False, False, 5, 60, "auto")
+    options = (None, None, False, False, False, 5, 60, "auto")
     assert saving.main(results, None, tmp_path, "pairwise_proxy", False, *options) == {"elastic_net_ols": tmp_path / "elastic_net_ols", "pairwise_proxy": tmp_path / "pairwise_proxy"}
     assert saving.main(results, None, tmp_path, "pairwise_proxy", True, *options) == {"pairwise_proxy": tmp_path}
     assert saving.main(results, None, None, "pairwise_proxy", False, *options) == {}

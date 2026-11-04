@@ -155,7 +155,7 @@ def test_network_training_is_written_as_a_4d_map_stack(basis_shards, tmp_path):
     mask.reshape(-1)[:30] = 1
     nib.save(nib.Nifti1Image(mask, np.eye(4)), tmp_path / "mask.nii.gz")
     optimizer = network_optimizer(basis_shards, methods=("elastic_net_ols",), fully_trainable=True, max_epochs=40, patience=40)
-    optimizer.run(out_dir=tmp_path / "output", output_type="nii", mask_path=tmp_path / "mask.nii.gz", store_history=True, gif_max_frames=10)
+    optimizer.run(out_dir=tmp_path / "output", output_type="nii", mask_path=tmp_path / "mask.nii.gz", store_map_stack=True, gif_max_frames=10)
 
     final = tmp_path / "output" / "anatomical_neural_network" / "final_model"
     stack = np.asarray(nib.load(final / "optimization.nii.gz").dataobj)
@@ -164,7 +164,7 @@ def test_network_training_is_written_as_a_4d_map_stack(basis_shards, tmp_path):
     np.testing.assert_allclose(stack[..., -1], saved, rtol=1e-6, atol=1e-7)
     assert not np.allclose(stack[..., 0], stack[..., -1])
     assert not (final / "optimization.gif").exists() and not (final / "optimization_history.npz").exists()
-    saving.main(optimizer.results, optimizer.damage, tmp_path / "rendered", "anatomical_neural_network", True, "nii", tmp_path / "mask.nii.gz", False, True, 5, 10, "metrics")
+    saving.main(optimizer.results, optimizer.damage, tmp_path / "rendered", "anatomical_neural_network", True, "nii", tmp_path / "mask.nii.gz", False, False, True, 5, 10, "metrics")
     assert not (tmp_path / "rendered" / "final_model" / "optimization.gif").exists() and not (tmp_path / "rendered" / "final_model" / "optimization.nii.gz").exists()
 
 def test_network_basis_regression_uses_least_squares_basis_weights(basis_shards, tmp_path, monkeypatch):

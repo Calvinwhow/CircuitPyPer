@@ -78,9 +78,9 @@ def test_store_history_writes_the_4d_stack_and_render_gif_writes_only_the_gif(tm
     nib.save(nib.Nifti1Image(np.ones((2, 2, 2), dtype=np.float32), np.eye(4)), tmp_path / "mask.nii.gz")
     fitting = {"fit": cohort(rng, 20, 8, "fit")}
     optimizer = RunOptimization(fitting, basis_dir=basis_shards(maps), methods=("elastic_net_ols",))
-    optimizer.run(out_dir=tmp_path / "stored", output_type="nii", mask_path=tmp_path / "mask.nii.gz", store_history=True)
+    optimizer.run(out_dir=tmp_path / "stored", output_type="nii", mask_path=tmp_path / "mask.nii.gz", store_history=True, store_map_stack=True)
     stored = tmp_path / "stored" / "final_model"
     assert (stored / "optimization_history.npz").is_file() and nib.load(stored / "optimization.nii.gz").ndim == 4 and not (stored / "optimization.gif").exists()
-    saving.main(optimizer.results, optimizer.damage, tmp_path / "rendered", optimizer.comparison["winner"], False, "nii", tmp_path / "mask.nii.gz", False, True, 5, 10, "metrics")
+    saving.main(optimizer.results, optimizer.damage, tmp_path / "rendered", optimizer.comparison["winner"], False, "nii", tmp_path / "mask.nii.gz", False, False, True, 5, 10, "metrics")
     rendered = tmp_path / "rendered" / "final_model"
     assert (rendered / "optimization.gif").is_file() and not (rendered / "optimization.nii.gz").exists() and not (rendered / "optimization_history.npz").exists()

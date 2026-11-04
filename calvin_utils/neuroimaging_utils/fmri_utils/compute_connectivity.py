@@ -163,7 +163,7 @@ class FunctionalConnectivity:
         NaN entries in float32 chunks (sporadic in yeo1000_dil) are read as 0, matching how the float8 converter stores them.
         """
         if chunk_data.dtype == np.uint8: return decode_e4m3(chunk_data[rows, :])
-        return np.nan_to_num(np.asarray(chunk_data[rows, :], dtype=np.float32, order="C"), copy=False, nan=0.0)
+        return np.nan_to_num(np.asarray(chunk_data[rows, :], dtype=np.float32, order="C"), copy=True, nan=0.0)
 
     def _rows_per_batch(self):
         bytes_per_row = self.chunk_labels.size * np.dtype(np.float32).itemsize

@@ -6,6 +6,27 @@ from calvin_utils.neuroimaging_utils.fmri_utils.compute_connectivity import (
 )
 
 
+def write_seed_normalization_resources(connectome_dir, mask_path, chunk_labels):
+    """Create small local normalization inputs so tests never require the EHD connectome."""
+    root = connectome_dir.parent
+    mask = nib.load(mask_path)
+    ones = np.ones(mask.shape, dtype=np.float32)
+    for suffix in ("std", "norm"):
+        nib.save(
+            nib.Nifti1Image(ones, mask.affine),
+            root / f"{root.name}_{suffix}_weighted_mask.nii.gz",
+        )
+
+    combo_dir = root / "Combo"
+    combo_dir.mkdir()
+    combo = np.eye(chunk_labels.size, dtype=np.float32)
+    for chunk in np.unique(chunk_labels):
+        np.save(
+            combo_dir / f"{chunk}_Combo.npy",
+            combo[chunk_labels == chunk, :],
+        )
+
+
 def test_functional_connectivity_computes_and_saves_w_times_c(tmp_path):
     affine = np.array(
         [
@@ -40,6 +61,7 @@ def test_functional_connectivity_computes_and_saves_w_times_c(tmp_path):
     )
     np.save(connectome_dir / "1_AvgR.npy", connectome[[0, 2], :])
     np.save(connectome_dir / "2_AvgR.npy", connectome[[1, 3], :])
+    write_seed_normalization_resources(connectome_dir, mask_path, chunk_labels)
 
     mapper = FunctionalConnectivity(
         connectome_dir=connectome_dir,
@@ -47,7 +69,7 @@ def test_functional_connectivity_computes_and_saves_w_times_c(tmp_path):
         chunk_index_path=chunk_index_path,
     )
     result = mapper.generate_connectivity_profile(lesion_path)
-    np.testing.assert_allclose(result, weights @ connectome)
+    np.testing.assert_allclose(result, (weights @ connectome) / np.linalg.norm(weights))
 
     saved_path = mapper.save_profile(
         result,
@@ -77,6 +99,7 @@ def test_functional_connectivity_processes_cohort_chunk_first(tmp_path):
     )
     np.save(connectome_dir / "1_AvgR.npy", connectome[[0, 2], :])
     np.save(connectome_dir / "2_AvgR.npy", connectome[[1, 3], :])
+    write_seed_normalization_resources(connectome_dir, mask_path, labels)
 
     weights = np.array(
         [[1.0, 0.0, 2.0, 0.0], [0.0, 3.0, 0.0, 4.0]],
@@ -99,7 +122,8 @@ def test_functional_connectivity_processes_cohort_chunk_first(tmp_path):
     )
     profiles = mapper.generate_profiles_from_niftis(lesion_paths)
 
-    np.testing.assert_allclose(profiles, weights @ connectome)
+    expected = (weights @ connectome) / np.linalg.norm(weights, axis=1)[:, None]
+    np.testing.assert_allclose(profiles, expected)
 
 
 def test_functional_connectivity_defaults_to_sibling_conn_directory(tmp_path):
@@ -125,6 +149,11 @@ def test_functional_connectivity_defaults_to_sibling_conn_directory(tmp_path):
         chunk_index_path,
     )
     np.save(connectome_dir / "1_AvgR.npy", np.eye(2, dtype=np.float32))
+    write_seed_normalization_resources(
+        connectome_dir,
+        mask_path,
+        np.ones(2, dtype=np.int16),
+    )
 
     mapper = FunctionalConnectivity(
         connectome_dir=connectome_dir,
@@ -136,7 +165,7 @@ def test_functional_connectivity_defaults_to_sibling_conn_directory(tmp_path):
     expected = (
         input_dir.parent
         / "conn"
-        / "sub-001_ses-01_mask_AvgR.nii.gz"
+        / f"sub-001_ses-01_mask_{mapper.connectome_label}.nii.gz"
     )
     assert saved_paths == [expected]
     assert expected.is_file()
@@ -168,6 +197,7 @@ def test_functional_connectivity_does_not_open_inactive_chunks(tmp_path):
     )
     chunk_one = np.arange(8, dtype=np.float32).reshape(2, 4)
     np.save(connectome_dir / "1_AvgR.npy", chunk_one)
+    write_seed_normalization_resources(connectome_dir, mask_path, labels)
     # No chunk 2 file: the lesion has no weight there, so it must not be opened.
 
     mapper = FunctionalConnectivity(
