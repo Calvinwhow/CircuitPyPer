@@ -44,7 +44,7 @@ class VoxelwiseRegression:
     Empirical permutation p-values are derived only from refits of the caller-supplied
     tensors after permuting their observation linkage. No theoretical null
     distribution is inserted. For each permutation, ``_get_max_stat`` uses the
-    90th percentile of absolute location statistics by default. Despite its
+    99th percentile of absolute location statistics by default. Despite its
     historical ``pseudo_var_smooth`` name, that is a percentile heuristic—not
     actual variance smoothing and not a true maximum-statistic correction.
     """
@@ -575,10 +575,10 @@ class VoxelwiseRegression:
         return B, T, R2
     
     ### P-VALUE METHODS ###
-    def _get_max_stat(self, arr, pseudo_var_smooth=True, t=90):
+    def _get_max_stat(self, arr, pseudo_var_smooth=True, t=99):
         """Summarize each empirical permutation across locations.
 
-        When ``pseudo_var_smooth`` is true, return percentile ``t`` (90 by
+        When ``pseudo_var_smooth`` is true, return percentile ``t`` (99 by
         default) of the absolute statistics in each row. This historical option
         is a percentile heuristic, not variance smoothing. When false, return
         the absolute row maximum.

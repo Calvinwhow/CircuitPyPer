@@ -28,6 +28,17 @@ def load_regression_cli():
 
 
 class RegressionPipelineContractsTest(unittest.TestCase):
+    def test_permutation_summary_defaults_to_99th_percentile(self):
+        regression = VoxelwiseRegression.__new__(VoxelwiseRegression)
+        statistics = np.array(
+            [[-10.0, 1.0, 2.0, 3.0], [4.0, -5.0, 6.0, 7.0]],
+            dtype=float,
+        )
+        np.testing.assert_allclose(
+            regression._get_max_stat(statistics),
+            np.nanpercentile(np.abs(statistics), 99, axis=1),
+        )
+
     def test_in_memory_tmap_matches_statsmodels(self):
         x = np.linspace(-2, 2, 12)
         X = np.column_stack([np.ones(len(x)), x])

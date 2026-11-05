@@ -194,10 +194,10 @@ class FiberIO:
 
     def _load_single_fiber_values(self, file_path):
         """
-        Load one patient’s per-fiber magnitude vector.
+        Load one patient’s fiber or fiber-by-frame values.
 
         Accepted forms for now:
-        - .npy: 1D vector length n_fibers
+        - .npy: numeric values with fibers on the first axis
         - .npz: key 'values' or 'fiber_values'
         - .json: key 'values' or 'fiber_values'
         - .fibfilt: add parser later
@@ -221,8 +221,6 @@ class FiberIO:
             arr = np.load(path, allow_pickle=True)
             if arr.dtype == object:
                 return self._extract_geometry_values(arr, path)
-            if arr.ndim != 1:
-                raise ValueError(f"Expected 1D fiber value vector in {path}, got shape {arr.shape}")
             if lower_name.endswith((".fib.npy", ".values.npy")):
                 description_path = FiberFormatConverter.values_description_path(path)
                 if lower_name.endswith(".values.npy") or description_path.is_file():
@@ -235,7 +233,7 @@ class FiberIO:
             key = 'values' if 'values' in obj else 'fiber_values' if 'fiber_values' in obj else None
             if key is None:
                 raise ValueError(f"NPZ file missing 'values' or 'fiber_values' key: {file_path}")
-            arr = np.asarray(obj[key]).flatten()
+            arr = np.asarray(obj[key])
             return arr.astype(np.float32)
 
         if ftype == 'json':
@@ -244,7 +242,7 @@ class FiberIO:
             key = 'values' if 'values' in obj else 'fiber_values' if 'fiber_values' in obj else None
             if key is None:
                 raise ValueError(f"JSON file missing 'values' or 'fiber_values' key: {file_path}")
-            arr = np.asarray(obj[key]).flatten()
+            arr = np.asarray(obj[key])
             return arr.astype(np.float32)
 
         if ftype == 'fibfilt':
@@ -286,7 +284,7 @@ class FiberIO:
         Fiber-level masking.
         arr shape:
         - 1D: (n_fibers,)
-        - 2D: (n_fibers, n_files)
+        - 2D: (n_fibers, n_frames)
         """
         if mask is None:
             mask_indices = np.arange(arr.shape[0])
@@ -343,7 +341,7 @@ class FiberIO:
             
     def import_fiber_to_numpy_array(self, file_paths):
         """
-        Import many patient files as a matrix of shape (n_fibers_kept, n_files).
+        Import files as ``(flattened fiber-frames, files)``.
         """
         data_list = []
         expected_len = len(self.reference_fibers) if self.reference_fibers is not None else None
@@ -359,38 +357,20 @@ class FiberIO:
                     f"{data.shape[0]} in file: {file_path}"
                 )
 
-            data_list.append(data)
+            data_list.append(data[self.fiber_mask, ...].reshape(-1))
 
         arr = np.column_stack(data_list)
-
-        mask = self.fiber_mask
-        _, _, arr = self.mask_array(arr, mask)
-
         return arr
 
     def prepare_map_for_evaluation(self, map_data):
-        """Convert one fiberwise map to a masked MNI density vector."""
+        """Convert flattened fiber-frames to flattened MNI voxel-frames."""
         projector = self._get_density_projector()
         values = np.asarray(map_data, dtype=np.float32).reshape(-1)
-
-        if values.shape[0] != projector["n_fibers"]:
-            mask = self.fiber_mask
-            if mask is not None and values.shape[0] == int(mask.sum()):
-                values = self.unmask_array(values, mask, fill_value=0)
-
-        if values.shape[0] != projector["n_fibers"]:
-            raise ValueError(
-                f"Fiber value length {values.shape[0]} does not match atlas "
-                f"fiber count {projector['n_fibers']}."
-            )
-
-        weights = values[projector["fiber_indices"]]
-        density = np.bincount(
-            projector["voxel_indices"],
-            weights=weights,
-            minlength=projector["n_mask_voxels"],
-        )
-        return density.astype(np.float32, copy=False)
+        n_input = projector["n_fibers"] if values.size % projector["n_fibers"] == 0 else int(self.fiber_mask.sum())
+        values = self.unmask_array(values.reshape(n_input, -1), None if n_input == projector["n_fibers"] else self.fiber_mask, fill_value=0)
+        weights = values[projector["fiber_indices"], :]
+        density = np.column_stack([np.bincount(projector["voxel_indices"], weights=weights[:, frame], minlength=projector["n_mask_voxels"]) for frame in range(weights.shape[1])])
+        return density.astype(np.float32, copy=False).reshape(-1)
 
     def prepare_evaluation_data(self, file_paths):
         """Return fiber profiles or MNI lesion maps in one evaluation space."""
@@ -481,21 +461,12 @@ class FiberIO:
 
         arr = np.load(str(path), allow_pickle=True)
         if arr.dtype != object:
-            if arr.ndim != 1:
-                raise ValueError(f"Expected a 1D fiber vector in {path}, got {arr.shape}")
             values = arr.astype(np.float32, copy=False)
         else:
             values = self._extract_geometry_values(arr, path)
 
         mask = self.fiber_mask
-        if mask is None or values.shape[0] == int(mask.sum()):
-            return values
-        if values.shape[0] == mask.shape[0]:
-            return values[mask]
-        raise ValueError(
-            f"Fiber value length {values.shape[0]} in {path} does not match the "
-            f"masked ({int(mask.sum())}) or full ({mask.shape[0]}) atlas size."
-        )
+        return values.reshape(-1) if mask is None or values.shape[0] == int(mask.sum()) else values[mask, ...].reshape(-1)
 
     @staticmethod
     def native_map_stem(path):
@@ -679,7 +650,7 @@ class FiberIO:
         tolerance_mm=5.0,
     ):
         """Average each value with its nearest mirrored-neighbor value."""
-        values = np.asarray(values, dtype=np.float32).reshape(-1)
+        values = np.asarray(values, dtype=np.float32)
         if values.shape[0] != len(self.reference_fibers):
             raise ValueError(
                 f"Fiber value length ({values.shape[0]}) does not match "
@@ -779,7 +750,7 @@ class FiberIO:
         Parameters
         ----------
         values_path : path-like
-            Existing one-dimensional ``*.fib.npy`` vector. New descriptors are
+            Existing ``*.fib.npy`` fiber-by-frame array. New descriptors are
             written only for the compact format; legacy split-name pairs are
             read-only compatibility inputs.
         fiber_atlas_path : path-like
@@ -818,12 +789,10 @@ class FiberIO:
             raise FileNotFoundError(fiber_atlas_path)
 
         values = np.load(values_path, mmap_mode="r")
-        if values.ndim != 1:
-            raise ValueError(f"Expected a 1D value vector in {values_path}, got {values.shape}")
         finite = np.asarray(values[np.isfinite(values)], dtype=np.float32)
-        value_count = int(values.shape[0])
-        input_value_count = value_count if input_value_count is None else int(input_value_count)
-        kept_fiber_count = value_count if kept_fiber_count is None else int(kept_fiber_count)
+        fiber_count = int(values.shape[0])
+        input_value_count = fiber_count if input_value_count is None else int(input_value_count)
+        kept_fiber_count = fiber_count if kept_fiber_count is None else int(kept_fiber_count)
         atlas_stat = fiber_atlas_path.stat()
         digest = hashlib.sha256()
         with values_path.open("rb") as values_file:
@@ -840,7 +809,7 @@ class FiberIO:
             "fiber_atlas": {
                 "path": str(fiber_atlas_path),
                 "relative_path": os.path.relpath(fiber_atlas_path, values_path.parent),
-                "fiber_count": value_count,
+                "fiber_count": fiber_count,
                 "size_bytes": int(atlas_stat.st_size),
                 "mtime_ns": int(atlas_stat.st_mtime_ns),
             },
@@ -849,12 +818,13 @@ class FiberIO:
                 "relative_path": values_relative_path,
                 "size_bytes": int(values_path.stat().st_size),
                 "dtype": str(values.dtype),
-                "shape": [value_count],
-                "semantics": "one scalar per fiber",
+                "shape": list(values.shape),
+                "axes": ["fiber"] if values.ndim == 1 else ["fiber", "frame"],
+                "semantics": "one scalar per fiber" if values.ndim == 1 else "one value per fiber and frame",
                 "ordering": "values[i] corresponds to fiber_atlas fiber i",
                 "sha256": digest.hexdigest(),
                 "finite_count": int(finite.size),
-                "nonfinite_count": value_count - int(finite.size),
+                "nonfinite_count": int(values.size) - int(finite.size),
                 "nonzero_count": int(np.count_nonzero(finite)),
                 "minimum": float(np.min(finite)) if finite.size else None,
                 "maximum": float(np.max(finite)) if finite.size else None,
@@ -862,9 +832,9 @@ class FiberIO:
             "mask": {
                 "input_value_count": input_value_count,
                 "kept_fiber_count": kept_fiber_count,
-                "full_fiber_count": value_count,
+                "full_fiber_count": fiber_count,
                 "fill_value": float(fill_value),
-                "expanded_to_full_atlas": input_value_count != value_count,
+                "expanded_to_full_atlas": input_value_count != fiber_count,
             },
             "symmetry": (
                 dict(symmetry) if symmetry is not None else {"symmetric": False}
@@ -883,9 +853,10 @@ class FiberIO:
     def write_values_companion(cls, fiber_path, fiber_atlas_path, output_path=None):
         """Backfill a new-format value/descriptor pair from ``*.fib.npy``.
 
-        Column four is reduced to one median value per fiber and saved as
-        ``float32``. ``fiber_atlas_path`` is mandatory because a value vector
-        without its geometry provenance is ambiguous. Numeric inputs are paired
+        Geometry-bearing inputs are reduced to one value per fiber. Numeric
+        fiber or fiber-by-frame inputs retain their shape and become ``float32``.
+        ``fiber_atlas_path`` is mandatory because values
+        without their geometry provenance are ambiguous. Numeric inputs are paired
         in place. Geometry-bearing inputs are preserved and, unless an explicit
         output is supplied, migrate to ``<stem>_values.fib.npy``. The sibling
         ``*.fib.json`` is always written in the same operation.
@@ -895,7 +866,7 @@ class FiberIO:
         values = (
             cls._extract_geometry_values(stored, fiber_path)
             if stored.dtype == object
-            else np.asarray(stored, dtype=np.float32).reshape(-1)
+            else np.asarray(stored, dtype=np.float32)
         )
         if output_path is None:
             output_path = (
@@ -935,16 +906,17 @@ class FiberIO:
     ):
         """Save fiber statistics and their visualization/export companions.
 
-        ``arr`` may be ``(n_fibers_kept,)`` or
-        ``(n_fibers_kept, n_files)``. Every output column is restored to full
-        canonical-atlas order before it is written.
+        ``arr`` uses the shared ``(flattened locations, files)`` contract. Each
+        output column is reshaped to fiber-by-frame and restored to full atlas
+        order before it is written.
 
         Output contract
         ---------------
         ``*.fib.npy`` and ``*.fib.json`` are always written as the native
-        regression result. The NumPy file is a one-dimensional float32 vector;
-        geometry remains in the canonical atlas recorded by the JSON. The old
-        split names and geometry-bearing outputs are no longer written.
+        regression result. Static output is a one-dimensional float32 vector;
+        multi-frame output is a fiber-by-frame array. Geometry remains in the
+        canonical atlas recorded by the JSON. The old split names and
+        geometry-bearing outputs are no longer written.
 
         The ordinary pair is always preserved. With ``symmetric=True`` (the
         default), an additional ``*_symmetric.fib.npy``/``*.fib.json`` pair is
@@ -983,12 +955,8 @@ class FiberIO:
             effective_mask = self.fiber_mask if mask is None else np.asarray(mask, dtype=bool)
             if self.reference_fibers is None:
                 raise ValueError("Reference fibers are required for reconstruction.")
-            values = np.asarray(arr[:, i], dtype=np.float32).reshape(-1)
-            if effective_mask is not None and values.shape[0] != int(effective_mask.sum()):
-                raise ValueError(
-                    f"Masked value vector length ({values.shape[0]}) does not match "
-                    f"number of kept fibers ({int(effective_mask.sum())})."
-                )
+            input_fibers = int(effective_mask.sum()) if effective_mask is not None else len(self.reference_fibers)
+            values = np.asarray(arr[:, i], dtype=np.float32).reshape(input_fibers, -1)
             full_values = np.asarray(
                 self.unmask_array(values, effective_mask, fill_value=fill_value),
                 dtype=np.float32,
@@ -1002,15 +970,16 @@ class FiberIO:
                 print(f"Saving values to: {values_path}")
                 print(f"Saving values description to: {description_path}")
             else:
-                np.save(values_path, full_values)
+                stored_values = full_values[:, 0] if full_values.shape[1] == 1 else full_values
+                np.save(values_path, stored_values)
                 description_path = self.write_values_description(
                     values_path,
                     self.mask_path,
-                    input_value_count=values.shape[0],
+                    input_value_count=input_fibers,
                     kept_fiber_count=(
                         int(effective_mask.sum())
                         if effective_mask is not None
-                        else values.shape[0]
+                        else input_fibers
                     ),
                     fill_value=fill_value,
                 )
@@ -1033,7 +1002,7 @@ class FiberIO:
                 else:
                     symmetric_values, symmetry_metadata = (
                         self._approximate_symmetric_values(
-                            full_values,
+                            stored_values,
                             tolerance_mm=symmetry_tolerance_mm,
                         )
                     )
@@ -1041,11 +1010,11 @@ class FiberIO:
                     symmetric_description_path = self.write_values_description(
                         symmetric_values_path,
                         self.mask_path,
-                        input_value_count=values.shape[0],
+                        input_value_count=input_fibers,
                         kept_fiber_count=(
                             int(effective_mask.sum())
                             if effective_mask is not None
-                            else values.shape[0]
+                            else input_fibers
                         ),
                         fill_value=fill_value,
                         symmetry=symmetry_metadata,
@@ -1060,7 +1029,7 @@ class FiberIO:
                 )
 
             print(f"Saving positive/negative fibers: {sign}")
-            if convert_to_nifti:
+            if convert_to_nifti and full_values.shape[1] == 1:
                 print(f"Saving volumetric version of fibers (.nii.gz).")
                 if not dry_run:
                     for variant_name, variant_description_path in output_variants:
@@ -1075,7 +1044,7 @@ class FiberIO:
                             threshold=None,
                         ).run()
 
-            if convert_to_leaddbs:
+            if convert_to_leaddbs and full_values.shape[1] == 1:
                 lead_signs = (
                     ("positive", "negative")
                     if sign == "both"

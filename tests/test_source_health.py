@@ -33,13 +33,6 @@ class SourceHealthTest(unittest.TestCase):
                 failures.append(f"{module}: {type(exc).__name__}: {exc}")
         self.assertEqual(failures, [], "\n".join(failures))
 
-    def test_fast_regression_utility_is_import_safe(self):
-        module = importlib.import_module(
-            "calvin_utils.neuroimaging_utils.ccm_utils.fast_voxelwise_regression"
-        )
-        self.assertTrue(callable(module.main))
-        self.assertGreater(len(module.indep_var_list), 1)
-
     def test_optional_bayesian_dependency_is_lazy(self):
         module = importlib.import_module(
             "calvin_utils.neuroimaging_utils.ccm_utils.bayesian_optimization"

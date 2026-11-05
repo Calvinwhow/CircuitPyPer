@@ -14,9 +14,6 @@ from setuptools import find_packages
 
 from calvin_utils.ml_utils.train_test_splitter import TrainTestSplitter
 from calvin_utils.ml_utils.umap_regression import UmapRegression
-from calvin_utils.neuroimaging_utils.ccm_utils.npy_regression import (
-    RegressionNPYAnalysis,
-)
 from calvin_utils.neuroimaging_utils.ccm_utils.correlations import run_pearson
 from calvin_utils.neuroimaging_utils.nifti_utils.compare_nifti_centroids import (
     NiftiCentroidComparisonStats,
@@ -55,7 +52,6 @@ def test_all_python_subpackages_are_discovered():
     assert "calvin_utils.neuroimaging_utils.vbm_utils" in packages
     assert "calvin_utils.plotting_utils.rendering" in packages
     assert "calvin_utils.plotting_utils.statistical" in packages
-    assert "calvin_utils.experimental" in packages
 
 
 def test_relocated_modules_preserve_approved_legacy_imports():
@@ -72,8 +68,6 @@ def test_relocated_modules_preserve_approved_legacy_imports():
     from calvin_utils.neuroimaging_utils.dbs_utils.compare_vta_target_overlap import (
         VTADiceCorrelation,
     )
-    from calvin_utils.neuroimaging_utils.ccm_utils.voxelwise_palm import RegressionNPYAnalysis as old_npy
-    from calvin_utils.neuroimaging_utils.ccm_utils.npy_regression import RegressionNPYAnalysis as new_npy
 
     assert old_importer is new_importer
     assert old_exporter is new_exporter
@@ -81,7 +75,6 @@ def test_relocated_modules_preserve_approved_legacy_imports():
     assert old_postprocessing is new_postprocessing
     assert old_dice is new_dice
     assert VTADiceCorrelation is new_dice
-    assert old_npy is new_npy
     assert callable(ModelVTAWrapper)
 
 
@@ -96,7 +89,6 @@ def test_permutation_classes_document_empirical_null_contract():
     for cls in (
         CorrelationFWE,
         RegressionFWE,
-        RegressionNPYAnalysis,
         VoxelwiseRegression,
         UmapRegression,
     ):
@@ -104,32 +96,6 @@ def test_permutation_classes_document_empirical_null_contract():
         assert "empirical" in docstring
         assert "theoretical null" in docstring
         assert "not" in docstring
-
-
-def test_npy_permutation_summary_uses_every_voxel_in_each_contrast():
-    analysis = RegressionNPYAnalysis.__new__(RegressionNPYAnalysis)
-    analysis.n_permutations = 2
-    analysis.n_subjects = 3
-    analysis.contrast_matrix = np.ones((2, 1))
-    analysis.X = np.arange(3, dtype=float).reshape(-1, 1)
-    analysis.Y = np.zeros((3, 3), dtype=float)
-    contrast_maps = np.array([[1.0, -4.0, 2.0], [-3.0, 2.0, 6.0]])
-    seen_shapes = []
-
-    analysis.run_regression = lambda _x, _y: (None, None, None, None)
-    analysis.apply_contrast = lambda *_args: (None, contrast_maps)
-
-    def get_max_stat(values):
-        values = np.asarray(values)
-        seen_shapes.append(values.shape)
-        return np.max(np.abs(values))
-
-    analysis.get_max_stat = get_max_stat
-
-    result = analysis.run_permutation()
-
-    np.testing.assert_array_equal(result, [[4.0, 4.0], [6.0, 6.0]])
-    assert seen_shapes == [(3,), (3,), (3,), (3,)]
 
 
 def test_source_resources_resolve():

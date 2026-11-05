@@ -5,7 +5,6 @@ import tempfile
 import warnings
 from pathlib import Path
 
-import nibabel as nib
 import numpy as np
 from tqdm import tqdm
 
@@ -102,29 +101,22 @@ class FunctionalConnectivity:
         return (data > threshold).astype(np.float32)
 
     def _load_lesion_weights(self, nifti_path):
-        lesion_img = nib.load(nifti_path)
-        mask_img = nib.load(str(self.mask_path))
+        weights = NiftiIO(mask_path=str(self.mask_path)).import_nifti_to_numpy_array([nifti_path])[:, 0]
+        return weights.reshape(self.chunk_labels.size, -1).T.astype(np.float32, copy=False)
 
-        if lesion_img.shape[:3] != mask_img.shape or not np.allclose(
-            lesion_img.affine, mask_img.affine
-        ):
-            from nilearn import image
+    @staticmethod
+    def _flatten_frames(values):
+        return np.asarray(values).T.reshape(-1)
 
-            lesion_img = image.resample_to_img(
-                source_img=lesion_img,
-                target_img=mask_img,
-                interpolation="continuous",
-            )
-
-        weights = NiftiIO(
-            mask_path=str(self.mask_path)
-        ).import_nifti_to_numpy_array([lesion_img])[:, 0]
-        return weights.astype(np.float32, copy=False)
+    @classmethod
+    def _flatten_profile_batches(cls, values, frame_counts):
+        offsets = np.cumsum([0, *frame_counts])
+        return np.vstack([cls._flatten_frames(values[start:stop]) for start, stop in zip(offsets[:-1], offsets[1:])])
 
     def spatial_correlation(self, first_nifti_path, second_nifti_path):
         """Return masked voxelwise Pearson correlation between two NIfTIs."""
-        first = self._load_lesion_weights(first_nifti_path)
-        second = self._load_lesion_weights(second_nifti_path)
+        first = self._load_lesion_weights(first_nifti_path).reshape(-1)
+        second = self._load_lesion_weights(second_nifti_path).reshape(-1)
         finite = np.isfinite(first) & np.isfinite(second)
         if np.count_nonzero(finite) < 2:
             raise ValueError("Spatial correlation requires two finite voxels.")
@@ -493,28 +485,18 @@ class FunctionalConnectivity:
         if binarize:
             weights = self._binarize_data(weights, threshold)
 
-        labels = self.chunk_labels
-        if weights.size != labels.size:
-            raise ValueError(
-                f"Lesion has {weights.size} masked voxels, but the chunk index "
-                f"contains {labels.size}."
-            )
-
-        return self._seed_maps(weights)[0]
+        return self._flatten_frames(self._seed_maps(weights))
 
     def generate_profiles_from_niftis(
         self, nifti_paths, binarize=False, threshold=None
     ):
-        """Process all lesions chunk-first and return ``(lesions, voxels)``."""
-        weights = np.vstack(
-            [
-                self._load_lesion_weights(path)
-                for path in tqdm(nifti_paths, desc="Loading lesion weights")
-            ]
-        ).astype(np.float32, copy=False)
+        """Process all seeds chunk-first and return flattened voxel-frame rows."""
+        weights = [self._load_lesion_weights(path) for path in tqdm(nifti_paths, desc="Loading lesion weights")]
+        frame_counts = [value.shape[0] for value in weights]
+        weights = np.vstack(weights).astype(np.float32, copy=False)
         if binarize:
             weights = self._binarize_data(weights, threshold)
-        return self._seed_maps(weights)
+        return self._flatten_profile_batches(self._seed_maps(weights), frame_counts)
 
     def generate_inverted_connectivity_profile(
         self,
@@ -527,7 +509,7 @@ class FunctionalConnectivity:
         weights = self._load_lesion_weights(nifti_path)
         if binarize:
             weights = self._binarize_data(weights, threshold)
-        return self._compute_inverted_profiles(weights, similarity)[0]
+        return self._flatten_frames(self._compute_inverted_profiles(weights, similarity))
 
     def generate_inverted_profiles_from_niftis(
         self,
@@ -536,16 +518,13 @@ class FunctionalConnectivity:
         binarize=False,
         threshold=None,
     ):
-        """Return row-wise similarity maps for several NIfTIs at once."""
-        weights = np.vstack(
-            [
-                self._load_lesion_weights(path)
-                for path in tqdm(nifti_paths, desc="Loading similarity maps")
-            ]
-        ).astype(np.float32, copy=False)
+        """Return flattened voxel-frame similarity rows for several NIfTIs."""
+        weights = [self._load_lesion_weights(path) for path in tqdm(nifti_paths, desc="Loading similarity maps")]
+        frame_counts = [value.shape[0] for value in weights]
+        weights = np.vstack(weights).astype(np.float32, copy=False)
         if binarize:
             weights = self._binarize_data(weights, threshold)
-        return self._compute_inverted_profiles(weights, similarity)
+        return self._flatten_profile_batches(self._compute_inverted_profiles(weights, similarity), frame_counts)
 
     @staticmethod
     def _safe_stem(path):
@@ -566,7 +545,7 @@ class FunctionalConnectivity:
         )
 
     def save_profile(self, connectivity, out_path):
-        """Save a masked connectivity vector in the connectome's NIfTI space."""
+        """Restore and save one flattened voxel-frame connectivity profile."""
         out_path = Path(out_path)
         if out_path.name.endswith(".nii.gz"):
             output_base = out_path.with_name(out_path.name[:-7])

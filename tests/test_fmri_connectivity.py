@@ -126,6 +126,35 @@ def test_functional_connectivity_processes_cohort_chunk_first(tmp_path):
     np.testing.assert_allclose(profiles, expected)
 
 
+def test_functional_connectivity_processes_and_saves_each_frame(tmp_path):
+    affine = np.eye(4)
+    mask_path = tmp_path / "mask.nii.gz"
+    chunk_index_path = tmp_path / "chunk_idx.nii.gz"
+    lesion_path = tmp_path / "lesion_timeseries.nii.gz"
+    connectome_dir = tmp_path / "AvgR"
+    connectome_dir.mkdir()
+    connectome = np.arange(16, dtype=np.float32).reshape(4, 4)
+    frames = np.array([[1, 0], [2, 1], [0, 3], [3, 0]], dtype=np.float32)
+    labels = np.array([1, 2, 1, 2], dtype=np.int16)
+
+    nib.save(nib.Nifti1Image(np.ones((2, 2, 1), dtype=np.uint8), affine), mask_path)
+    nib.save(nib.Nifti1Image(labels.reshape(2, 2, 1), affine), chunk_index_path)
+    nib.save(nib.Nifti1Image(frames.reshape(2, 2, 1, 2), affine), lesion_path)
+    np.save(connectome_dir / "1_AvgR.npy", connectome[[0, 2], :])
+    np.save(connectome_dir / "2_AvgR.npy", connectome[[1, 3], :])
+    write_seed_normalization_resources(connectome_dir, mask_path, labels)
+
+    mapper = FunctionalConnectivity(connectome_dir=connectome_dir, mask_path=mask_path, chunk_index_path=chunk_index_path)
+    profile = mapper.generate_connectivity_profile(lesion_path)
+    expected = np.column_stack([(frames[:, frame] @ connectome) / np.linalg.norm(frames[:, frame]) for frame in range(2)])
+    np.testing.assert_allclose(profile.reshape(4, 2), expected)
+
+    saved_path = mapper.save_profile(profile, tmp_path / "connectivity_timeseries.nii.gz")
+    saved = nib.load(saved_path)
+    assert saved.shape == (2, 2, 1, 2)
+    np.testing.assert_allclose(saved.get_fdata().reshape(4, 2), expected)
+
+
 def test_functional_connectivity_defaults_to_sibling_conn_directory(tmp_path):
     affine = np.eye(4)
     input_dir = tmp_path / "sub-001" / "ses-01" / "roi"

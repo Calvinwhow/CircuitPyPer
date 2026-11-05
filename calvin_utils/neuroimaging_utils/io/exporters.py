@@ -32,6 +32,7 @@ class NeuroimageFileOutporter:
     def __init__(self, output_ftype, mask_path=None):
         output_ftype = {
             "nifti": "nii",
+            "nii_timeseries": "nii",
             "gii": "surface",
             "freesurfer": "surface",
         }.get(output_ftype, output_ftype)
@@ -50,10 +51,6 @@ class NeuroimageFileOutporter:
             from calvin_utils.neuroimaging_utils.tract_utils.fiber_io import FiberIO
 
             self.io = FiberIO(mask_path=mask_path)
-        elif output_ftype == "nii_timeseries":
-            from calvin_utils.neuroimaging_utils.nifti_utils.volume_io import VolumetricTimeSeriesIO
-
-            self.io = VolumetricTimeSeriesIO(mask_path=mask_path)
         else:
             raise ValueError(f"Unknown output_ftype: {output_ftype}")
 

@@ -6,7 +6,7 @@ from pathlib import Path
 from tqdm import tqdm
 from nilearn import image
 from scipy.signal import butter, sosfiltfilt, coherence
-from calvin_utils.neuroimaging_utils.nifti_utils.volume_io import VolumetricTimeSeriesIO
+from calvin_utils.neuroimaging_utils.nifti_utils.volume_io import NiftiIO
 
 
 class TimeseriesConnectivity:
@@ -216,7 +216,7 @@ class TimeseriesConnectivity:
         self.tr = float(tr) if tr is not None else self._infer_tr(self.reference_img)
         self.fs = 1.0 / self.tr
 
-        self.timeseries_io = VolumetricTimeSeriesIO(
+        self.timeseries_io = NiftiIO(
             mask_path=mask_path,
             threshold=mask_threshold,
         )
@@ -616,7 +616,7 @@ class TimeseriesConnectivity:
         """
         Saves connectivity as a 4D NIfTI where dim4 = band index.
 
-        The write path uses VolumetricTimeSeriesIO.save_files(...), so the
+        The write path uses NiftiIO.save_files(...), so the
         output is compatible with your existing nifti-timeseries import path.
         """
         conn_masked, bands = self.generate_connectivity_array(

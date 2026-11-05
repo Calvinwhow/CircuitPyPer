@@ -64,6 +64,35 @@ class IOContractsTest(unittest.TestCase):
         np.testing.assert_array_equal(restored[indices], full[indices])
         np.testing.assert_array_equal(restored[~indices], -1)
 
+    def test_nifti_io_flattens_and_restores_frames(self):
+        path = self.root / "timeseries.nii.gz"
+        values = np.arange(24, dtype=np.float32).reshape(2, 2, 2, 3)
+        nib.save(nib.Nifti1Image(values, np.eye(4)), path)
+
+        io = NiftiIO(mask_path=str(self.mask_path))
+        imported = io.import_nifti_to_numpy_array([path])
+        expected = values.reshape(8, 3)[self.mask.astype(bool)].reshape(-1)
+        np.testing.assert_array_equal(imported[:, 0], expected)
+
+        io.save_files(imported[:, 0], [self.root / "restored"], dry_run=False)
+        restored = nib.load(self.root / "restored.nii.gz").get_fdata()
+        self.assertEqual(restored.shape, values.shape)
+        np.testing.assert_array_equal(restored.reshape(8, 3)[self.mask.astype(bool)], values.reshape(8, 3)[self.mask.astype(bool)])
+
+    def test_nifti_io_keeps_static_output_three_dimensional(self):
+        path, values = self._image("static.nii.gz")
+        io = NiftiIO(mask_path=str(self.mask_path))
+        imported = io.import_nifti_to_numpy_array([path])
+        io.save_files(imported[:, 0], [self.root / "restored_static"], dry_run=False)
+        restored = nib.load(self.root / "restored_static.nii.gz")
+        self.assertEqual(restored.shape, (2, 2, 2))
+        np.testing.assert_array_equal(restored.get_fdata().reshape(-1)[self.mask.astype(bool)], values[self.mask.astype(bool)])
+
+    def test_nifti_io_keeps_full_volume_output_compatible(self):
+        values = np.arange(8, dtype=np.float32)
+        NiftiIO(mask_path=str(self.mask_path)).save_files(values, [self.root / "full_volume"], dry_run=False)
+        np.testing.assert_array_equal(nib.load(self.root / "full_volume.nii.gz").get_fdata().reshape(-1), values)
+
     def test_path_collectors_find_and_optionally_save_files(self):
         self._image("a.nii.gz")
         self._image("b.nii.gz")

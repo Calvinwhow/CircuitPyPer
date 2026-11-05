@@ -85,6 +85,22 @@ def test_save_files_writes_compact_fib_pair(tmp_path):
     assert not (tmp_path / "contrast_tval_0.fib.desc.json").exists()
 
 
+def test_save_files_flattens_and_restores_fiber_frames(tmp_path):
+    atlas_path = tmp_path / "atlas.npz"
+    _atlas(atlas_path, fiber_mask=[1, 0, 1])
+    values = np.asarray([[1, 2], [3, 4]], dtype=np.float32)
+
+    io = FiberIO(mask_path=atlas_path)
+    io.save_files(values.reshape(-1), [tmp_path / "timeseries"], dry_run=False, convert_to_nifti=False, convert_to_leaddbs=False, symmetric=False)
+
+    stored = np.load(tmp_path / "timeseries.fib.npy")
+    np.testing.assert_array_equal(stored, np.asarray([[1, 2], [0, 0], [3, 4]], dtype=np.float32))
+    np.testing.assert_array_equal(io.import_fiber_to_numpy_array([tmp_path / "timeseries.fib.npy"])[:, 0], values.reshape(-1))
+    description = json.loads((tmp_path / "timeseries.fib.json").read_text())
+    assert description["values"]["shape"] == [3, 2]
+    assert description["values"]["axes"] == ["fiber", "frame"]
+
+
 def test_save_files_writes_approximately_symmetric_pair_by_default(tmp_path):
     atlas_path = tmp_path / "atlas.npz"
     _approximately_symmetric_atlas(atlas_path)

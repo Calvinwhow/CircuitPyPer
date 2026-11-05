@@ -28,7 +28,6 @@ if not hasattr(np, "maximum_sctype"):
 
     np.maximum_sctype = _maximum_sctype
 import pandas as pd
-import nibabel as nib
 from glob import glob
 from tqdm import tqdm
 from pathlib import Path
@@ -36,7 +35,7 @@ from tqdm import tqdm
 import random
 from uuid import uuid4
 from calvin_utils.neuroimaging_utils.surface_utils.surface_io import SurfaceIO
-from calvin_utils.neuroimaging_utils.nifti_utils.volume_io import NiftiIO, VolumetricTimeSeriesIO
+from calvin_utils.neuroimaging_utils.nifti_utils.volume_io import NiftiIO
 from calvin_utils.neuroimaging_utils.tract_utils.fiber_io import FiberIO
 
 
@@ -198,10 +197,6 @@ class GiiNiiFileImport:
         basename = p.name.lower()
         
         if suffixes[-2:] == ['.nii', '.gz'] or suffixes[-1:] == ['.nii']:
-            img = nib.load(str(path))
-            shape = img.shape
-            if len(shape) == 4 and shape[3] > 1:
-                return 'nii_timeseries'
             return 'nii'
         if suffixes[-2:] == ['.gii', '.gz'] or suffixes[-1:] == ['.gii']:
             return 'gii'
@@ -243,8 +238,6 @@ class GiiNiiFileImport:
             arr = self.import_npy_to_numpy_array(file_paths)
         elif detected_ftype == "nii":
             arr = self.import_nifti_to_numpy_array(file_paths)
-        elif detected_ftype == "nii_timeseries":
-            arr = self.import_nifti_timeseries_to_numpy_array(file_paths)
         elif detected_ftype in {"gii", "freesurfer"}:
             arr = self.import_surface_to_numpy_array(file_paths)
         elif detected_ftype == "fiber":
@@ -252,13 +245,6 @@ class GiiNiiFileImport:
         else:
             raise RuntimeError(f"Unknown file type ({detected_ftype}) imported. Did not detect nifti, gifti, fiber, or npy. Please provide one of these files for import.")
         return arr
-
-    def import_nifti_timeseries_to_numpy_array(self, file_paths):
-        """Loads 4D volumetric timeseries niftis"""
-        self.timeseries_io = VolumetricTimeSeriesIO(mask_path=self.mask_path)
-        self.output_ftype = self.timeseries_io.output_ftype
-        data = self.timeseries_io.import_nifti_to_numpy_array(file_paths)
-        return data
 
     def import_npy_to_numpy_array(self, file_paths):
         '''Loads a numpy array from a single .npy file. Calvin formats these as (subjects, voxels), which are the entire dataframe.'''

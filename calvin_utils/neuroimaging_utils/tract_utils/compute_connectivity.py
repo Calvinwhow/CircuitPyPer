@@ -26,6 +26,7 @@ if not hasattr(np, "maximum_sctype"):
 import nibabel as nib
 from pathlib import Path
 from tqdm import tqdm
+from calvin_utils.neuroimaging_utils.nifti_utils.volume_io import NiftiIO
 from calvin_utils.neuroimaging_utils.tract_utils.fiber_intersection import FiberVoxelIndexer
 from calvin_utils.neuroimaging_utils.tract_utils.fiber_io import FiberIO
 
@@ -33,12 +34,7 @@ class FiberConnectivity:
     """
     Generate individualized per-fiber connectivity profiles from patient NIfTIs.
 
-    Output format:
-        One ``.fib.npy``/``.fib.json`` pair per patient. The NumPy file is a
-        1D float32 vector of shape ``(n_fibers,)`` and the JSON records its
-        canonical atlas.
-
-    That is the format expected by FiberIO._load_single_fiber_values(...).
+    Each output stores one value per fiber and input frame.
     """
 
     def __init__(self, fiber_indexer, mode='max', fiber_atlas_path=None):
@@ -66,18 +62,11 @@ class FiberConnectivity:
 
     def _load_patient_nifti(self, nifti_path):
         img = nib.load(nifti_path)
-
         if img.shape[:3] != self.reference_shape or not np.allclose(img.affine, self.reference_affine):
             from nilearn import image
-
-            img = image.resample_to_img(
-                source_img=img,
-                target_img=self.reference_img,
-                interpolation='continuous'
-            )
-
-        data = img.get_fdata(dtype=np.float32)
-        return img, data
+            img = image.resample_to_img(source_img=img, target_img=self.reference_img, interpolation='continuous')
+        values = NiftiIO(mask_path=None).import_nifti_to_numpy_array([img])[:, 0]
+        return values.reshape(int(np.prod(self.reference_shape)), -1)
 
     @staticmethod
     def _binarize_data(data, threshold):
@@ -85,128 +74,50 @@ class FiberConnectivity:
             raise ValueError("Threshold error. Binarize=True, but threshold=None. Set threshold to a value for binarization.")
         return (data > threshold).astype(np.uint8)
     
-    def _reduce_hits_to_fiber_values(self, voxel_data, hit_flags, hit_linear_indices_per_fiber):
-        """
+    @staticmethod
+    def _binary_values(values, active):
+        return np.any(active, axis=0).astype(np.float32)
 
-        """
-        flat = np.asarray(voxel_data).reshape(-1)
-        n_fibers = len(hit_flags)
+    @staticmethod
+    def _maximum_values(values, active):
+        maxima = np.max(np.where(active, values, -np.inf), axis=0, initial=-np.inf)
+        return np.where(np.isfinite(maxima), maxima, 0).astype(np.float32)
 
-        if self.mode == "binary":
-            return hit_flags.astype(np.float32)
+    @staticmethod
+    def _mean_values(values, active):
+        totals = np.sum(np.where(active, values, 0), axis=0)
+        counts = np.sum(active, axis=0)
+        return np.divide(totals, counts, out=np.zeros_like(totals), where=counts > 0).astype(np.float32)
 
-        if self.mode not in {"max", "mean", "sum"}:
-            raise ValueError(f"Unsupported mode: {self.mode}")
+    @staticmethod
+    def _summed_values(values, active):
+        return np.sum(np.where(active, values, 0), axis=0).astype(np.float32)
 
-        out = np.zeros(n_fibers, dtype=np.float32)
+    def _fiber_values(self, query_data, value_data, voxel_indices):
+        values = value_data[voxel_indices]
+        active = np.isfinite(values) & (query_data[voxel_indices] != 0)
+        reducers = {"binary": self._binary_values, "max": self._maximum_values, "mean": self._mean_values, "sum": self._summed_values}
+        return reducers[self.mode](values, active)
 
-        lengths = np.array([
-            0 if lin_hits is None else lin_hits.size
-            for lin_hits in hit_linear_indices_per_fiber
-        ], dtype=np.int64)
-
-        if lengths.sum() == 0:
-            return out
-
-        fiber_ids = np.repeat(np.arange(n_fibers), lengths)
-
-        all_hits = np.concatenate([
-            lin_hits for lin_hits in hit_linear_indices_per_fiber
-            if lin_hits is not None and lin_hits.size > 0
-        ])
-
-        vals = flat[all_hits].astype(np.float32)
-
-        valid = ~np.isnan(vals)
-        fiber_ids = fiber_ids[valid]
-        vals = vals[valid]
-
-        if vals.size == 0:
-            return out
-
-        if self.mode == "sum":
-            return np.bincount(
-                fiber_ids,
-                weights=vals,
-                minlength=n_fibers
-            ).astype(np.float32)
-
-        if self.mode == "mean":
-            sums = np.bincount(fiber_ids, weights=vals, minlength=n_fibers)
-            counts = np.bincount(fiber_ids, minlength=n_fibers)
-
-            np.divide(sums, counts, out=out, where=counts > 0)
-            return out.astype(np.float32)
-
-        if self.mode == "max":
-            order = np.argsort(fiber_ids, kind="stable")
-            fiber_ids = fiber_ids[order]
-            vals = vals[order]
-
-            starts = np.r_[0, np.flatnonzero(np.diff(fiber_ids)) + 1]
-            max_vals = np.maximum.reduceat(vals, starts)
-
-            out[fiber_ids[starts]] = max_vals
-            return out
-    # def _reduce_hits_to_fiber_values(self, voxel_data, hit_flags, hit_linear_indices_per_fiber, mode):
-    #     """
-    #     mode:
-    #         'binary' -> 1 if any hit, else 0
-    #         'max'    -> max voxel value hit by that fiber
-    #         'mean'   -> mean voxel value hit by that fiber
-    #         'sum'    -> sum of voxel values hit by that fiber
-    #     """
-    #     flat = voxel_data.reshape(-1)
-    #     out = np.zeros(len(hit_flags), dtype=np.float32)
-
-    #     if mode == 'binary':
-    #         out[hit_flags] = 1.0
-    #         return out
-
-    #     for i, lin_hits in enumerate(hit_linear_indices_per_fiber):
-    #         if lin_hits is None or lin_hits.size == 0:
-    #             continue
-
-    #         vals = flat[lin_hits]
-    #         if vals.size == 0 or np.all(np.isnan(vals)):
-    #             out[i] = np.nan
-    #         elif mode == 'max':
-    #             out[i] = np.nanmax(vals)
-    #         elif mode == 'mean':
-    #             out[i] = np.nanmean(vals)
-    #         elif mode == 'sum':
-    #             out[i] = np.nansum(vals)
-    #         else:
-    #             raise ValueError(f"Unsupported mode: {mode}")
-
-    #     return out
+    def _reduce_fibers(self, query_data, value_data):
+        return np.vstack([self._fiber_values(query_data, value_data, indices) for indices in self.fiber_indexer.fiber_voxel_indices])
 
     def generate_connectivity_profile(self, nifti_path, binarize, threshold):
         """
-        Return one patient's fiber vector of shape (n_fibers,).
+        Return one flattened fiber-by-frame profile.
         """
-        _, data = self._load_patient_nifti(nifti_path)
-
+        data = self._load_patient_nifti(nifti_path)
         if binarize:
             query_data = self._binarize_data(data, threshold)
             value_data = data if self.mode != 'binary' else query_data
         else:
             query_data = data
             value_data = data
-
-        hit_flags, hit_linear_indices_per_fiber = self.fiber_indexer.query_image_hits(query_data)
-
-        fiber_values = self._reduce_hits_to_fiber_values(
-            voxel_data=value_data,
-            hit_flags=hit_flags,
-            hit_linear_indices_per_fiber=hit_linear_indices_per_fiber
-            )
-
-        return fiber_values.astype(np.float32)
+        return self._reduce_fibers(query_data, value_data).reshape(-1)
 
     def generate_profiles_from_niftis(self, nifti_paths, binarize=False, threshold=None):
         """
-        Return matrix shape (n_patients, n_fibers).
+        Return one flattened fiber-frame row per NIfTI.
         binarize: whether to binarize input niftis using a threshold. Must set threshold to a value. 
         threshold: values below this are removed from the seed nifti. Used if binarize=True
         """
@@ -246,6 +157,7 @@ class FiberConnectivity:
         return destination / f"{FiberConnectivity._safe_stem(nifti_path)}{suffix}.fib.npy"
 
     def save_profile(self, fiber_values, out_path, fiber_atlas_path=None):
+        """Restore and save one flattened fiber-frame connectivity profile."""
         atlas_path = (
             Path(fiber_atlas_path)
             if fiber_atlas_path is not None
@@ -260,8 +172,8 @@ class FiberConnectivity:
         if not out_path.name.lower().endswith(".fib.npy"):
             raise ValueError(f"Fiber profile output must end with .fib.npy: {out_path}")
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        fiber_values = np.asarray(fiber_values, dtype=np.float32).flatten()
-        np.save(out_path, fiber_values)
+        fiber_values = np.asarray(fiber_values, dtype=np.float32).reshape(len(self.fiber_indexer.fiber_voxel_indices), -1)
+        np.save(out_path, fiber_values[:, 0] if fiber_values.shape[1] == 1 else fiber_values)
         return FiberIO.write_values_description(out_path, atlas_path)
 
     def save_profiles_from_niftis(self, nifti_paths, out_dir=None, binarize=True, threshold=0, suffix=""):
