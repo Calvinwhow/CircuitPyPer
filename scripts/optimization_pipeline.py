@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Optionally add basis cohorts, then optimize the selected basis library."""
+"""Optionally add basis cohorts, then optimize the selected basis library.
+
+BASIS_INPUTS example (the registry passed to build.main; see build.main for every field):
+    {"mask_path": "/data/MNI152_T1_2mm_brain_mask.nii", "transform": "rank", "cohorts": {
+        "stroke": {"pathology": "Stroke", "input_path": "/data/stroke.csv", "subject_column": "subject", "regressand_list": ["gait", "speech"], "voxelwise_vars": ["lesion", "network"], "covariates_list": ["age"], "drop_rows": [["selected", "equal", 0]]},
+        "priors": {"maps": {"tremor": {"path": "/data/tremor.nii.gz", "representation": "networks"}, "gait": {"path": "/data/gait.fib.json", "representation": "fibers", "n": 40}}}}}
+"""
 
 import sys
 from pathlib import Path

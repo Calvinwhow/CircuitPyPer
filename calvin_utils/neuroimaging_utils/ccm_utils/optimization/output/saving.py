@@ -6,6 +6,7 @@ import json
 import numpy as np
 from pathlib import Path
 from . import visualization
+from .anatomy_maps import AnatomyMaps
 from .history import OptimizationHistory
 from ..pipeline import basis_damage, prediction
 from ..pipeline.fitting import NETWORK
@@ -110,6 +111,7 @@ def final_model(result, damage, final, output_type, mask_path, store_history, st
         network_details(result, final)
     else:
         algorithm_details(result, final)
+    AnatomyMaps(final, Path(result["library"]["shards"][0]["path"]).parent).run()
     iterations(result, damage, final, output_type, mask_path, store_history, store_map_stack, render_gif, gif_fps, gif_max_frames, gif_view)
 
 

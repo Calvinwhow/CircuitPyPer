@@ -33,7 +33,6 @@ from calvin_utils.neuroimaging_utils.tract_utils.fiber_converter import FiberFor
 
 REGISTRY_PATH = Path(__file__).with_name("registry.json")
 REQUIRED_KEYS = ("pathology", "input_path", "subject_column", "regressand_list", "voxelwise_vars")
-METADATA_KEYS = ("representation",)
 
 
 def load_table(input_path, regressand_list, sheet=None, drop_rows=(), one_hot=(), invert_regressand=False):
@@ -75,6 +74,13 @@ def is_fiber_column(table, voxelwise_var):
     """Whether an image column holds per-fiber values (*.fib.npy / *.fib.json) rather than volumes."""
     paths = table[voxelwise_var].dropna().astype(str)
     return GiiNiiFileImport(import_path=None, mask_path=None)._import_type_switch(paths[paths.str.lower() != "nan"].tolist()) == "fiber"
+
+
+def fiber_file_atlas(path):
+    """The atlas a fiber file's .fib.json descriptor names."""
+    path = Path(str(path)).expanduser()
+    values_path = FiberFormatConverter.values_from_description(path) if path.name.lower().endswith((".fib.json", ".fib.desc.json")) else path
+    return str(FiberFormatConverter.atlas_from_values_description(values_path))
 
 
 @functools.lru_cache(maxsize=4)
@@ -130,7 +136,7 @@ def read_registry(registry=REGISTRY_PATH):
     """Return a validated registry from a path or an already-parsed dict."""
     registry = registry if isinstance(registry, dict) else json.loads(Path(registry).read_text())
     missing = [key for key in ("mask_path", "transform", "cohorts") if key not in registry]
-    unknown = sorted(set(registry) - {"mask_path", "fiber_atlas", "transform", "cohorts"})
+    unknown = sorted(set(registry) - {"mask_path", "transform", "cohorts"})
     if unknown:
         raise ValueError(f"The registry has unknown keys {unknown}.")
     if missing:
@@ -138,8 +144,14 @@ def read_registry(registry=REGISTRY_PATH):
     for cohort, entry in registry["cohorts"].items():
         if not cohort or any(character in cohort for character in "/\\:"):
             raise ValueError(f"Cohort name {cohort!r} cannot be empty or contain '/', '\\' or ':'.")
+        if "maps" in entry:
+            for name, fields in entry["maps"].items():
+                if "representation" not in fields:
+                    raise ValueError(f"Cohort {cohort!r}: map {name!r} needs a 'representation' (local, networks, or fibers).")
+                canonical_representation(fields["representation"])
+            continue
         missing = [key for key in REQUIRED_KEYS if key not in entry]
-        unknown = sorted(set(entry) - set(REQUIRED_KEYS) - set(OPTIONAL_KEYS) - set(METADATA_KEYS))
+        unknown = sorted(set(entry) - set(REQUIRED_KEYS) - set(OPTIONAL_KEYS))
         if missing or unknown:
             raise ValueError(f"Cohort {cohort!r}: missing {missing}, unknown {unknown}.")
         for key in ("regressand_list", "voxelwise_vars"):
@@ -147,27 +159,16 @@ def read_registry(registry=REGISTRY_PATH):
                 raise ValueError(f"Cohort {cohort!r}: {key} must be nonempty without repeats.")
         if set(entry["regressand_list"]) & set(entry["voxelwise_vars"]):
             raise ValueError(f"Cohort {cohort!r}: a column cannot be both a regressand and a voxelwise variable.")
-        representation = entry.get("representation")
-        if isinstance(representation, dict):
-            if set(representation) != set(entry["voxelwise_vars"]):
-                raise ValueError(f"Cohort {cohort!r}: representation mapping must define every voxelwise variable exactly once.")
-            for value in representation.values():
-                canonical_representation(value)
-        elif representation is not None:
-            canonical_representation(representation)
+        for voxelwise_var in entry["voxelwise_vars"]:
+            canonical_representation(voxelwise_var)
     return registry
 
 
 def recipe(registry, cohort):
     """Everything the sidecar records from the registry for this cohort."""
-    return {"cohort": cohort, **resolved(registry["cohorts"][cohort]), "mask_path": registry["mask_path"], "fiber_atlas": registry.get("fiber_atlas"), "transform": registry["transform"]}
-
-
-def representation_for(entry, voxelwise_var):
-    value = entry.get("representation")
-    if isinstance(value, dict):
-        value = value[voxelwise_var]
-    return None if value is None else canonical_representation(value)
+    if "maps" in registry["cohorts"][cohort]:
+        return {"cohort": cohort, "maps": registry["cohorts"][cohort]["maps"], "mask_path": registry["mask_path"]}
+    return {"cohort": cohort, **resolved(registry["cohorts"][cohort]), "mask_path": registry["mask_path"], "transform": registry["transform"]}
 
 
 def save_atomically(path, write):
@@ -190,14 +191,16 @@ def build_cohort(registry, cohort, directory):
     columns, bases, patients = [], [], set()
     for voxelwise_var in entry["voxelwise_vars"]:
         fibers = is_fiber_column(table, voxelwise_var)
-        if fibers and not entry["fiber_atlas"]:
-            raise ValueError(f"{cohort}: {voxelwise_var!r} holds fiber files; set the registry's fiber_atlas to the atlas their values index.")
-        representation = representation_for(entry, voxelwise_var)
+        fiber_atlas = fiber_file_atlas(table[voxelwise_var].dropna().iloc[0]) if fibers else None
+        representation = canonical_representation(voxelwise_var)
         print(f"shard_{cohort}: {len(entry['regressand_list'])} symptoms ~ {voxelwise_var} ({'fiber' if fibers else 'volume'} files, representation {representation})", flush=True)
-        maps = fit_bases(palm, table, voxelwise_var, entry["regressand_list"], entry["fiber_atlas"] if fibers else entry["mask_path"], entry["transform"], **settings(fit_bases, entry))
+        maps = fit_bases(palm, table, voxelwise_var, entry["regressand_list"], fiber_atlas if fibers else entry["mask_path"], entry["transform"], **settings(fit_bases, entry))
         print(f"shard_{cohort}: {len(maps)} {voxelwise_var} bases fitted on {len(next(iter(maps.values()))[1])} patients", flush=True)
         if fibers:
-            voxelized = voxelize_fibers(np.column_stack([t_map for t_map, _ in maps.values()]), entry["fiber_atlas"], entry["mask_path"])
+            fiber_dir = Path(directory) / f"shard_{cohort}_fibers"
+            fiber_t_maps = np.column_stack([t_map for t_map, _ in maps.values()])
+            FiberIO(mask_path=fiber_atlas).save_files(fiber_t_maps, [str(fiber_dir / f"{symptom}-on-{voxelwise_var}") for symptom in maps], dry_run=False, symmetric=False, convert_to_nifti=False)
+            voxelized = voxelize_fibers(fiber_t_maps, fiber_atlas, entry["mask_path"])
             maps = {symptom: (voxelized[:, index], rows) for index, (symptom, (_, rows)) in enumerate(maps.items())}
         for symptom in maps:
             t_map, rows = maps[symptom]
@@ -208,6 +211,8 @@ def build_cohort(registry, cohort, directory):
             basis = {"name": f"{symptom}-on-{voxelwise_var}", "regressand": symptom, "voxelwise_var": voxelwise_var, "n": len(rows)}
             if representation is not None:
                 basis["representation"] = representation
+            if fibers:
+                basis["fiber_path"] = str(fiber_dir / f"{symptom}-on-{voxelwise_var}.fib.json")
             bases.append(basis)
             patients.update(ids.astype(str))
     lengths = sorted({len(column) for column in columns})
@@ -239,7 +244,42 @@ def override(directory):
 
 
 def main(registry=REGISTRY_PATH, directory=basis_damage.BASIS_DIR, cohorts=None, overwrite=False):
-    """Build selected registry cohorts, optionally replacing the entire existing basis library."""
+    """Build selected registry cohorts, optionally replacing the entire existing basis library.
+
+    registry: dict or path to a JSON file with:
+        mask_path (required): NIfTI mask that defines the voxel order of every shard.
+        transform (required): data_transform_method passed to RegressionPrep, e.g. "rank".
+        cohorts (required): {cohort name: entry}; each entry is a regression cohort or a map cohort.
+
+    Regression cohort entry:
+        pathology (required): label stored in the sidecar.
+        input_path (required): CSV or Excel table.
+        subject_column (required): patient-ID column; IDs must be present and unique.
+        regressand_list (required): symptom columns; nonempty, no repeats.
+        voxelwise_vars (required): image-path columns; nonempty, no repeats, none also a symptom; one regression per column. Each name must be an anatomy word (lesion/local, network/networks, fiber/fibers, or another accepted alias) and sets its bases' anatomy label. Fiber columns hold .fib.json files, whose descriptor names the atlas.
+        sheet (default None): Excel sheet.
+        drop_rows (default ()): [column, condition, value] triples applied by palm.drop_rows_based_on_value.
+        one_hot (default ()): columns to dummy-encode, adding {column}_{value} columns.
+        invert_regressand (default False): multiply every symptom by -1.
+        covariates_list (default ()): right-hand-side covariates.
+        add_intercept (default False): add an intercept column.
+        weights_col (default None): column of regression weights.
+        drop_nans (default True): drop patients missing any symptom, image, covariate, or weight.
+        Column names are matched after CalvinStatsmodelsPalm's column cleaning.
+
+    Map cohort entry:
+        {"maps": {map name: {"path": NIfTI, mask-ordered .npy vector, or .fib.json fiber map, "representation" (required): the map's anatomy, local, networks, or fibers (or an accepted alias), plus any basis fields you have, e.g. "n", "regressand", "patient_ids"}}}
+
+    Example:
+        {"mask_path": "/data/MNI152_T1_2mm_brain_mask.nii", "transform": "rank", "cohorts": {
+            "stroke": {"pathology": "Stroke", "input_path": "/data/stroke.csv", "subject_column": "subject", "regressand_list": ["gait", "speech"], "voxelwise_vars": ["lesion", "network"], "covariates_list": ["age"], "add_intercept": True, "drop_rows": [["selected", "equal", 0]], "one_hot": ["site"]},
+            "priors": {"maps": {"tremor": {"path": "/data/tremor.nii.gz", "representation": "networks"}, "gait": {"path": "/data/gait.fib.json", "representation": "fibers", "n": 40, "patient_ids": ["sub-01", "sub-02"]}}}}}
+
+    directory: basis folder holding shard_{cohort}.npy / .json pairs.
+    cohorts: registry cohorts to build; None builds every cohort.
+    overwrite: True deletes every shard in directory before building.
+    """
+    from .prior_basis_maps import PriorBasisMaps
     registry = read_registry(registry)
     selected = tuple(registry["cohorts"]) if cohorts is None else tuple(cohorts)
     unknown = sorted(set(selected) - set(registry["cohorts"]))
@@ -255,7 +295,10 @@ def main(registry=REGISTRY_PATH, directory=basis_damage.BASIS_DIR, cohorts=None,
             check_built(registry, cohort, directory)
             continue
         print(f"Building shard_{cohort}")
-        build_cohort(registry, cohort, directory)
+        if "maps" in registry["cohorts"][cohort]:
+            PriorBasisMaps(cohort, registry["cohorts"][cohort]["maps"], registry["mask_path"], directory).run()
+        else:
+            build_cohort(registry, cohort, directory)
         built.append(cohort)
     if selected:
         basis_damage.load_library(selected, directory)

@@ -1,6 +1,7 @@
 """The registry-driven basis builder fits regressand_1 + ... ~ image + covariates once per image and writes loadable shards."""
 
 import json
+from pathlib import Path
 
 import nibabel as nib
 import numpy as np
@@ -156,6 +157,7 @@ def test_test_cohorts_cannot_have_built_the_bases(tmp_path):
 
 def test_fiber_columns_are_regressed_on_the_atlas_and_rasterized_like_tract_density(tmp_path):
     from calvin_utils.neuroimaging_utils.tract_utils.tract_density import TractDensity
+    from calvin_utils.neuroimaging_utils.tract_utils.fiber_io import FiberIO
 
     rng = np.random.default_rng(6)
     mask = np.ones((6, 6, 6), dtype=np.float32)
@@ -170,19 +172,19 @@ def test_fiber_columns_are_regressed_on_the_atlas_and_rasterized_like_tract_dens
     for index in range(16):
         values = rng.normal(size=25).astype(np.float32)
         np.save(tmp_path / f"sub-{index:02d}.fib.npy", values)
-        rows.append({"subject": f"sub-{index:02d}", "fibers": str(tmp_path / f"sub-{index:02d}.fib.npy"), "gait": float(values[:5].mean() + rng.normal())})
+        FiberIO.write_values_description(tmp_path / f"sub-{index:02d}.fib.npy", tmp_path / "atlas.npz")
+        rows.append({"subject": f"sub-{index:02d}", "fibers": str(tmp_path / f"sub-{index:02d}.fib.json"), "gait": float(values[:5].mean() + rng.normal())})
     pd.DataFrame(rows).to_csv(tmp_path / "table.csv", index=False)
     entry = {"pathology": "Stroke", "input_path": str(tmp_path / "table.csv"), "subject_column": "subject", "regressand_list": ["gait"], "voxelwise_vars": ["fibers"]}
-    registry = {"mask_path": str(tmp_path / "mask.nii.gz"), "fiber_atlas": str(tmp_path / "atlas.npz"), "transform": "rank", "cohorts": {"toy": entry}}
+    registry = {"mask_path": str(tmp_path / "mask.nii.gz"), "transform": "rank", "cohorts": {"toy": entry}}
     build.main(registry, tmp_path / "basis_maps")
-    column = basis_damage.load_library(directory=tmp_path / "basis_maps")["shards"][0]["values"][:, 0]
+    shard = basis_damage.load_library(directory=tmp_path / "basis_maps")["shards"][0]
+    column = shard["values"][:, 0]
+    assert Path(shard["sidecar"]["bases"][0]["fiber_path"]).is_file()
 
     palm, table = build.load_table(entry["input_path"], entry["regressand_list"])
-    t_map = build.fit_bases(palm, table, "fibers", ["gait"], registry["fiber_atlas"], "rank")["gait"][0]
+    t_map = build.fit_bases(palm, table, "fibers", ["gait"], str(tmp_path / "atlas.npz"), "rank")["gait"][0]
     density = TractDensity(fiber_path=tmp_path / "atlas.npz", reference_nifti_path=tmp_path / "mask.nii.gz", out_path=tmp_path / "density.nii.gz", values=t_map, fiberset="both", threshold=None, symmetric=False, show_progress=False).run()
     expected = np.asarray(nib.load(tmp_path / "density.nii.gz").dataobj).reshape(-1)[mask.reshape(-1) > 0]
     assert column.shape == (int(mask.sum()),) and np.any(column)
     np.testing.assert_allclose(column, expected, rtol=1e-5, atol=1e-6)
-    registry.pop("fiber_atlas")
-    with pytest.raises(ValueError, match="fiber_atlas"):
-        build.main(registry, tmp_path / "missing_atlas")
