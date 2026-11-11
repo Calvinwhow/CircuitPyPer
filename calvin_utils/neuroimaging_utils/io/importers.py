@@ -29,10 +29,7 @@ if not hasattr(np, "maximum_sctype"):
     np.maximum_sctype = _maximum_sctype
 import pandas as pd
 from glob import glob
-from tqdm import tqdm
 from pathlib import Path
-from tqdm import tqdm
-import random
 from uuid import uuid4
 from calvin_utils.neuroimaging_utils.surface_utils.surface_io import SurfaceIO
 from calvin_utils.neuroimaging_utils.nifti_utils.volume_io import NiftiIO

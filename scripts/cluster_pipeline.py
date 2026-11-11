@@ -81,7 +81,7 @@ TREE_DIRNAME = {                        # <SCA_ROOT>/<dirname>/<var>-on-<x>/regr
 FILE_TARGET = {
     "network": os.environ.get("FILE_TARGET_NETWORK", "contrast_tval_0.nii.gz"),
     "vlsm": os.environ.get("FILE_TARGET_VLSM", "contrast_tval_0.nii.gz"),
-    "fiber": os.environ.get("FILE_TARGET_FIBER", "contrast_tval_0.fib.npy"),
+    "fiber": os.environ.get("FILE_TARGET_FIBER", "contrast_tval_0.fib.json"),
 }
 MASK_PATH = {
     "network": os.environ.get("MASK_NETWORK", VOLUME_MASK),

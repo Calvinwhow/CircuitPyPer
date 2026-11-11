@@ -12,8 +12,6 @@ import matplotlib.cm as cm
 
 from calvin_utils.neuroimaging_utils.ccm_utils.npy_utils import DataLoader
 from calvin_utils.neuroimaging_utils.ccm_utils.stat_utils import CorrelationCalculator
-from calvin_utils.neuroimaging_utils.ccm_utils.optimization.run_optimization import RunOptimization
-from calvin_utils.neuroimaging_utils.ccm_utils.optimization.pipeline.pre_processing import datasets_from_loader
 
 class ConvergentMapGenerator:
     """
@@ -24,7 +22,6 @@ class ConvergentMapGenerator:
     - Saving and visualizing NIfTI images.
     - Generating weighted or unweighted average correlation maps.
     - Creating agreement maps indicating regions with consistent correlation sign across datasets.
-    - Optionally optimizing the average correlation map using a custom optimizer.
     - Grouping datasets for group-wise map generation and saving.
     
     Notes
@@ -40,7 +37,7 @@ class ConvergentMapGenerator:
             data_loader (object): Loader for dataset-specific information.
             mask_path (str, optional): Path to NIfTI mask file.
             out_dir (str, optional): Output directory for results.
-            weighting (str, optional): 'unweighted', 'weighted', or 'optimized'. Defaults to 'unweighted'.
+            weighting (str, optional): 'unweighted' or 'weighted'. Defaults to 'unweighted'.
             align_all_maps (bool, optional): Align all maps to a reference. Defaults to False.
             datasets_to_flip (list, optional): Datasets whose maps should be sign-flipped.
             group_dict (dict, optional): Mapping of dataset names to group names.
@@ -158,10 +155,8 @@ class ConvergentMapGenerator:
                 return self.generate_weighted_average_r_map(override_corr_map_dict, weight=False)
             elif self.weighting == 'weighted':
                 return self.generate_weighted_average_r_map(override_corr_map_dict, weight=True)
-            elif self.weighting == 'optimized':
-                return self.generate_optimal_average_r_map(override_corr_map_dict)
             else:
-                raise ValueError(f"Invalid weighting: {self.weighting}. Must be 'weighted', 'unweighted', or 'optimized'")
+                raise ValueError(f"Invalid weighting: {self.weighting}. Must be 'weighted' or 'unweighted'")
         else:
             raise ValueError("Attribute 'weighting' not found in the class.")
             
@@ -183,14 +178,6 @@ class ConvergentMapGenerator:
         else:
             return np.average(r_maps, axis=0)
         
-    def generate_optimal_average_r_map(self, override_corr_map_dict=None):
-        '''Calls optimization function'''
-        local_corr_map_dict = self.corr_map_dict
-        if override_corr_map_dict is not None:
-            local_corr_map_dict = override_corr_map_dict
-        optimizer = RunOptimization(local_corr_map_dict, datasets_from_loader(self.data_loader))
-        return optimizer.run()["symptom_map"]
-
     def generate_agreement_map(self, override_corr_map_dict=None):
         '''Generates mask of regions that share signs among all maps in set of [-1, 0, 1]'''
         local_corr_map_dict = self.corr_map_dict

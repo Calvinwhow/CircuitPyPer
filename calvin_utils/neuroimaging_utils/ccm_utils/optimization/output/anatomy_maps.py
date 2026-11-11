@@ -1,123 +1,125 @@
-"""Per-anatomy localization maps from a finished model: each anatomy's weighted contribution to the model's final map."""
+"""Per-anatomy visualizations from a finished optimization model."""
 
-import csv
-import json
 from pathlib import Path
 
 import numpy as np
 
 from ..basis_maps.build import fiber_file_atlas
-from ..neural_network.anatomy import REPRESENTATIONS, canonical_representation
-from ..pipeline import basis_damage
+from ..neural_network.anatomy import REPRESENTATIONS, canonical_representation, representation_masks
+from ..neural_network.dependencies import require_torch
+from ..pipeline.model_fitter_utils.model_fitter_schema import NetworkResult
 from calvin_utils.neuroimaging_utils.io.exporters import NeuroimageFileOutporter
 from calvin_utils.neuroimaging_utils.tract_utils.fiber_converter import FiberFormatConverter
 from calvin_utils.neuroimaging_utils.tract_utils.fiber_io import FiberIO
 
 
 class AnatomyMaps:
-    """Write the local, networks, and fibers contributions of a finished model, from its saved weights and network parameters.
+    """Write local, network, and native-fiber visualizations from an in-memory final result."""
 
-    final_model_dir: a model's final_model/ folder, holding optimized_weights.csv; a network also holds neural_network_parameters.npz and model.json.
-    basis_dir: basis folder holding the shards the model was fitted on.
-
-    Variables (K bases, A algorithms; g is local, networks, or fibers; f indexes voxels, or atlas fibers for the fibers output):
-        x_k[f]: basis k's values: its shard column for local and networks, its native .fib.npy for fibers.
-        s_k: L2 norm of basis k's shard column; every fit weights x_k / s_k.
-        Linear model, weights w_k (already scaled to unit prediction variance by the fit):
-            contribution_g[f] = sum over k in g of w_k x_k[f] / s_k
-        Network, with W[k, a] = algorithm_weights, b[g, a] = algorithm_bias, alpha[g, a] = algorithm_mix, c[g] = representation_bias, beta[g] = representation_mix, h0[g] = representation_baseline, and sigma = model.json's prediction_scale:
-            Z[g, f, a] = sum over k in g of W[k, a] x_k[f] / s_k
-            H[g, f] = ReLU(sum_a alpha[g, a] ReLU(Z[g, f, a] + b[g, a]) + c[g])
-            contribution_g[f] = beta[g] (H[g, f] - h0[g]) / sigma
-    Writes anatomy_local and anatomy_networks as NIfTI, and anatomy_fibers_{atlas}.fib.npy / .fib.json for each fiber atlas.
-    """
-
-    def __init__(self, final_model_dir, basis_dir=basis_damage.BASIS_DIR):
+    def __init__(self, result, final_model_dir, chunk_voxels=16384):
+        self.result = result
         self.final_model_dir = Path(final_model_dir)
-        self.basis_dir = Path(basis_dir)
+        self.chunk_voxels = chunk_voxels
 
     def run(self):
-        """Write one map per anatomy and return the written paths; does nothing when the model saved no weights."""
-        if not (self.final_model_dir / "optimized_weights.csv").is_file():
-            return []
-        network = self.read_network()
-        names, weights = self.read_weights(network)
-        library = basis_damage.load_library(sorted({name.split(":", 1)[0] for name in names}), self.basis_dir)
-        bases = self.read_bases(names, library)
+        """Reconstruct and write each represented anatomy."""
+        bases = self.bases()
+        weights = self.weights()
+        algorithm_maps = self.voxel_algorithm_maps(bases, weights)
+        model, scale = self.integration_model(weights, algorithm_maps, bases)
+        domain_maps = self.domain_maps(model, algorithm_maps, scale)
         written = []
-        for anatomy in ("local", "networks"):
-            members = [index for index, basis in enumerate(bases) if basis["anatomy"] == anatomy]
-            if members:
-                normalized = np.column_stack([bases[index]["voxels"] / bases[index]["scale"] for index in members])
-                written.append(self.write_nifti(anatomy, self.contribution(anatomy, normalized, weights[members], network), library["mask_path"]))
-        fiber_members = [index for index, basis in enumerate(bases) if basis["anatomy"] == "fibers"]
-        for atlas in dict.fromkeys(bases[index]["fiber_atlas"] for index in fiber_members):
-            members = [index for index in fiber_members if bases[index]["fiber_atlas"] == atlas]
-            normalized = np.column_stack([np.load(bases[index]["fiber_values_path"]).reshape(-1) / bases[index]["scale"] for index in members])
-            written.append(self.write_fibers(atlas, self.contribution("fibers", normalized, weights[members], network)))
+        for group, anatomy in enumerate(REPRESENTATIONS):
+            if any(basis["anatomy"] == anatomy for basis in bases):
+                written.append(self.write_nifti(anatomy, domain_maps[group]))
+        groups = {}
+        for basis in bases:
+            if basis["anatomy"] == "fibers":
+                groups.setdefault(basis["fiber_atlas_name"], []).append(basis)
+        for atlas_name, members in groups.items():
+            native_maps = np.zeros((len(REPRESENTATIONS), len(np.load(members[0]["fiber_values_path"], mmap_mode="r").reshape(-1)), weights.shape[1]), dtype=np.float32)
+            native_maps[REPRESENTATIONS.index("fibers")] = self.fiber_algorithm_maps(members, weights)
+            native_model, native_scale = self.integration_model(weights, native_maps, bases)
+            native_fibers = self.domain_maps(native_model, native_maps, native_scale)[REPRESENTATIONS.index("fibers")]
+            written.append(self.write_fibers(atlas_name, members[0]["fiber_atlas"], native_fibers))
         return written
 
-    def read_network(self):
-        """The network's saved parameters and prediction scale, or None for a linear model."""
-        parameter_path = self.final_model_dir / "neural_network_parameters.npz"
-        if not parameter_path.is_file():
-            return None
-        network = dict(np.load(parameter_path))
-        network["prediction_scale"] = float(json.loads((self.final_model_dir / "model.json").read_text())["prediction_scale"])
-        return network
+    def weights(self):
+        """Return the basis-by-algorithm weights used to construct domain maps."""
+        if not isinstance(self.result, NetworkResult):
+            return np.asarray(self.result.weights, dtype=np.float32).reshape(-1, 1)
+        return np.asarray(self.result.parameters.algorithm_weights, dtype=np.float32)
 
-    def read_weights(self, network):
-        """Basis names in fitted order and their weights, shape (K, A): the CSV weights for a linear model (A = 1), algorithm_weights for the network."""
-        with (self.final_model_dir / "optimized_weights.csv").open(newline="") as stream:
-            rows = list(csv.DictReader(stream))
-        names = list(dict.fromkeys(row["map"] for row in rows))
-        weights = np.asarray([[float(row["weight"])] for row in rows]) if network is None else np.asarray(network["algorithm_weights"], dtype=float)
-        if weights.shape[0] != len(names):
-            raise ValueError(f"{len(names)} basis names but {weights.shape[0]} weight rows in {self.final_model_dir}.")
-        return names, weights
+    def integration_model(self, weights, algorithm_maps, bases):
+        """Use the fitted network, or its identity initialization for a linear model."""
+        if isinstance(self.result, NetworkResult):
+            return self.result.model, self.result.training.prediction_scale
+        from ..neural_network.model import AnatomicalNetwork
+        labels = tuple(basis["anatomy"] for basis in bases)
+        model = AnatomicalNetwork(weights, representation_masks(labels), fixed_algorithm_maps=algorithm_maps, mode="frozen")
+        return model, 1.0
 
-    def read_bases(self, names, library):
-        """For each basis in fitted order: its anatomy, shard column, L2 scale, and for fibers its native values path and atlas."""
-        columns = {name: (shard, index) for shard in library["shards"] for index, name in enumerate(shard["names"])}
+    def domain_maps(self, model, algorithm_maps, scale):
+        """Run the underlying network layers and return their linearly summable domain maps."""
+        with require_torch().no_grad():
+            _, _, maps = model.integrate_algorithm_maps(algorithm_maps)
+        return maps.detach().cpu().numpy().astype(np.float32, copy=False) / np.float32(scale)
+
+    def bases(self):
+        """Return lightweight metadata for every fitted basis in weight order."""
+        library = self.result.damage.basis_library
+        columns = {name: (shard, index) for shard in library.shards for index, name in enumerate(shard.map_names)}
         bases = []
-        for name in names:
-            if name not in columns:
-                raise ValueError(f"Basis {name!r} is not in the shards in {self.basis_dir}.")
-            shard, index = columns[name]
-            basis = shard["sidecar"]["bases"][index]
-            if basis.get("representation") is None:
-                raise ValueError(f"Basis {name!r} has no anatomy label.")
-            voxels = np.asarray(shard["values"][:, index], dtype=np.float32)
-            record = {"anatomy": canonical_representation(basis["representation"]), "voxels": voxels, "scale": float(np.sqrt(np.square(voxels, dtype=np.float64).sum()))}
-            if record["anatomy"] == "fibers":
-                native = basis.get("fiber_path") or shard["sidecar"].get("maps", {}).get(basis["name"], {}).get("path")
-                if native is None:
-                    raise ValueError(f"Fiber basis {name!r} has no native .fib.json.")
+        for weight_index, (name, scale) in enumerate(zip(self.result.damage.map_names, self.result.damage.basis_l2_norms)):
+            shard, column = columns[name]
+            metadata = shard.metadata["bases"][column]
+            anatomy = canonical_representation(metadata["representation"])
+            basis = {"name": name, "anatomy": anatomy, "shard": shard, "column": column, "scale": float(scale), "weight_index": weight_index}
+            if anatomy == "fibers":
+                native = metadata.get("fiber_path") or shard.metadata.get("maps", {}).get(metadata["name"], {}).get("path")
                 native = Path(native).expanduser()
-                record["fiber_values_path"] = FiberFormatConverter.values_from_description(native) if native.name.lower().endswith((".fib.json", ".fib.desc.json")) else native
-                record["fiber_atlas"] = fiber_file_atlas(native)
-            bases.append(record)
+                atlas = fiber_file_atlas(native)
+                basis["fiber_values_path"] = FiberFormatConverter.values_from_description(native) if native.name.lower().endswith((".fib.json", ".fib.desc.json")) else native
+                basis["fiber_atlas"] = atlas
+                basis["fiber_atlas_name"] = Path(atlas).stem
+            bases.append(basis)
         return bases
 
-    def contribution(self, anatomy, normalized, weights, network):
-        """One anatomy's contribution at every voxel or fiber. normalized: (F, n) basis values divided by their scales; weights: (n, A)."""
-        algorithm_maps = normalized @ weights
-        if network is None:
-            return algorithm_maps[:, 0]
-        group = REPRESENTATIONS.index(anatomy)
-        mixed = np.maximum(algorithm_maps + network["algorithm_bias"][group], 0) @ network["algorithm_mix"][group]
-        anatomy_map = np.maximum(mixed + network["representation_bias"][group], 0)
-        return network["representation_mix"][group] * (anatomy_map - network["representation_baseline"][group]) / network["prediction_scale"]
+    def voxel_algorithm_maps(self, bases, weights):
+        """Accumulate every domain's voxelized algorithm maps in bounded chunks."""
+        outputs = np.zeros((len(REPRESENTATIONS), self.result.damage.basis_library.voxel_count, weights.shape[1]), dtype=np.float32)
+        for group, anatomy in enumerate(REPRESENTATIONS):
+            for shard in self.result.damage.basis_library.shards:
+                members = [basis for basis in bases if basis["shard"] is shard and basis["anatomy"] == anatomy]
+                if not members:
+                    continue
+                columns = [basis["column"] for basis in members]
+                coefficients = np.stack([weights[basis["weight_index"]] / basis["scale"] for basis in members])
+                for start in range(0, shard.values.shape[0], self.chunk_voxels):
+                    stop = start + self.chunk_voxels
+                    outputs[group, start:stop] += shard.values[start:stop, columns] @ coefficients
+        return outputs
 
-    def write_nifti(self, anatomy, values, mask_path):
-        """Write one voxel contribution as anatomy_{anatomy} NIfTI in final_model_dir."""
-        exporter = NeuroimageFileOutporter(output_ftype="nifti", mask_path=mask_path)
+    def fiber_algorithm_maps(self, bases, weights):
+        """Accumulate native fiber maps whose descriptors name the same atlas."""
+        first = np.load(bases[0]["fiber_values_path"], mmap_mode="r").reshape(-1)
+        output = np.zeros((len(first), weights.shape[1]), dtype=np.float32)
+        for basis in bases:
+            values = np.load(basis["fiber_values_path"], mmap_mode="r").reshape(-1)
+            coefficients = weights[basis["weight_index"]] / basis["scale"]
+            for algorithm, coefficient in enumerate(coefficients):
+                output[:, algorithm] += values * coefficient
+        return output
+
+    def write_nifti(self, anatomy, values):
+        """Write one voxel-space anatomy map."""
+        exporter = NeuroimageFileOutporter(output_ftype="nifti", mask_path=self.result.damage.basis_library.mask_path)
         exporter.validate_for_output()
         exporter.save_map(map_data=values.astype(np.float32), file_name=f"anatomy_{anatomy}", out_dir=str(self.final_model_dir))
         return self.final_model_dir / f"anatomy_{anatomy}"
 
-    def write_fibers(self, atlas, values):
-        """Write one native fiber contribution as anatomy_fibers_{atlas}.fib.npy with its .fib.json descriptor."""
-        values_path = self.final_model_dir / f"anatomy_fibers_{Path(atlas).stem}.fib.npy"
+    def write_fibers(self, atlas_name, atlas, values):
+        """Write one native fiber map for all bases sharing an atlas name."""
+        values_path = self.final_model_dir / f"anatomy_fibers_{atlas_name}.fib.npy"
         np.save(values_path, values.astype(np.float32))
         return FiberIO.write_values_description(values_path, atlas)

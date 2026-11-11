@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 from calvin_utils.neuroimaging_utils.io.exporters import NeuroimageFileOutporter
-from ..pipeline import basis_damage
+from ..pipeline.model_fitter_utils.model_fitter_schema import AlgorithmResult
 
 
 def _regression_classes():
@@ -69,12 +69,15 @@ def infer(result, model_dir, output_type, mask_path, n_permutations):
     """Regress the normalized bases on the winning model's weights and permute; the network supplies its least-squares basis weights."""
     if not n_permutations:
         return None
-    if result["symptom_map"] is None:
+    if result.symptom_map is None:
         print("Skipping basis-map regression: it regresses the map fitted on every patient (cross_validation=None).", flush=True)
         return None
     if model_dir is None or output_type is None:
         raise ValueError("Basis-map regression requires out_dir and output_type.")
-    stacked = basis_damage.stack(result["library"], result["scales"])
+    stacked = result.damage.normalized_basis_maps()
     out_dir = Path(model_dir) / "final_model" / "basis_map_regression"
-    weights = result["weights"] if np.ndim(result["weights"]) == 1 else network_weights(result["symptom_map"], stacked, result["map_names"], out_dir)
+    if isinstance(result, AlgorithmResult):
+        weights = result.weights
+    else:
+        weights = network_weights(result.symptom_map, stacked, result.damage.map_names, out_dir)
     return main(stacked, weights, out_dir, output_type=output_type, mask_path=mask_path, n_permutations=n_permutations)

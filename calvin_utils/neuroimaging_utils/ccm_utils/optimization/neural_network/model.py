@@ -50,16 +50,22 @@ class AnatomicalNetwork(nn.Module):
     def masked_algorithm_maps(self):
         return self.algorithm_layer()
 
+    def integrate_algorithm_maps(self, algorithm_maps):
+        """Apply the trained ReLU and mixing layers and return the final map and its summable domain maps."""
+        algorithm_maps = torch.as_tensor(algorithm_maps, dtype=torch.float32, device=self.algorithm_bias.device)
+        representation_maps = self.anatomy_layer(algorithm_maps)
+        domain_maps = self.localization_layer.contributions(representation_maps)
+        return domain_maps.sum(dim=0), representation_maps, domain_maps
+
     def forward_map(self):
         algorithm_maps = self.algorithm_layer()
-        representation_maps = self.anatomy_layer(algorithm_maps)
-        localization_map = self.localization_layer(representation_maps)
-        return localization_map, representation_maps, algorithm_maps
+        localization_map, representation_maps, domain_maps = self.integrate_algorithm_maps(algorithm_maps)
+        return localization_map, representation_maps, algorithm_maps, domain_maps
 
     def forward(self, patient_maps):
-        localization_map, representation_maps, algorithm_maps = self.forward_map()
+        localization_map, representation_maps, algorithm_maps, domain_maps = self.forward_map()
         predictions = {name: patients @ localization_map for name, patients in patient_maps.items()}
-        return {"map": localization_map, "representations": representation_maps, "algorithm_maps": algorithm_maps, "predictions": predictions}
+        return {"map": localization_map, "representations": representation_maps, "algorithm_maps": algorithm_maps, "domain_maps": domain_maps, "predictions": predictions}
 
     def unfreeze_filters(self, basis_maps):
         self.algorithm_layer.unfreeze(basis_maps)

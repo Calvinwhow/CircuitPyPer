@@ -33,7 +33,7 @@ class AlgorithmMapLayer(nn.Module):
             raise ValueError("Frozen mode requires fixed_maps.")
         maps = torch.as_tensor(np.asarray(fixed_maps, dtype=FLOAT_DTYPE))
         if maps.ndim != 3 or maps.shape[0] != len(REPRESENTATIONS) or maps.shape[2] != weights.shape[1]:
-            raise ValueError("fixed_maps must have shape (4, voxels, algorithms).")
+            raise ValueError(f"fixed_maps must have shape ({len(REPRESENTATIONS)}, voxels, algorithms).")
         self.register_buffer("algorithm_weights", weights)
         self.register_buffer("fixed_maps", maps)
         self.basis_maps = None
@@ -52,10 +52,8 @@ class AlgorithmMapLayer(nn.Module):
     def forward(self):
         if self.mode == "frozen":
             return self.fixed_maps
-        masked_weights = self.representation_masks[:-1, :, None] * self.algorithm_weights[None, :, :]
-        anatomical_maps = torch.einsum("vk,gka->gva", self.basis_maps, masked_weights)
-        composite_map = anatomical_maps.sum(dim=0, keepdim=True)
-        return torch.cat((anatomical_maps, composite_map), dim=0)
+        masked_weights = self.representation_masks[:, :, None] * self.algorithm_weights[None, :, :]
+        return torch.einsum("vk,gka->gva", self.basis_maps, masked_weights)
 
     def unfreeze(self, basis_maps):
         if isinstance(self.algorithm_weights, nn.Parameter):
@@ -112,8 +110,12 @@ class FinalLocalizationLayer(nn.Module):
 
     def __init__(self, initial_baseline):
         super().__init__()
-        self.representation_mix = nn.Parameter(torch.full((len(REPRESENTATIONS),), 1.0 / len(REPRESENTATIONS), dtype=torch.float32))
+        self.representation_mix = nn.Parameter(torch.ones(len(REPRESENTATIONS), dtype=torch.float32))
         self.representation_baseline = nn.Parameter(torch.as_tensor(initial_baseline, dtype=torch.float32).clone())
 
+    def contributions(self, representation_maps):
+        """Return domain maps whose linear sum is the final localization map."""
+        return (representation_maps - self.representation_baseline[:, None]) * self.representation_mix[:, None]
+
     def forward(self, representation_maps):
-        return torch.einsum("gv,g->v", representation_maps - self.representation_baseline[:, None], self.representation_mix)
+        return self.contributions(representation_maps).sum(dim=0)

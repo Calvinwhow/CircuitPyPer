@@ -111,7 +111,7 @@ MODALITY_CONFIG = {
         "min_cluster_size": 5,
     },
     "fiber": {
-        "path_column": os.environ.get("FIBER_PATH_COLUMN", "fiber_path_guerrera"),
+        "path_column": os.environ.get("FIBER_PATH_COLUMN", "fiber_json_path_guerrera"),
         "mask_path": os.environ.get("MASK_FIBER", FIBER_ATLAS),
         # These reproduce the approved historical fiber-map pipeline.
         "missing_policy": "zero",

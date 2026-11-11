@@ -43,7 +43,7 @@ def test_save_files_writes_compact_fib_pair(tmp_path):
     _atlas(atlas_path, fiber_mask=[1, 0, 1])
     output = tmp_path / "contrast_tval_0"
 
-    FiberIO(mask_path=atlas_path).save_files(
+    saved_paths = FiberIO(mask_path=atlas_path).save_files(
         np.asarray([2.5, 4.0], dtype=np.float32),
         [output],
         dry_run=False,
@@ -53,6 +53,7 @@ def test_save_files_writes_compact_fib_pair(tmp_path):
 
     values_path = tmp_path / "contrast_tval_0.fib.npy"
     description_path = tmp_path / "contrast_tval_0.fib.json"
+    assert saved_paths == [description_path]
     np.testing.assert_array_equal(
         np.load(values_path),
         np.asarray([2.5, 0.0, 4.0], dtype=np.float32),

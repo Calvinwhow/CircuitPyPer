@@ -1179,8 +1179,8 @@ def input_kind(path):
     if name.endswith(
         (
             ".mat",
-            ".fib.npy",
             ".fib.json",
+            ".fib.npy",
             ".values.npy",
             ".fib.desc.json",
             ".tck",

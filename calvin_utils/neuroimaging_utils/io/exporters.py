@@ -59,7 +59,7 @@ class NeuroimageFileOutporter:
         Save one statistical vector using the underlying I/O class.
         """
         fake_target = os.path.join(out_dir, file_name)
-        self.io.save_files(
+        saved_paths = self.io.save_files(
             arr=np.asarray(map_data),
             file_paths=[fake_target],
             dry_run=False,
@@ -68,6 +68,7 @@ class NeuroimageFileOutporter:
         if visualize and hasattr(self.io, "_map_to_image") and hasattr(self.io, "_visualize_map"):
             img = self.io._map_to_image(np.asarray(map_data))
             self.io._visualize_map(img, title=os.path.basename(file_name))
+        return saved_paths[0] if saved_paths else None
 
     def validate_for_output(self):
         """Ask the selected backend to validate its output configuration."""

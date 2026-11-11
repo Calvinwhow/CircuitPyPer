@@ -24,8 +24,8 @@ class TargetTrajectoryAverager:
     """
 
     VALUE_SUFFIXES = (
-        ".fib.npy",
         ".fib.json",
+        ".fib.npy",
         ".fib.values.npy",
         ".fib.desc.json",
     )

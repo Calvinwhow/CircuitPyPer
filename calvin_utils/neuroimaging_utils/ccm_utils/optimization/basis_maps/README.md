@@ -19,15 +19,27 @@ the same patients in one regression. Fill or remove symptoms in the table when t
       "input_path": "/path/to/table.csv",
       "subject_column": "subject_id",
       "regressand_list": ["gait_score", "speech_score"],
-      "voxelwise_vars": ["lesion_path", "lnm_path"],
+      "voxelwise_vars": {
+        "local_anatomy": "lesion_path",
+        "network_anatomy": "lnm_path",
+        "fiber_anatomy": "fiber_json_path"
+      },
       "drop_rows": [["selected", "equal", 0]]
     }
   }
 }
 ```
 
-`regressand_list` and `voxelwise_vars` may be tuples in Python registries; they are arrays in JSON.
-Fiber columns (`*.fib.npy` / `*.fib.json`) are regressed against the registry's top-level `fiber_atlas`, the atlas their values index, exactly as `regression_pipeline.py` does with that atlas as its mask. Each fiber t map is then rasterized onto `mask_path` the way the pipeline writes its fiber NIfTI (`TractDensity`, every fiber, no threshold, no mirroring), so every basis in a shard is a voxel map.
+`regressand_list` may be a tuple in Python registries; it is an array in JSON.
+`voxelwise_vars` is a nonempty mapping whose keys are `local_anatomy`,
+`network_anatomy`, or `fiber_anatomy` and whose values are CSV columns. Fiber
+columns should contain canonical `*.fib.json` descriptors. Each descriptor
+identifies and validates its paired `*.fib.npy` payload and ordered atlas, so
+there is no registry-level `fiber_atlas` setting. Direct `*.fib.npy` inputs
+remain readable for backward compatibility when their paired descriptor or an
+explicit legacy atlas is available. Each fitted fiber t map is saved as its own
+`*.fib.json`/`*.fib.npy` pair and rasterized onto `mask_path`, so every basis in
+a shard also has a voxel representation.
 Required in every entry: `pathology`, `input_path`, `subject_column`, `regressand_list`, `voxelwise_vars`.
 Optional, with the defaults of `build.load_table` and `build.fit_bases`: `sheet`, `drop_rows`, `one_hot`, `invert_regressand`
 (negates every regressand), `drop_nans`, `covariates_list`, `add_intercept`, `weights_col`. Rows are prepared in the order
@@ -42,9 +54,9 @@ with a study-specific registry and output directory.
 Each built cohort is two files:
 
 - `shard_{cohort}.npy` — float32, shape `(voxels, bases)`, one column per basis in `voxelwise_vars` x `regressand_list` order, in the mask's voxel order. Read only through `np.load(path, mmap_mode="r")`.
-- `shard_{cohort}.json` — the entry with every default filled in, plus `cohort`, `mask_path`, `transform`, `patient_ids` (every subject used by any basis), `n_voxels`, `created`, and per basis `name`, `regressand`, `voxelwise_var` and `n`.
+- `shard_{cohort}.json` — the entry with every default filled in, plus `cohort`, `mask_path`, `transform`, `patient_ids` (every subject used by any basis), `n_voxels`, `created`, and per basis `name`, `regressand`, `voxelwise_var`, `representation`, and `n`; fiber bases also record their canonical `fiber_path` descriptor.
 
 An existing shard whose sidecar no longer matches its registry entry stops the build; delete both files to rebuild that cohort.
-`pipeline/basis_damage.py` validates both files whenever shards are loaded.
+`pipeline/damage_matrix_utils/basis_library.py` validates both files whenever shards are loaded.
 
 The library is fitted once, on every patient in each cohort; cross-validation refits only the weights against it.

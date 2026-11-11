@@ -80,7 +80,7 @@ var_list = ['Gait', 'HeelToShinTestLeft', 'HeelToShinTestRight', 'FingerToNoseTe
 #  ]
 regressand_list = var_list              # On left hand=side of the equation. Often is the outcome variable.         Will run an analysis for each value.
 regressor_list = ["zarr5GB"]    # On right hand-side of the equation. Often is the neuroimaging variable.   Will run an analysis for each value. 
-VOXELWISE_VARS = ["zarr5GB"]    # Name the variables that are stored in neuroimaging files
+VOXELWISE_VARS = ["zarr5GB"]    # Name neuroimaging-path columns. Fiber columns should contain canonical .fib.json descriptors; paired .fib.npy paths remain compatible.
 VOXELWISE_INTERACTIONS = []             # If you want interactions, specify them. 
 COVARIATES_LIST = []                    # List of all nuisance variables to adjust for. If you want interactions, make them in your spreadsheet and add them here. Will NOT trigger a new analysis for each value, but will be present in every analysis.
 ADD_INTERCEPT = False                  # Three exhaustive cluster indicators require no intercept (avoids perfect collinearity).
@@ -102,7 +102,7 @@ RUN_FIGURES = False                      # Delegate result-map visualization to 
 FIGURES_IN_SUBPROCESS = True            # Render each map in a fresh interpreter (frees the OpenGL context).
 SUMMARY_FILENAME = "regression_summary.csv"
 CV = "loocv"                            # None disables CV; "all" runs LOOCV, 2-, 5-, 10-fold, and leave-all-in.
-CV_INDEPENDENT_VAR = "zarr5GB"  # Patient fiber values scored against each training-fold fiber t map.
+CV_INDEPENDENT_VAR = "zarr5GB"  # Patient fiber descriptors scored against each training-fold fiber t map; prefer .fib.json paths.
 DROP_NANS = True                        # Apply the same row filtering to regression and cross-validation.
 
 _cv_native_vector_cache = {}

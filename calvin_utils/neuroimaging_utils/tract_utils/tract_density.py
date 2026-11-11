@@ -443,7 +443,7 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="Create a Lead-DBS-style tract-density NIfTI from fibers.")
-    parser.add_argument("--fiber-path", required=True, help="Input .fib.npy, .npz, .npy, .tck/.tt.tck, .trk, etc.")
+    parser.add_argument("--fiber-path", required=True, help="Canonical .fib.json result (preferred), compatible .fib.npy payload, or fiber atlas/tractogram.")
     parser.add_argument("--reference-nifti", required=True, help="Reference NIfTI defining output grid.")
     parser.add_argument("--out", required=True, help="Output .nii or .nii.gz path.")
     parser.add_argument("--values-path", help="Optional .npy vector with one value per fiber.")

@@ -151,13 +151,17 @@ class FiberConnectivity:
 
     @staticmethod
     def _profile_output_path(nifti_path, suffix, out_dir=None):
-        """Return <stem><suffix>.fib.npy in out_dir, defaulting to a sibling ``fibers`` directory (sub-x/roi/ -> sub-x/fibers/)."""
+        """Return the canonical <stem><suffix>.fib.json path in the output directory."""
         nifti_path = Path(nifti_path).expanduser()
         destination = Path(out_dir).expanduser() if out_dir is not None else nifti_path.parent.parent / "fibers"
-        return destination / f"{FiberConnectivity._safe_stem(nifti_path)}{suffix}.fib.npy"
+        return destination / f"{FiberConnectivity._safe_stem(nifti_path)}{suffix}.fib.json"
 
     def save_profile(self, fiber_values, out_path, fiber_atlas_path=None):
-        """Restore and save one flattened fiber-frame connectivity profile."""
+        """Save a profile pair and return its canonical ``*.fib.json`` path.
+
+        ``out_path`` should be ``*.fib.json``. A compatible ``*.fib.npy`` path
+        is also accepted and is interpreted as the paired numerical payload.
+        """
         atlas_path = (
             Path(fiber_atlas_path)
             if fiber_atlas_path is not None
@@ -169,22 +173,26 @@ class FiberConnectivity:
                 ".fib.json descriptor can be written."
             )
         out_path = Path(out_path)
-        if not out_path.name.lower().endswith(".fib.npy"):
-            raise ValueError(f"Fiber profile output must end with .fib.npy: {out_path}")
-        out_path.parent.mkdir(parents=True, exist_ok=True)
+        lower_name = out_path.name.lower()
+        if lower_name.endswith(".fib.json"):
+            values_path = out_path.with_name(f"{out_path.name[:-5]}.npy")
+        elif lower_name.endswith(".fib.npy"):
+            values_path = out_path
+        else:
+            raise ValueError(f"Fiber profile output must end with .fib.json or .fib.npy: {out_path}")
+        values_path.parent.mkdir(parents=True, exist_ok=True)
         fiber_values = np.asarray(fiber_values, dtype=np.float32).reshape(len(self.fiber_indexer.fiber_voxel_indices), -1)
-        np.save(out_path, fiber_values[:, 0] if fiber_values.shape[1] == 1 else fiber_values)
-        return FiberIO.write_values_description(out_path, atlas_path)
+        np.save(values_path, fiber_values[:, 0] if fiber_values.shape[1] == 1 else fiber_values)
+        return FiberIO.write_values_description(values_path, atlas_path)
 
     def save_profiles_from_niftis(self, nifti_paths, out_dir=None, binarize=True, threshold=0, suffix=""):
-        """Write one .fib.npy/.fib.json pair per NIfTI, named <stem>_<atlas>-<mode><suffix>, and return the .fib.npy paths."""
+        """Write one .fib.npy/.fib.json pair per NIfTI and return the canonical .fib.json paths."""
         if self.fiber_atlas_path is None: raise ValueError("Saving fiber profiles requires fiber_atlas_path so each .fib.json can identify its geometry.")
         saved_paths = []
         for nifti_path in tqdm(nifti_paths, desc="Saving fiber connectivity profiles"):
             values = self.generate_connectivity_profile(nifti_path=nifti_path, binarize=binarize, threshold=threshold)
             out_path = self._profile_output_path(nifti_path, f"_{self.connectome_label}{suffix}", out_dir=out_dir)
-            self.save_profile(values, out_path)
-            saved_paths.append(out_path)
+            saved_paths.append(self.save_profile(values, out_path))
         return saved_paths
 
 

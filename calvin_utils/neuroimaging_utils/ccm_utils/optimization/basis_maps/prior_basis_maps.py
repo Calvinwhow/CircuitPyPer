@@ -7,7 +7,7 @@ from pathlib import Path
 import nibabel as nib
 import numpy as np
 
-from ..pipeline import basis_damage
+from ..pipeline.damage_matrix_utils.basis_library import FEATURE_DTYPE
 from .build import save_atomically, voxelize_fibers
 from calvin_utils.neuroimaging_utils.io.importers import GiiNiiFileImport
 from calvin_utils.neuroimaging_utils.tract_utils.fiber_converter import FiberFormatConverter
@@ -32,7 +32,7 @@ class PriorBasisMaps:
     def run(self):
         """Load every map in mask order, stack them as columns, and write the shard."""
         n_voxels = int((np.asarray(nib.load(str(self.mask_path)).dataobj) > 0).sum())
-        values = np.column_stack([self.load_map(name, fields["path"], n_voxels) for name, fields in self.maps.items()]).astype(basis_damage.FEATURE_DTYPE)
+        values = np.column_stack([self.load_map(name, fields["path"], n_voxels) for name, fields in self.maps.items()]).astype(FEATURE_DTYPE)
         return self.save_shard(values)
 
     def load_map(self, name, path, n_voxels):
@@ -54,7 +54,7 @@ class PriorBasisMaps:
         return values
 
     def save_shard(self, values):
-        """Write the (voxels, maps) array and a sidecar with every key basis_damage.load_shard requires; a map's own fields override the defaults."""
+        """Write the voxel-by-map array and every sidecar field required by BasisLibrary."""
         bases = [{"name": name, "regressand": name, "voxelwise_var": name, "n": 1, **{key: value for key, value in fields.items() if key != "path"}} for name, fields in self.maps.items()]
         patient_ids = sorted({str(patient) for fields in self.maps.values() for patient in fields.get("patient_ids", [])})
         sidecar = {"cohort": self.cohort, "maps": self.maps, "pathology": self.cohort, "input_path": None, "subject_column": None, "regressand_list": [basis["regressand"] for basis in bases], "voxelwise_vars": [basis["voxelwise_var"] for basis in bases], "mask_path": self.mask_path, "transform": None, "patient_ids": patient_ids, "bases": bases, "n_voxels": int(values.shape[0]), "created": datetime.now(timezone.utc).isoformat(timespec="seconds")}

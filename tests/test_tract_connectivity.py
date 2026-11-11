@@ -27,5 +27,14 @@ def test_fiber_connectivity_processes_and_saves_each_frame(tmp_path):
     np.testing.assert_array_equal(profile.reshape(2, 2), expected)
 
     output_path = tmp_path / "connectivity.fib.npy"
-    mapper.save_profile(profile, output_path)
+    descriptor_path = mapper.save_profile(profile, output_path)
     np.testing.assert_array_equal(np.load(output_path), expected)
+    assert descriptor_path == tmp_path / "connectivity.fib.json"
+    assert descriptor_path.is_file()
+
+    returned = mapper.save_profiles_from_niftis(
+        [seed_path], out_dir=tmp_path / "profiles", binarize=False, threshold=None
+    )
+    assert returned[0].name.endswith(".fib.json")
+    assert returned[0].is_file()
+    assert returned[0].with_name(returned[0].name[:-5] + ".npy").is_file()

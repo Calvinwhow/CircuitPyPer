@@ -397,8 +397,8 @@ class FiberIO:
 
         raise ValueError(
             "Fiber evaluation requires all subject files to be either fiber "
-            "profiles (*.fib.npy/*.fib.json, or legacy "
-            "*.fib.values.npy/*.fib.desc.json) "
+            "profiles (*.fib.json preferred, compatible *.fib.npy, or legacy "
+            "*.fib.desc.json/*.fib.values.npy) "
             "or MNI lesion maps (*.nii or *.nii.gz)."
         )
 
@@ -933,6 +933,13 @@ class FiberIO:
         The ``mask_path`` supplied when constructing ``FiberIO`` is recorded as
         the canonical atlas. Consequently, a writable fiber result requires a
         real atlas path; the descriptor is not allowed to guess its geometry.
+
+        Returns
+        -------
+        list[pathlib.Path]
+            Canonical ``*.fib.json`` entry points for the ordinary (non-
+            symmetric) outputs, in ``file_paths`` order. The paired
+            ``*.fib.npy`` payloads remain available for compatibility.
         """
         if arr.ndim == 1:
             arr = arr[:, None]
@@ -944,6 +951,7 @@ class FiberIO:
                 "value vector and .fib.json records its atlas."
             )
 
+        saved_descriptions = []
         for i, file_path in tqdm(list(enumerate(file_paths)), desc='Saving fiber files'):
             out_dir = os.path.dirname(file_path)
             base = os.path.splitext(os.path.basename(file_path))[0]
@@ -983,6 +991,7 @@ class FiberIO:
                     ),
                     fill_value=fill_value,
                 )
+            saved_descriptions.append(Path(description_path))
 
             output_variants = [(out_name, description_path)]
             if symmetric:
@@ -1068,3 +1077,4 @@ class FiberIO:
                                 min_abs_value=None,
                                 top_percent=None,
                             ).run()
+        return saved_descriptions

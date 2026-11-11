@@ -1,11 +1,13 @@
-"""Score patients against a fitted map, correlate the scores with outcomes, and rank models."""
+"""Typed patient prediction, evaluation, and model ranking."""
 
 import numpy as np
 from scipy.stats import spearmanr
 
+from .model_fitter_utils.model_fitter_schema import DatasetPerformance, ModelComparison, ModelEvaluation, PredictionRecord
+
 
 def normalize(patients):
-    """Every patient map divided by its L2 norm."""
+    """Return patient maps divided by their L2 norms."""
     patients = np.asarray(patients, dtype=np.float32)
     norms = np.linalg.norm(patients, axis=1)
     if np.any(~np.isfinite(norms)) or np.any(norms <= 0):
@@ -14,46 +16,78 @@ def normalize(patients):
 
 
 def score(patients, symptom_map):
-    """patient . map / ||patient||: for an algorithm, exactly damage @ weights."""
+    """Return normalized patient-map projections onto one symptom map."""
     return normalize(patients) @ np.asarray(symptom_map, dtype=np.float32)
 
 
 def correlation(predicted, observed):
+    """Return typed Spearman performance for paired predictions and outcomes."""
     result = spearmanr(predicted, observed)
-    return {"spearman_rho": float(getattr(result, "statistic", result.correlation)), "p_value": float(result.pvalue)}
+    rho = float(getattr(result, "statistic", result.correlation))
+    return DatasetPerformance(len(predicted), rho, float(result.pvalue))
 
 
 def fitting_ids(datasets):
-    return set(np.concatenate([data["ids"] for data in datasets.values()]).astype(str))
+    """Return every fitting patient identifier."""
+    return set(np.concatenate([data.patient_ids for data in datasets]).astype(str))
 
 
 def evaluate(datasets, symptom_map, excluded_ids=frozenset()):
-    """Score every dataset's patients with a frozen map; patients without an outcome are skipped and patients in excluded_ids are refused."""
-    records, summary = [], {}
-    for name, data in datasets.items():
-        ids = np.asarray(data["ids"]).astype(str)
+    """Return typed predictions and performance for every supplied dataset."""
+    records, summaries = [], {}
+    for data in datasets:
+        ids = data.patient_ids
         if set(ids) & excluded_ids:
-            raise ValueError(f"Test dataset {name!r} shares patients with fitting data.")
-        observed = np.asarray(data["y"], dtype=float)
+            raise ValueError(f"Test dataset {data.dataset_name!r} shares patients with fitting data.")
+        observed = data.outcome_values
         valid = np.isfinite(observed)
-        predicted = score(np.asarray(data["patients"])[valid], symptom_map)
-        summary[name] = {"n_patients": int(valid.sum()), "n_missing_outcomes": int((~valid).sum()), **correlation(predicted, observed[valid])}
-        records.extend({"dataset": name, "patient_id": patient_id, "observed": float(value), "prediction": float(prediction)} for patient_id, value, prediction in zip(ids[valid], observed[valid], predicted))
-    return {"predictions": records, "summary": summary}
+        predicted = score(data.patient_maps[valid], symptom_map)
+        performance = correlation(predicted, observed[valid])
+        summaries[data.dataset_name] = DatasetPerformance(performance.n_patients, performance.spearman_rho, performance.p_value, int((~valid).sum()))
+        records.extend(PredictionRecord(data.dataset_name, str(patient_id), float(value), float(prediction)) for patient_id, value, prediction in zip(ids[valid], observed[valid], predicted))
+    return ModelEvaluation(tuple(records), summaries)
 
 
 def main(results, damage):
-    """Add each fitted map's apparent performance on the fitting patients and, when test datasets exist, its test performance; cross-validated models have no map."""
-    excluded = fitting_ids(damage["datasets"])
-    return {model: {**result, "apparent": None if result["symptom_map"] is None else evaluate(damage["datasets"], result["symptom_map"]), "test": None if result["symptom_map"] is None or damage["test_datasets"] is None else evaluate(damage["test_datasets"], result["symptom_map"], excluded)} for model, result in results.items()}
+    """Attach apparent and optional external evaluation to each final typed result."""
+    excluded = fitting_ids(damage.fitting_datasets)
+    for result in results.models:
+        result.apparent = _apparent_evaluation(result, damage)
+        result.test = _test_evaluation(result, damage, excluded)
+    return results
+
+
+def _apparent_evaluation(result, damage):
+    """Resolve apparent evaluation only for a final fitted map."""
+    if result.symptom_map is None:
+        return None
+    return evaluate(damage.fitting_datasets, result.symptom_map)
+
+
+def _test_evaluation(result, damage, excluded_patient_ids):
+    """Resolve external evaluation only when a final map and test datasets exist."""
+    if result.symptom_map is None or damage.testing_datasets is None:
+        return None
+    return evaluate(damage.testing_datasets, result.symptom_map, excluded_patient_ids)
 
 
 def rank(results):
-    """RMS Spearman rho across datasets for every model, on the test datasets when given, otherwise cross-validation, otherwise the fitting patients; best first."""
-    summaries = {model: (result["test"] or result["cross_validation"] or result["apparent"])["summary"] for model, result in results.items()}
-    performance = {model: float(np.sqrt(np.mean([values["spearman_rho"] ** 2 for values in summary.values()]))) for model, summary in summaries.items()}
-    ranking = sorted(performance, key=performance.get, reverse=True)
-    for model in ranking:
-        print(f"{model}: {performance[model]:.6f}")
+    """Rank typed model results by RMS Spearman correlation across datasets."""
+    summaries = {result.method: _selected_evaluation(result).summary for result in results.models}
+    performance = {method: float(np.sqrt(np.mean([values.spearman_rho ** 2 for values in summary.values()]))) for method, summary in summaries.items()}
+    ranking = tuple(sorted(performance, key=performance.get, reverse=True))
+    for method in ranking:
+        print(f"{method}: {performance[method]:.6f}")
     print(f"Winner: {ranking[0]}")
-    return {"winner": ranking[0], "ranking": ranking, "performance": performance, "summaries": summaries}
+    return ModelComparison(ranking[0], ranking, performance, summaries)
+
+
+def _selected_evaluation(result):
+    """Resolve test, cross-validation, or apparent performance in priority order."""
+    if result.test is not None:
+        return result.test
+    if result.cross_validation is not None:
+        return result.cross_validation
+    if result.apparent is not None:
+        return result.apparent
+    raise ValueError(f"Model {result.method!r} has no evaluation to rank.")

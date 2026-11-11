@@ -40,8 +40,9 @@ def main():
                         help="Read camera and lighting from a running General Neuroimage Viewer")
     parser.add_argument(
         "--map-stack", type=Path,
-        help=("Output 4D NIfTI or 2D fiber NumPy path (default: use the GIF "
-              "stem and the native extension)"),
+        help=("Output 4D NIfTI or canonical 2D fiber .fib.json path; a paired "
+              ".fib.npy payload is written automatically (default: use the "
+              "GIF stem and native extension)"),
     )
     parser.add_argument(
         "--no-map-stack", action="store_true",

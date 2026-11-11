@@ -50,10 +50,11 @@ def test_export_optimization_map_stack_adds_iteration_axis_to_fibers(tmp_path):
     history = _history(output_type="fiber", mask_path=atlas_path)
 
     output_path = export_optimization_map_stack(
-        history, tmp_path / "optimization.fib.npy"
+        history, tmp_path / "optimization.fib.json"
     )
 
-    data = np.load(output_path)
+    assert output_path == tmp_path / "optimization.fib.json"
+    data = np.load(tmp_path / "optimization.fib.npy")
     assert data.shape == (3, 3)
     assert data.dtype == np.float32
     np.testing.assert_allclose(
@@ -65,7 +66,7 @@ def test_export_optimization_map_stack_adds_iteration_axis_to_fibers(tmp_path):
 def test_optimization_stack_path_matches_native_output_type(tmp_path):
     gif_path = tmp_path / "optimization.gif"
     assert optimization_stack_path(gif_path, "nifti") == tmp_path / "optimization.nii.gz"
-    assert optimization_stack_path(gif_path, "fiber") == tmp_path / "optimization.fib.npy"
+    assert optimization_stack_path(gif_path, "fiber") == tmp_path / "optimization.fib.json"
     assert optimization_stack_path(gif_path, "surface") is None
 
 

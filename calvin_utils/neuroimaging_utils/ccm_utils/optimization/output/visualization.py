@@ -57,13 +57,13 @@ def _normalized_output_type(output_type):
 
 
 def optimization_stack_path(gif_path, output_type):
-    """Return the default native map-stack path paired with a GIF."""
+    """Return the default canonical map-stack path paired with a GIF."""
     output_type = _normalized_output_type(output_type)
     gif_path = Path(gif_path)
     if output_type == "nii":
         return gif_path.with_suffix(".nii.gz")
     if output_type == "fiber":
-        return gif_path.with_suffix(".fib.npy")
+        return gif_path.with_suffix(".fib.json")
     return None
 
 
@@ -83,7 +83,9 @@ def export_optimization_map_stack(history, output_path, *, output_type=None, mas
     and last. Pass ``max_frames=None`` to retain every stored snapshot. NIfTI
     histories are saved as ``(x, y, z, snapshot)``. Fiber histories are saved
     as ``(fiber, snapshot)`` and are restored to full atlas order when
-    optimization used a masked subset of the atlas.
+    optimization used a masked subset of the atlas. Fiber export returns the
+    canonical ``*.fib.json`` descriptor and writes its paired ``*.fib.npy``
+    payload; passing a ``*.fib.npy`` output path remains supported.
     """
     if history.weights.shape[0] == 0:
         raise ValueError("The history has no scored iterations.")
@@ -130,14 +132,19 @@ def export_optimization_map_stack(history, output_path, *, output_type=None, mas
                 del stacked
             temporary_path.unlink(missing_ok=True)
     else:
-        if output_path.suffix.lower() != ".npy":
-            raise ValueError("A fiber optimization stack must end in .npy.")
+        lower_name = output_path.name.lower()
+        if lower_name.endswith(".fib.json"):
+            values_path = output_path.with_name(f"{output_path.name[:-5]}.npy")
+        elif lower_name.endswith(".fib.npy"):
+            values_path = output_path
+        else:
+            raise ValueError("A fiber optimization stack must end in .fib.json or .fib.npy.")
         fiber_mask = exporter.io.fiber_mask
         n_fibers = len(exporter.io.reference_fibers)
         n_features = history.n_features
         if n_features not in {int(fiber_mask.sum()), n_fibers}:
             raise ValueError("Optimization map length does not match the masked or full " f"fiber atlas: {n_features} versus {int(fiber_mask.sum())} " f"masked / {n_fibers} full fibers.")
-        full_stack = np.lib.format.open_memmap(output_path, mode="w+", dtype=np.float32, shape=(n_fibers, n_snapshots))
+        full_stack = np.lib.format.open_memmap(values_path, mode="w+", dtype=np.float32, shape=(n_fibers, n_snapshots))
         full_stack[:] = 0
         for snapshot, iteration in enumerate(indices):
             values = np.asarray(history.map_at(iteration), dtype=np.float32)
@@ -147,6 +154,7 @@ def export_optimization_map_stack(history, output_path, *, output_type=None, mas
                 full_stack[fiber_mask, snapshot] = values
         full_stack.flush()
         del full_stack
+        output_path = exporter.io.write_values_description(values_path, mask_path)
 
     return output_path
 
@@ -265,6 +273,6 @@ def render_gif(history, output_path, *, fps=5, max_frames=60, view="auto", outpu
         if stack_path is None:
             warnings.warn("No native optimization map stack was written for output type " f"{output_type!r}; only NIfTI and fiber histories are supported.", stacklevel=2)
         else:
-            export_optimization_map_stack(history, stack_path, output_type=output_type, mask_path=mask_path, max_frames=max_frames)
+            stack_path = export_optimization_map_stack(history, stack_path, output_type=output_type, mask_path=mask_path, max_frames=max_frames)
             print(f"Saved optimization map stack to: {stack_path}")
     return output_path

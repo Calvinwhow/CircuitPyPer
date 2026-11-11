@@ -2,7 +2,7 @@
 
 `RunNeuralNetwork` fits the five full-basis optimization methods, orients their
 coefficient vectors on the fitting data, and passes the shared coefficient
-matrix through fibers, networks, local anatomy, and an unmasked composite.
+matrix through fibers, networks, and local anatomy.
 
 The code is separated by responsibility:
 
@@ -15,9 +15,10 @@ The code is separated by responsibility:
 - `saving.py`: portable maps, parameters, predictions, and validation results.
 
 Each branch reconstructs five voxel maps, applies an algorithm-specific bias
-and ReLU, mixes the algorithms, and applies a second bias and ReLU. Four learned
+and ReLU, mixes the algorithms, and applies a second bias and ReLU. Three learned
 weights combine the branch maps, each minus a learned baseline, into the final
-localization map. Patient maps are scored only after these spatial nonlinearities.
+localization map. Those three weighted branch maps sum exactly to the final map.
+Patient maps are scored only after these spatial nonlinearities.
 
 Initialization starts at the linear solution. Each algorithm bias starts at minus
 its map's minimum and each branch bias at zero, so both ReLUs pass the initial maps
@@ -50,7 +51,7 @@ from filenames.
 
 Modes:
 
-- `frozen`: reconstruct the 20 maps once and train only 52 integration scalars.
+- `frozen`: reconstruct the 15 maps once and train only 39 integration scalars.
 - `fine_tune`: initialize from all five deterministic solutions and train the
   shared basis-by-algorithm coefficient matrix as well.
 - `scratch`: randomly initialize and train that shared coefficient matrix.

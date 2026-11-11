@@ -42,7 +42,7 @@ class filter_fibers:
     a dataframe containing patient NIfTI paths, builds a voxel index for a shared
     fiber atlas, samples every patient NIfTI against that atlas, and writes:
 
-    1. one ``.fib.npy`` vector and ``.fib.json`` descriptor per patient
+    1. one canonical ``.fib.json`` descriptor and paired ``.fib.npy`` payload per patient
     2. an optional cohort matrix, shape ``(n_patients, n_fibers)``
     3. a manifest CSV/JSON tying dataframe rows to generated fiber vectors
 
@@ -89,12 +89,14 @@ class filter_fibers:
 
     Return value
     ------------
-    ``run()`` returns a copy of the input dataframe with new ``fiber_path`` and
-    ``fiber_json_path`` columns. Full run metadata remains available through
+    ``run()`` returns a copy of the input dataframe with a canonical
+    ``fiber_json_path`` column and backward-compatible ``fiber_path`` payload
+    column. Full run metadata remains available through
     ``get_result()`` or ``self.result`` after ``run()`` completes:
 
-        ``profile_paths``: list of per-patient ``.fib.npy`` files
-        ``profile_descriptor_paths``: matching per-patient ``.fib.json`` files
+        ``canonical_profile_paths``: per-patient ``.fib.json`` entry points
+        ``profile_descriptor_paths``: alias of ``canonical_profile_paths``
+        ``profile_paths``: backward-compatible per-patient ``.fib.npy`` payloads
         ``matrix``: stacked ``float32`` matrix, shape ``(n_patients, n_fibers)``
         ``matrix_path``: path to saved matrix, or None
         ``manifest_csv``: path to saved manifest CSV
@@ -265,6 +267,9 @@ class filter_fibers:
     def package_result(self):
         self.result = {
             "df": self.df,
+            "canonical_profile_paths": [
+                str(path) for path in self.profile_descriptor_paths
+            ],
             "profile_paths": [str(path) for path in self.profile_paths],
             "profile_descriptor_paths": [
                 str(path) for path in self.profile_descriptor_paths
@@ -297,6 +302,9 @@ class filter_fibers:
             "matrix_name": self.matrix_name,
             "n_patients": len(self.nifti_paths),
             "n_fibers": int(self.matrix.shape[1]) if self.matrix is not None else None,
+            "canonical_profile_paths": [
+                str(path) for path in self.profile_descriptor_paths
+            ],
             "profile_paths": [str(path) for path in self.profile_paths],
             "profile_descriptor_paths": [
                 str(path) for path in self.profile_descriptor_paths

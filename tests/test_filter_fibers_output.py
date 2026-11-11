@@ -28,7 +28,7 @@ def test_filter_fibers_writes_compact_fib_pair(tmp_path):
     patient_data[1:3, 1, 1] = 1
     nib.save(nib.Nifti1Image(patient_data, np.eye(4)), patient_path)
 
-    result_df = filter_fibers(
+    pipeline = filter_fibers(
         pd.DataFrame({"nifti": [str(patient_path)]}),
         nifti_col="nifti",
         fiber_atlas_path=atlas_path,
@@ -36,7 +36,8 @@ def test_filter_fibers_writes_compact_fib_pair(tmp_path):
         out_dir=tmp_path / "output",
         save_matrix=False,
         show_progress=False,
-    ).run()
+    )
+    result_df = pipeline.run()
 
     values_path = tmp_path / "fibers" / "patient_01_atlas.fib.npy"
     descriptor_path = tmp_path / "fibers" / "patient_01_atlas.fib.json"
@@ -46,4 +47,5 @@ def test_filter_fibers_writes_compact_fib_pair(tmp_path):
     assert descriptor["fiber_atlas"]["path"] == str(atlas_path.resolve())
     assert Path(result_df.loc[0, "fiber_path"]).resolve() == values_path.resolve()
     assert Path(result_df.loc[0, "fiber_json_path"]).resolve() == descriptor_path.resolve()
+    assert pipeline.get_result()["canonical_profile_paths"] == [str(descriptor_path)]
     assert not (tmp_path / "fibers" / "patient_01_atlas.fib.values.npy").exists()

@@ -12,7 +12,7 @@ class TemporaryTractogram:
     """Materialize a MAT or native fiber result as a temporary TCK.
 
     Supported sources are Lead-DBS ``.mat``, new
-    ``*.fib.npy``/``*.fib.json`` pairs, legacy self-contained ``*.fib.npy``,
+    canonical ``*.fib.json``/``*.fib.npy`` pairs, legacy self-contained ``*.fib.npy``,
     and legacy ``*.fib.values.npy``/``*.fib.desc.json`` pairs. A descriptor can
     be passed directly and locates and validates both the values and canonical
     geometry atlas. ``fiber_atlas_path`` remains available for bare legacy

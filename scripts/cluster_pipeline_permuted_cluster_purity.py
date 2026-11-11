@@ -50,7 +50,7 @@ MODALITIES = {
         "outcome_sign": 1,
     },
     "fiber": {
-        "path_column": "fiber_path_guerrera",
+        "path_column": "fiber_json_path_guerrera",
         "mask_path": FIBER_ATLAS,
         "reference_csv": PROJECT_ROOT
         / "fiber_regressions_clusters/cluster_regression_input.csv",

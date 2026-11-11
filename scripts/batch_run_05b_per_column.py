@@ -46,7 +46,7 @@ AVERAGE_CV_LABELS = ["loocv", "2", "5", "10"]
 SCRIPT_ARGS: dict[str, Any] = {
     "input_csv": "/Volumes/OneTouch/01p_Schmahmann_SCA_Atrophy/Schmahmann_BIDS/guerrera_2026_fibfilt/fiber_filter_manifest.csv",
     "mask_path": "/Volumes/OneTouch/resources/Atlas_tck_MNI/Atlas_all30_MNI.npz",
-    "paths_col": "fiber_path",
+    "paths_col": "fiber_json_path",
     "out_root": "/Users/cu135/Partners HealthCare Dropbox/Calvin Howard/studies/raynor_network_mapping/results/schmahmann_discovery_fibers",
     "summary_csv": "batch_05b_summary.csv",
     "columns": [
@@ -167,7 +167,7 @@ SCRIPT_ARGS: dict[str, Any] = {
     ],
     "filter_col": "selected",
     "filter_value": 1,
-    "drop_nans": ["fiber_path"],
+    "drop_nans": ["fiber_json_path"],
     "cv": None,
     "n_permutations": 0,
     "data_transform": None,

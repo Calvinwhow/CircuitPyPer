@@ -5,7 +5,7 @@ each scored in its own modality's native data.
 
 Every map is tested against the patient data it was built from: network maps
 against connectivity_t_path, vlsm maps against Nifti_File_Path, and fiber maps
-against the native fiber_path_guerrera values (never voxelized). Each patient's
+against the native fiber_json_path_guerrera values (never voxelized). Each patient's
 score is the cosine similarity of their native vector with the map (the score the
 optimizer maximizes). The score is Spearman-correlated with every symptom and the
 rhos are plotted grouped motor | cognitive | emotional in one fixed symptom order.
@@ -40,22 +40,22 @@ FIBER_ATLAS = "/Volumes/OneTouch/resources/Atlas_tck_MNI/Atlas_all30_MNI.npz"
 NATIVE = {
     "network": ("connectivity_t_path", VOLUME_MASK, "nii"),
     "vlsm": ("Nifti_File_Path", VOLUME_MASK, "nii"),
-    "fiber": ("fiber_path_guerrera", FIBER_ATLAS, "fiber"),
+    "fiber": ("fiber_json_path_guerrera", FIBER_ATLAS, "fiber"),
 }
 LABELS_FROM = "vlsm_regressions_clusters/cluster_regression_input.csv"   # symptom -> domain
 OPT_ROOT = "optimization_HigherIsBetter_3cluster_insample"
 CLUSTERS = ["motor", "cognitive", "emotional"]
-OPT_MAP = {"network": "optimized_map.nii.gz", "vlsm": "optimized_map.nii.gz", "fiber": "optimized_map.fib.npy"}
+OPT_MAP = {"network": "optimized_map.nii.gz", "vlsm": "optimized_map.nii.gz", "fiber": "optimized_map.fib.json"}
 TOTALS_TREE = "{m}_regressions_HigherIsWorse-TestTotalScores"
 TOTALS = ["TotalBarsScore", "TotalCCASRawScore", "CNRSTotScore"]
-TOTAL_MAP = {"network": "contrast_tval_0.nii.gz", "vlsm": "contrast_tval_0.nii.gz", "fiber": "contrast_tval_0.fib.values.npy"}
+TOTAL_MAP = {"network": "contrast_tval_0.nii.gz", "vlsm": "contrast_tval_0.nii.gz", "fiber": "contrast_tval_0.fib.json"}
 # Original 3-cluster regressions on the ranked HigherIsBetter symptom maps (identity contrasts).
 ORIG_CLUSTER_DIR = {
     "network": "network_regressions_clusters/cluster_regression_identity_standardized/Nifti_File_Path-on-cluster_motor-cluster_cognitive-cluster_emotional",
     "vlsm": "vlsm_regressions_clusters/cluster_regression_identity_standardized/Nifti_File_Path-on-cluster_motor-cluster_cognitive-cluster_emotional",
     "fiber": "fiber_regressions_clusters/cluster_regression_identity_standardized/Fiber_File_Path-on-cluster_motor-cluster_cognitive-cluster_emotional",
 }
-ORIG_EXT = {"network": ".nii.gz", "vlsm": ".nii.gz", "fiber": ".fib.npy"}
+ORIG_EXT = {"network": ".nii.gz", "vlsm": ".nii.gz", "fiber": ".fib.json"}
 # Weighted regression of every pool map on the cluster indicators, weights = signed optimized weights.
 OPTW_REG = "regressions-HigherIsBetter-optWeights3cluster"
 OPTW_DIR = "regression_identity_and_vs_others/Image_File_Path-on-domain_motor + domain_cognitive + domain_emotional"

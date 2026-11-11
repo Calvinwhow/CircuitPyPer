@@ -114,7 +114,7 @@ class InvertedFiberConnectivity:
     @staticmethod
     def _safe_stem(path):
         name = Path(path).name
-        for suffix in (".nii.gz", ".fib.gz", ".fib.npy", ".fib.json"):
+        for suffix in (".nii.gz", ".fib.gz", ".fib.json", ".fib.npy"):
             if name.lower().endswith(suffix):
                 return name[: -len(suffix)]
         return Path(name).stem

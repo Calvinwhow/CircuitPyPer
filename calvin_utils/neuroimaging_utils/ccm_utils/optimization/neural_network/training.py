@@ -36,6 +36,7 @@ def prediction_variance_normalize(output, dataset_weights, epsilon=1e-8):
     normalized = output.copy()
     normalized["map"] = output["map"] / scale
     normalized["representations"] = output["representations"] / scale
+    normalized["domain_maps"] = output["domain_maps"] / scale
     normalized["predictions"] = normalized_predictions
     normalized["prediction_scale"] = scale
     return normalized
@@ -65,6 +66,7 @@ def result(model, output, loss, history, device):
     fitted["model"] = model
     fitted["map"] = output["map"].detach().cpu().numpy().astype(np.float32, copy=False)
     fitted["representations"] = output["representations"].detach().cpu().numpy().astype(np.float32, copy=False)
+    fitted["domain_maps"] = output["domain_maps"].detach().cpu().numpy().astype(np.float32, copy=False)
     fitted["predictions"] = {name: values.detach().cpu().numpy().astype(np.float32, copy=False) for name, values in output["predictions"].items()}
     fitted["prediction_scale"] = float(output["prediction_scale"].detach().cpu())
     fitted["loss"] = float(loss.detach().cpu())
