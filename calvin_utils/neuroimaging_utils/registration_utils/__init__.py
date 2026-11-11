@@ -12,12 +12,15 @@ takes or returns (where it has any), and <subclass>_utils.py files for the helpe
     skull_strip/                        SkullStrip: the brain, masked, in the frame of the registration asked for; schema.py: SkullStripResult
         brain_mask_transfer_utils.py    BrainMaskTransfer: the MNI brain mask on the scan's own grid
         rigid_from_affine_utils.py      RigidFromAffine: an affine's rotation and translation, its scaling and shear removed
+    apply_warp/                         ApplyWarp: an image placed in a warped frame (warp @ its affine), its voxels untouched; schema.py: WarpedImage
 
 One scan, e.g. in a viewer:
     from calvin_utils.neuroimaging_utils.registration_utils.skull_strip.skull_strip import SkullStrip
     result = SkullStrip("sub-01_T1w.nii.gz", affine=False).run()     # result.brain, result.brain_affine
     from calvin_utils.neuroimaging_utils.registration_utils.rigid_registration.rigid_registration import RigidRegistration
     rigid = RigidRegistration("sub-01_T1w.nii.gz", template_path, template_mask_path).run()     # 4x4, no skull strip
+    from calvin_utils.neuroimaging_utils.registration_utils.apply_warp.apply_warp import ApplyWarp
+    warped = ApplyWarp("sub-01_lesion.nii.gz", result.transform).run()     # a native-space file on the warped brain
 
 The name is loaded the first time it is asked for, as in tract_utils.
 """
