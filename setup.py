@@ -37,7 +37,7 @@ def parse_requirements(filename):
 
 setup(
     name="calvin_utils",
-    version="1.1.0",
+    version="1.2.0",
     packages=find_packages(),
     package_data={"calvin_utils.testing_utils": ["nouns.txt"]},
     data_files=shared_data_files(),
